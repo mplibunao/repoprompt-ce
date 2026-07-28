@@ -124,6 +124,14 @@ final class AgentTabSession: ObservableObject {
     @Published var pendingAskUser: AgentAskUserPendingState? = nil
     @Published var pendingUserInputRequest: AgentRequestUserInputRequest? = nil
     @Published var pendingApproval: AgentApprovalRequest? = nil
+    @Published var pendingCodexHookReview: AgentCodexHookReviewRequest? = nil
+    var codexHookReviewContinuation: CheckedContinuation<Void, Error>?
+    var codexHookGateGeneration: UInt64 = 0
+    var codexHookGateAttemptToken: UUID?
+    var codexHookGateInventoryFingerprint: String?
+    @Published var codexHookGateAudit: AgentCodexHookGateAudit?
+    var codexHookGateBindingMemo: CodexHookGateBindingIdentity?
+    var codexHookGateActiveBinding: CodexHookGateBindingIdentity?
     @Published var pendingPermissionsRequest: AgentPermissionsRequest? = nil
     @Published var pendingMCPElicitationRequest: AgentMCPElicitationRequest? = nil
     @Published var pendingApplyEditsReview: PendingApplyEditsReview? = nil
@@ -250,6 +258,11 @@ final class AgentTabSession: ObservableObject {
         case compact
         case review
         case unknown
+    }
+
+    struct CodexHookGateBindingIdentity: Equatable {
+        let controllerInstanceID: ObjectIdentifier
+        let controllerGeneration: UUID
     }
 
     struct CodexAuthoritativeTurnIdentity: Equatable {
@@ -515,6 +528,7 @@ final class AgentTabSession: ObservableObject {
             let oldIdentity = oldValue.map { ObjectIdentifier($0) }
             let newIdentity = codexController.map { ObjectIdentifier($0) }
             guard oldIdentity != newIdentity else { return }
+            resetCodexHookGateBinding()
             codexControllerGeneration = UUID()
             codexAuthoritativeActiveTurn = nil
             codexAnonymousActiveTurn = nil
@@ -681,12 +695,46 @@ final class AgentTabSession: ObservableObject {
         pendingAssistantDelta = ""
         agentTask?.cancel()
         agentTask = nil
+        if hasActiveCodexHookGateOperation {
+            resetCodexHookGateBinding()
+        }
         codexEventTask?.cancel()
         codexEventTask = nil
         codexEventTaskRunID = nil
         applyEditsApprovalSubscriptionTask?.cancel()
         applyEditsApprovalSubscriptionTask = nil
         applyEditsApprovalSubscriptionID = nil
+    }
+
+    var hasPendingCodexHookReviewRequest: Bool {
+        pendingCodexHookReview != nil
+    }
+
+    var hasPendingCodexHookReviewWait: Bool {
+        hasPendingCodexHookReviewRequest || codexHookReviewContinuation != nil
+    }
+
+    var hasActiveCodexHookGateOperation: Bool {
+        hasPendingCodexHookReviewWait || codexHookGateAttemptToken != nil
+    }
+
+    @discardableResult
+    func cancelCodexHookReview() -> Bool {
+        let continuation = codexHookReviewContinuation
+        guard hasActiveCodexHookGateOperation else { return false }
+        codexHookReviewContinuation = nil
+        pendingCodexHookReview = nil
+        codexHookGateAttemptToken = nil
+        continuation?.resume(throwing: CancellationError())
+        return true
+    }
+
+    func resetCodexHookGateBinding() {
+        _ = cancelCodexHookReview()
+        codexHookGateInventoryFingerprint = nil
+        codexHookGateActiveBinding = nil
+        codexHookGateBindingMemo = nil
+        codexHookGateAudit = nil
     }
 
     @discardableResult
@@ -730,6 +778,7 @@ final class AgentTabSession: ObservableObject {
             || pendingAskUser != nil
             || pendingUserInputRequest != nil
             || pendingApproval != nil
+            || hasActiveCodexHookGateOperation
             || pendingPermissionsRequest != nil
             || pendingMCPElicitationRequest != nil
             || pendingApplyEditsReview != nil
@@ -957,6 +1006,10 @@ final class AgentTabSession: ObservableObject {
 
     var uiPendingApproval: AgentApprovalRequest? {
         shouldSurfaceInteractionsInUI ? pendingApproval : nil
+    }
+
+    var uiPendingCodexHookReview: AgentCodexHookReviewRequest? {
+        shouldSurfaceInteractionsInUI ? pendingCodexHookReview : nil
     }
 
     var uiPendingPermissionsRequest: AgentPermissionsRequest? {

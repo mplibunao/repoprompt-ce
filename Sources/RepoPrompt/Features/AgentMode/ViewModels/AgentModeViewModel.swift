@@ -1720,6 +1720,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             codexControllerFactory: codexControllerFactory,
             connectionPolicyInstaller: connectionPolicyInstaller,
             shouldManageCodexTooling: true,
+            codexHookApprovalSettings: GlobalSettingsStore.shared,
             activeToolQuery: { [weak mcpServer] runID in
                 mcpServer?.hasActiveToolExecutions(runID: runID) ?? false
             },
@@ -1855,6 +1856,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             testMCPServer: MCPServerViewModel? = nil,
             testWorkspaceFileContextStore: WorkspaceFileContextStore? = nil,
             testCodexActiveToolQuery: CodexActiveToolQuery? = nil,
+            testCodexManagedAuthRecovery: (any CodexManagedAuthRecovering)? = nil,
+            testCodexHookApprovalSettingsProvider: (any CodexHookApprovalSettingsProviding)? = nil,
             testCodexActiveAgentRunWaitQuery: CodexAgentRunWaitQuery? = nil,
             testCodexActiveAgentRunWaitDrain: CodexAgentRunWaitDrain? = nil,
             testCodexLeaseRoutingTimeoutMs: Int? = nil,
@@ -1915,6 +1918,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 codexControllerFactory: codexControllerFactory,
                 connectionPolicyInstaller: connectionPolicyInstaller,
                 shouldManageCodexTooling: shouldManageCodexTooling,
+                authRecovery: testCodexManagedAuthRecovery ?? CodexManagedAuthRecoveryService.shared,
+                codexHookApprovalSettings: testCodexHookApprovalSettingsProvider ?? GlobalSettingsStore.shared,
                 activeToolQuery: testCodexActiveToolQuery
                     ?? { [weak testMCPServer] runID in
                         testMCPServer?.hasActiveToolExecutions(runID: runID) ?? false
@@ -2934,6 +2939,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         if session.mcpControlContext != nil { return true }
         if session.hasPendingQuestionUI { return true }
         if session.pendingApproval != nil { return true }
+        if session.hasPendingCodexHookReviewWait { return true }
         if session.pendingPermissionsRequest != nil { return true }
         if session.pendingMCPElicitationRequest != nil { return true }
         if session.pendingApplyEditsReview != nil { return true }
@@ -4007,7 +4013,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     func reconcileInteractiveRunState(_ session: TabSession) {
-        let nextState: AgentSessionRunState? = if session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingMCPElicitationRequest != nil {
+        let nextState: AgentSessionRunState? = if session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.pendingApproval != nil || session.hasPendingCodexHookReviewRequest || session.pendingPermissionsRequest != nil || session.pendingMCPElicitationRequest != nil {
             .waitingForApproval
         } else if session.hasPendingQuestionUI {
             .waitingForQuestion
@@ -5110,6 +5116,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.pendingAskUser = nil
         session.pendingUserInputRequest = nil
         session.pendingApproval = nil
+        if session.hasActiveCodexHookGateOperation {
+            session.resetCodexHookGateBinding()
+        }
         session.pendingPermissionsRequest = nil
         session.pendingMCPElicitationRequest = nil
         session.pendingApplyEditsReview = nil
@@ -5149,6 +5158,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             session.$pendingAskUser.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingUserInputRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingApproval.map { _ in () }.eraseToAnyPublisher(),
+            session.$pendingCodexHookReview.map { _ in () }.eraseToAnyPublisher(),
+            session.$codexHookGateAudit.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingPermissionsRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingMCPElicitationRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingApplyEditsReview.map { _ in () }.eraseToAnyPublisher(),
@@ -12481,7 +12492,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return .failed(.init(operation: .save, tabID: tabID, message: "Active workspace is unavailable."))
         }
 
-        let hasConversationContent = !session.items.isEmpty || !session.transcript.turns.isEmpty || session.runState.isActive || session.hasPendingQuestionUI || session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.worktreeMergeOperations.contains { $0.status.isActive }
+        let hasConversationContent = !session.items.isEmpty || !session.transcript.turns.isEmpty || session.runState.isActive || session.hasPendingQuestionUI || session.pendingApproval != nil || session.hasPendingCodexHookReviewWait || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.worktreeMergeOperations.contains { $0.status.isActive }
         if session.activeAgentSessionID == nil, !hasConversationContent {
             return .notRequired
         }
@@ -13943,7 +13954,15 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                         )
                     }
                 }
-                if case let .preDispatchRejected(message)? = sendOutcome,
+                let rejectedManualSubmissionMessage: String? = switch sendOutcome {
+                case let .preDispatchRejected(message)?:
+                    message
+                case .cancelled?:
+                    "Codex send was cancelled before provider dispatch."
+                default:
+                    nil
+                }
+                if let rejectedManualSubmissionMessage,
                    codexAttemptID == nil
                 {
                     // The dispatch ticket remains held through this synchronous
@@ -13965,7 +13984,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                             taggedFiles: taggedFilesToSend,
                             selectedWorkflow: restorationSelectedWorkflow,
                             selectedWorkflowMutationGeneration: restorationSelectedWorkflowMutationGeneration,
-                            message: message
+                            message: rejectedManualSubmissionMessage
                         )
                     }
                 } else {
@@ -16813,7 +16832,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         if session.pendingAskUser != nil {
             throw MCPError.invalidParams("ask_user is already waiting for a response in this session.")
         }
-        if session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil {
+        if session.pendingApproval != nil || session.hasPendingCodexHookReviewWait || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil {
             throw MCPError.invalidParams("ask_user cannot be shown while an approval is pending.")
         }
         if session.pendingMCPElicitationRequest != nil || !session.queuedMCPElicitationRequests.isEmpty {
@@ -17047,6 +17066,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private func cancelPendingApproval(for session: TabSession) {
         session.pendingApproval = nil
+        if session.hasActiveCodexHookGateOperation {
+            session.resetCodexHookGateBinding()
+        }
         session.pendingPermissionsRequest = nil
         session.pendingMCPElicitationRequest = nil
         session.queuedMCPElicitationRequests.removeAll()
@@ -17914,6 +17936,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let hasPendingInteraction = session.runState == .waitingForUser
             || session.hasPendingQuestionUI
             || session.pendingApproval != nil
+            || session.hasPendingCodexHookReviewWait
             || session.pendingPermissionsRequest != nil
             || session.pendingApplyEditsReview != nil
         let hasActiveRun = session.runState.isActive
