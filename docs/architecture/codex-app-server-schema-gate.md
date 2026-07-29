@@ -60,7 +60,7 @@ hook-key → `{trusted_hash}` object shape cannot be expressed by the current ch
 After a trust write, the post-write `hooks/list` result is the semantic success authority;
 `config/batchWrite.status` alone is not.
 
-The hardened 0.147.0 baseline checks 45 methods, 192 parameter paths, and 93 response paths. A failure names
+The hardened 0.147.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
