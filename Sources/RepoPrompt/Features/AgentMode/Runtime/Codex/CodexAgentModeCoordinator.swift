@@ -887,24 +887,27 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
 
         switch decision {
         case .continueWithoutHooks:
-            guard request.phase.allowsApprovalDecision else {
+            guard request.phase.allowsContinueWithoutHooks else {
                 throw AgentCodexHookReviewResolutionError.invalidDecision
             }
             guard !isCodexHookApprovalStrictModeEnabled() else {
                 throw AgentCodexHookReviewResolutionError.strictModeRequiresApproval
             }
+            let skippedCount = request.phase == .discoveryFailed ? nil : request.hooks.count
+            let skippedDescription = skippedCount.map { "\($0) Codex project hook(s)" }
+                ?? "an unknown number of Codex project hooks"
             completeCodexHookReview(
                 session: session,
                 request: request,
                 binding: binding,
                 status: .continuedWithoutHooks,
                 approvedCount: 0,
-                skippedCount: request.hooks.count,
-                notice: "Continued without trusting \(request.hooks.count) Codex project hook(s). The hooks remain untrusted for this controller binding."
+                skippedCount: skippedCount,
+                notice: "Continued without trusting \(skippedDescription). The hooks remain untrusted for this controller binding."
             )
 
         case .retryDiscovery:
-            guard request.phase == .discoveryFailed else {
+            guard request.phase.allowsDiscoveryRetry else {
                 throw AgentCodexHookReviewResolutionError.invalidDecision
             }
             request.phase = .discovering
@@ -985,7 +988,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         controller: any CodexSessionControlling,
         binding: AgentTabSession.CodexHookGateBindingIdentity
     ) async throws {
-        guard request.phase.allowsApprovalDecision else {
+        guard request.phase.allowsTrustDecision else {
             throw AgentCodexHookReviewResolutionError.invalidDecision
         }
         guard let fingerprint = session.codexHookGateInventoryFingerprint else {
@@ -1107,7 +1110,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         binding: AgentTabSession.CodexHookGateBindingIdentity,
         status: AgentCodexHookGateAudit.Status,
         approvedCount: Int,
-        skippedCount: Int,
+        skippedCount: Int?,
         notice: String
     ) {
         guard session.pendingCodexHookReview?.id == request.id,
