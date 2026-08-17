@@ -89,6 +89,34 @@ final class CodexAgentModeCoordinatorHookApprovalTests: XCTestCase {
         XCTAssertEqual(session.codexHookGateAudit?.skippedCount, 1)
     }
 
+    func testPartialApprovalNoticeUsesVerifiedUnresolvedCountWhenSkippedHookResolvesExternally() async throws {
+        let initial = try inventory(hooks: [hook(key: "alpha"), hook(key: "beta")])
+        let verified = try inventory(hooks: [hook(key: "alpha", status: .trusted)])
+        let controller = HookApprovalFakeCodexController(
+            listResults: [.success(initial)],
+            trustResults: [.success(verified)]
+        )
+        let (viewModel, session) = makeSession(controller: controller)
+        let sendTask = Task { await self.send(on: viewModel, session: session) }
+        let request = try await waitForRequest(session)
+
+        try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+            session: session,
+            requestID: request.id,
+            decision: .approveSelected(hookKeys: ["alpha"])
+        )
+
+        await assertOutcome(sendTask, equals: .sent)
+        XCTAssertEqual(session.codexHookGateAudit?.status, .approvedSelected)
+        XCTAssertEqual(session.codexHookGateAudit?.approvedCount, 1)
+        XCTAssertEqual(session.codexHookGateAudit?.skippedCount, 1)
+        let notice = try XCTUnwrap(session.items.last { item in
+            item.kind == .system && item.text.contains("Trusted 1 Codex project hook(s)")
+        })
+        XCTAssertTrue(notice.text.contains("0 remain untrusted for this controller binding"))
+        XCTAssertFalse(notice.text.contains("1 remain untrusted for this controller binding"))
+    }
+
     func testStrictModeIsReadLiveAndRejectsContinueWithoutMutation() async throws {
         let settings = HookApprovalFakeSettingsProvider(enabled: false)
         let controller = try HookApprovalFakeCodexController(

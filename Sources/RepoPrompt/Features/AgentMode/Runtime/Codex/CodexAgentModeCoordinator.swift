@@ -1086,14 +1086,15 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 )
                 return
             }
+            let selectionSkippedCount = max(0, request.hooks.count - candidates.count)
             completeCodexHookReview(
                 session: session,
                 request: request,
                 binding: binding,
                 status: status,
                 approvedCount: candidates.count,
-                skippedCount: max(0, request.hooks.count - candidates.count),
-                notice: "Trusted \(candidates.count) Codex project hook(s); \(max(0, request.hooks.count - candidates.count)) remain untrusted for this controller binding."
+                skippedCount: selectionSkippedCount,
+                notice: "Trusted \(candidates.count) Codex project hook(s); \(verifiedUnresolvedIdentities.count) remain untrusted for this controller binding."
             )
         } catch is CancellationError {
             guard session.codexHookGateAttemptToken == token else { return }
