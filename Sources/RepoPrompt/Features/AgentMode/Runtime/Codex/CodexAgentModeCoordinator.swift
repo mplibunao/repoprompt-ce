@@ -818,29 +818,54 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         }
     }
 
+    private func awaitActiveCodexHookGate(
+        session: AgentTabSession,
+        binding: AgentTabSession.CodexHookGateBindingIdentity
+    ) async throws {
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled,
+                      session.codexHookGateActiveBinding == binding,
+                      session.hasActiveCodexHookGateOperation
+                else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                session.codexHookGateCoalescedContinuations[waiterID] = continuation
+            }
+        } onCancel: { [weak session] in
+            Task { @MainActor in
+                session?.cancelCodexHookGateCoalescedWaiter(waiterID)
+            }
+        }
+    }
+
     private func gateFirstTurnForProjectHooks(
         session: AgentTabSession,
         controller: any CodexSessionControlling
-    ) async throws {
+    ) async throws -> UUID? {
         let binding = codexHookGateBinding(for: session, controller: controller)
-        if session.codexHookGateBindingMemo == binding {
-            return
-        }
-        guard !session.hasPendingCodexHookReviewWait else {
+        if session.hasActiveCodexHookGateOperation {
             guard session.codexHookGateActiveBinding == binding else {
                 throw AgentCodexHookReviewResolutionError.staleController
             }
-            try await suspendForCodexHookReview(session: session, binding: binding)
+            try await awaitActiveCodexHookGate(session: session, binding: binding)
             synchronizeCodexThreadReferenceAfterHookGate(
                 session: session,
                 controller: controller
             )
-            return
+            return nil
+        }
+        if session.codexHookGateBindingMemo == binding {
+            return nil
         }
 
         session.codexHookGateGeneration &+= 1
         session.codexHookGateActiveBinding = binding
         session.codexHookGateAudit = nil
+        let dispatchOwnerToken = UUID()
+        session.codexHookGateDispatchOwnerToken = dispatchOwnerToken
         let attemptToken = UUID()
         session.codexHookGateAttemptToken = attemptToken
         let authority = CodexHookGateOperationAuthority(
@@ -858,14 +883,13 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             let unresolved = inventory.unresolvedProjectHooks
             if unresolved.isEmpty {
                 session.codexHookGateAttemptToken = nil
-                session.codexHookGateActiveBinding = nil
                 session.codexHookGateInventoryFingerprint = nil
                 session.codexHookGateBindingMemo = binding
                 synchronizeCodexThreadReferenceAfterHookGate(
                     session: session,
                     controller: controller
                 )
-                return
+                return dispatchOwnerToken
             }
             session.codexHookGateAttemptToken = nil
             session.codexHookGateInventoryFingerprint = inventory.fingerprint
@@ -903,6 +927,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             session: session,
             controller: controller
         )
+        return dispatchOwnerToken
     }
 
     func resolveCodexHookReview(
@@ -1185,7 +1210,6 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session.pendingCodexHookReview = nil
         session.codexHookGateAttemptToken = nil
         session.codexHookGateInventoryFingerprint = nil
-        session.codexHookGateActiveBinding = nil
         session.codexHookGateBindingMemo = binding
         session.codexHookGateAudit = AgentCodexHookGateAudit(
             status: status,
@@ -3134,10 +3158,23 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         else {
             return false
         }
+        let hookGateDispatchOwnerToken: UUID?
         do {
-            try await gateFirstTurnForProjectHooks(session: session, controller: controller)
+            hookGateDispatchOwnerToken = try await gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            )
         } catch {
             return false
+        }
+        var dispatched = false
+        defer {
+            if let hookGateDispatchOwnerToken {
+                session.finishCodexHookGateOwnerDispatch(
+                    token: hookGateDispatchOwnerToken,
+                    succeeded: dispatched
+                )
+            }
         }
         guard let head = claimCodexFallbackHead(
             session: session,
@@ -3146,14 +3183,15 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         ) else {
             return false
         }
-        await dispatchClaimedCodexFallback(head, session: session)
+        dispatched = await dispatchClaimedCodexFallback(head, session: session)
         return true
     }
 
+    @discardableResult
     private func dispatchClaimedCodexFallback(
         _ head: AgentTabSession.CodexFallbackQueueEntry,
         session: AgentTabSession
-    ) async {
+    ) async -> Bool {
         guard let controller = session.codexController,
               ObjectIdentifier(controller) == head.originControllerInstanceID
         else {
@@ -3162,7 +3200,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 entry: head,
                 message: "Codex queued follow-up lost its controller before dispatch."
             )
-            return
+            return false
         }
         do {
             updateCodexStallWatchdogState(for: session)
@@ -3176,7 +3214,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             guard var inFlight = session.codexFallbackDispatchInFlight,
                   inFlight.id == head.id,
                   session.codexController.map(ObjectIdentifier.init) == head.originControllerInstanceID
-            else { return }
+            else { return true }
             if case .lifecycleStarted = inFlight.state {
                 session.codexFallbackDispatchInFlight = nil
             } else {
@@ -3196,12 +3234,14 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     stage: .running
                 )
             }
+            return true
         } catch {
             await failCodexFallbackDispatch(
                 session: session,
                 entry: head,
                 message: "Codex queued follow-up failed to start: \(error.localizedDescription)"
             )
+            return false
         }
     }
 
@@ -3391,10 +3431,23 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
               let controller = session.codexController,
               ObjectIdentifier(controller) == queuedHead.originControllerInstanceID
         else { return nil }
+        let hookGateDispatchOwnerToken: UUID?
         do {
-            try await gateFirstTurnForProjectHooks(session: session, controller: controller)
+            hookGateDispatchOwnerToken = try await gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            )
         } catch {
             return nil
+        }
+        var claimedSuccessor = false
+        defer {
+            if let hookGateDispatchOwnerToken {
+                session.finishCodexHookGateOwnerDispatch(
+                    token: hookGateDispatchOwnerToken,
+                    succeeded: claimedSuccessor
+                )
+            }
         }
         guard var head = session.codexFallbackQueue.first,
               head.id == queuedHead.id,
@@ -3403,6 +3456,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         else { return nil }
         head.state = .eligibleForSuccessor(completedTurnID: turnID)
         session.codexFallbackQueue[0] = head
+        claimedSuccessor = true
         return .init(
             id: head.id,
             transitionKind: .relatedFollowUp,
@@ -4988,7 +5042,19 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             guard replayTurn.expectedTurnID == nil else {
                 return false
             }
-            try await gateFirstTurnForProjectHooks(session: session, controller: controller)
+            let hookGateDispatchOwnerToken = try await gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            )
+            var dispatched = false
+            defer {
+                if let hookGateDispatchOwnerToken {
+                    session.finishCodexHookGateOwnerDispatch(
+                        token: hookGateDispatchOwnerToken,
+                        succeeded: dispatched
+                    )
+                }
+            }
             _ = try await controller.startUserTurn(
                 text: replayTurn.text,
                 images: replayTurn.images,
@@ -4996,6 +5062,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 reasoningEffort: replayTurn.reasoningEffort,
                 serviceTier: replayTurn.serviceTier
             )
+            dispatched = true
             await applySuccessfulCodexNativeSend(
                 for: session,
                 runID: runID,
@@ -6206,17 +6273,32 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             setRunningStatus("Sending message…", source: .transport, session: session, urgent: true)
             switch dispatchPlan {
             case .start:
-                try await gateFirstTurnForProjectHooks(session: session, controller: controller)
-                beginTrackedCodexUserTurn(session)
-                updateCodexStallWatchdogState(for: session)
-                logCodex("[AgentModeVM] sendCodexNativeMessage: calling controller.startUserTurn")
-                _ = try await controller.startUserTurn(
-                    text: text,
-                    images: attachments,
-                    model: selection.model,
-                    reasoningEffort: selection.reasoningEffort,
-                    serviceTier: selection.serviceTier
+                let hookGateDispatchOwnerToken = try await gateFirstTurnForProjectHooks(
+                    session: session,
+                    controller: controller
                 )
+                var dispatched = false
+                do {
+                    defer {
+                        if let hookGateDispatchOwnerToken {
+                            session.finishCodexHookGateOwnerDispatch(
+                                token: hookGateDispatchOwnerToken,
+                                succeeded: dispatched
+                            )
+                        }
+                    }
+                    beginTrackedCodexUserTurn(session)
+                    updateCodexStallWatchdogState(for: session)
+                    logCodex("[AgentModeVM] sendCodexNativeMessage: calling controller.startUserTurn")
+                    _ = try await controller.startUserTurn(
+                        text: text,
+                        images: attachments,
+                        model: selection.model,
+                        reasoningEffort: selection.reasoningEffort,
+                        serviceTier: selection.serviceTier
+                    )
+                    dispatched = true
+                }
             case let .steer(identity):
                 logCodex("[AgentModeVM] sendCodexNativeMessage: calling controller.steerUserTurn expectedTurnID=\(identity.turnID)")
                 do {
@@ -8843,6 +8925,22 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             _ gate: (@Sendable () async -> Void)?
         ) {
             testWorkspaceResolutionFailurePublicationGate = gate
+        }
+
+        @_spi(TestSupport)
+        public func test_gateFirstTurnForProjectHooks(
+            session: AgentTabSession,
+            controller: any CodexSessionControlling
+        ) async throws {
+            if let dispatchOwnerToken = try await gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            ) {
+                session.finishCodexHookGateOwnerDispatch(
+                    token: dispatchOwnerToken,
+                    succeeded: true
+                )
+            }
         }
 
         @_spi(TestSupport)

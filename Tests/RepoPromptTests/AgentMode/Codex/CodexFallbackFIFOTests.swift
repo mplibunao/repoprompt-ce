@@ -295,6 +295,85 @@ final class CodexFallbackFIFOTests: XCTestCase {
         XCTAssertEqual(attachments, [image])
     }
 
+    func testFollowUpDuringInitialHookDiscoveryCoalescesGateAndPreservesRun() async throws {
+        let discoveryGate = FallbackAsyncGate()
+        let dispatchGate = FallbackAsyncGate()
+        let controller = try FallbackFIFOController(
+            snapshot: .idle,
+            activeTurnIDs: [],
+            steerResults: [
+                .failure(CodexTurnSteerError.noActiveTurn(
+                    requestFailure(message: "no active turn to steer")
+                ))
+            ],
+            startGate: dispatchGate,
+            hookInventory: fallbackHookInventory(),
+            hookListGate: discoveryGate
+        )
+        let (viewModel, session) = makeRunningSession(controller: controller)
+        let runID = session.runID
+        session.runState = .idle
+
+        let initialSend = Task {
+            await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+                session: session,
+                text: "initial gated send",
+                attachments: []
+            )
+        }
+        guard await discoveryGate.waitUntilWaiting() else {
+            initialSend.cancel()
+            return XCTFail("Initial send did not enter hook discovery")
+        }
+
+        let followUp = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "queued while discovery is active",
+            attachments: [],
+            fallbackContext: fallbackContext(
+                queueID: UUID(),
+                origin: .manual,
+                text: "queued while discovery is active"
+            )
+        )
+        guard case .queuedFallback = followUp else {
+            initialSend.cancel()
+            await discoveryGate.release()
+            return XCTFail("Expected queued follow-up, got \(followUp)")
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(controller.hookListCount, 1)
+
+        await discoveryGate.release()
+        let request = try await waitForHookRequest(session)
+        try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+            session: session,
+            requestID: request.id,
+            decision: .continueWithoutHooks
+        )
+
+        guard await dispatchGate.waitUntilWaiting() else {
+            initialSend.cancel()
+            return XCTFail("Initial gated send did not reach turn/start")
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(controller.startedTexts, ["initial gated send"])
+        XCTAssertEqual(session.codexFallbackQueue.count, 1)
+
+        await dispatchGate.release()
+        let initialOutcome = await initialSend.value
+        XCTAssertEqual(initialOutcome, .sent)
+        try await waitUntil { controller.startCount == 2 }
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty)
+        XCTAssertEqual(session.runID, runID)
+        XCTAssertEqual(controller.hookListCount, 1)
+        XCTAssertEqual(session.codexHookGateGeneration, 1)
+        XCTAssertEqual(
+            controller.startedTexts,
+            ["initial gated send", "queued while discovery is active"]
+        )
+    }
+
     func testTerminalSuccessorFallbackWaitsForHookReviewBeforeSuccessorClaim() async throws {
         let image = AgentImageAttachment(
             source: .localFile(path: "/tmp/successor-hook-gate.png"),
@@ -361,7 +440,7 @@ final class CodexFallbackFIFOTests: XCTestCase {
     }
 
     func testDurablyQueuedMCPFallbackInterruptsWaiterOnlyAfterQueueAck() async throws {
-        let steerGate = FallbackStartGate()
+        let steerGate = FallbackAsyncGate()
         let controller = FallbackFIFOController(
             snapshot: .idle,
             activeTurnIDs: [],
@@ -510,7 +589,7 @@ final class CodexFallbackFIFOTests: XCTestCase {
     }
 
     func testPublishedSuccessorClaimsHeadBeforeProviderStartReturns() async throws {
-        let startGate = FallbackStartGate()
+        let startGate = FallbackAsyncGate()
         let nonSteerable = CodexTurnSteerError.activeTurnNotSteerable(
             turnKind: "compact",
             failure: requestFailure(message: "cannot steer a compact turn")
@@ -558,7 +637,7 @@ final class CodexFallbackFIFOTests: XCTestCase {
     }
 
     func testManualFallbackQueuedDuringDispatchingRebindsToObservedSuccessor() async throws {
-        let startGate = FallbackStartGate()
+        let startGate = FallbackAsyncGate()
         let nonSteerable = CodexTurnSteerError.activeTurnNotSteerable(
             turnKind: "compact",
             failure: requestFailure(message: "cannot steer a compact turn")
@@ -604,7 +683,7 @@ final class CodexFallbackFIFOTests: XCTestCase {
     }
 
     func testMCPFallbackQueuedWhileAwaitingLifecycleStartRebindsAndDrains() async throws {
-        let startGate = FallbackStartGate()
+        let startGate = FallbackAsyncGate()
         let nonSteerable = CodexTurnSteerError.activeTurnNotSteerable(
             turnKind: "compact",
             failure: requestFailure(message: "cannot steer a compact turn")
@@ -1228,11 +1307,13 @@ private final class FallbackFIFOController: CodexSessionControlling {
     private let activeTurnIDs: [String]
     private var snapshotResults: [Result<CodexNativeSessionController.ThreadSnapshot, Error>]
     private var steerResults: [Result<CodexTurnSteerReceipt, Error>]
-    private let startGate: FallbackStartGate?
-    private let steerGate: FallbackStartGate?
+    private let startGate: FallbackAsyncGate?
+    private let steerGate: FallbackAsyncGate?
     private let hookInventory: CodexHookInventory?
+    private let hookListGate: FallbackAsyncGate?
 
     private(set) var steerTurnIDs: [String] = []
+    private(set) var startedTexts: [String] = []
     private(set) var startCount = 0
     private(set) var hookListCount = 0
     private(set) var hasActiveThread = true
@@ -1242,9 +1323,10 @@ private final class FallbackFIFOController: CodexSessionControlling {
         activeTurnIDs: [String] = ["turn"],
         snapshotResults: [Result<CodexNativeSessionController.ThreadSnapshot, Error>] = [],
         steerResults: [Result<CodexTurnSteerReceipt, Error>],
-        startGate: FallbackStartGate? = nil,
-        steerGate: FallbackStartGate? = nil,
-        hookInventory: CodexHookInventory? = nil
+        startGate: FallbackAsyncGate? = nil,
+        steerGate: FallbackAsyncGate? = nil,
+        hookInventory: CodexHookInventory? = nil,
+        hookListGate: FallbackAsyncGate? = nil
     ) {
         self.snapshot = snapshot
         self.activeTurnIDs = activeTurnIDs
@@ -1253,6 +1335,7 @@ private final class FallbackFIFOController: CodexSessionControlling {
         self.startGate = startGate
         self.steerGate = steerGate
         self.hookInventory = hookInventory
+        self.hookListGate = hookListGate
     }
 
     var events: AsyncStream<CodexNativeSessionController.Event> {
@@ -1324,12 +1407,13 @@ private final class FallbackFIFOController: CodexSessionControlling {
     }
 
     func startUserTurn(
-        text _: String,
+        text: String,
         images _: [AgentImageAttachment],
         model _: String?,
         reasoningEffort _: String?,
         serviceTier _: String?
     ) async throws -> CodexTurnStartReceipt {
+        startedTexts.append(text)
         startCount += 1
         await startGate?.wait()
         return .init(provisionalSubmissionID: "submission-\(startCount)")
@@ -1356,6 +1440,7 @@ private final class FallbackFIFOController: CodexSessionControlling {
 
     func listHooksForCurrentWorkspace() async throws -> CodexHookInventory {
         hookListCount += 1
+        await hookListGate?.wait()
         if let hookInventory {
             return hookInventory
         }
@@ -1431,7 +1516,7 @@ private final class MismatchRetryNativeControllerRecorder: @unchecked Sendable {
     }
 }
 
-private actor FallbackStartGate {
+private actor FallbackAsyncGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
     private var waiting = false

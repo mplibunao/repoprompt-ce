@@ -20,6 +20,42 @@ final class CodexAgentModeCoordinatorHookApprovalTests: XCTestCase {
         XCTAssertNil(session.pendingCodexHookReview)
     }
 
+    func testConcurrentInitialGateEntrantsShareOneDiscoveryAndReview() async throws {
+        let discoveryGate = HookApprovalAsyncGate()
+        let controller = try HookApprovalFakeCodexController(
+            listResults: [.success(inventory(hooks: [hook(key: "alpha")]))],
+            listGate: discoveryGate
+        )
+        let (viewModel, session) = makeSession(controller: controller)
+
+        let firstGate = Task {
+            try await viewModel.test_codexCoordinator.test_gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            )
+        }
+        try await discoveryGate.waitUntilWaiting()
+        let secondGate = Task {
+            try await viewModel.test_codexCoordinator.test_gateFirstTurnForProjectHooks(
+                session: session,
+                controller: controller
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(controller.listCount, 1)
+        XCTAssertEqual(session.codexHookGateGeneration, 1)
+
+        await discoveryGate.release()
+        let request = try await waitForRequest(session)
+        XCTAssertEqual(session.pendingCodexHookReview?.id, request.id)
+        try await continueWithoutHooks(request, session: session, viewModel: viewModel)
+
+        try await firstGate.value
+        try await secondGate.value
+        XCTAssertEqual(controller.operations, ["list"])
+        XCTAssertNil(session.pendingCodexHookReview)
+    }
+
     func testContinueWithoutHooksBlocksFirstTurnThenReleasesBindingOnce() async throws {
         let controller = try HookApprovalFakeCodexController(
             listResults: [.success(inventory(hooks: [hook(key: "alpha")]))]
@@ -1190,6 +1226,7 @@ private final class HookApprovalFakeCodexController: CodexSessionControllerPassi
     var listResults: [Result<CodexHookInventory, Error>]
     var trustResults: [Result<CodexHookInventory, Error>]
     var startResults: [Result<CodexTurnStartReceipt, Error>]
+    private let listGate: HookApprovalAsyncGate?
     private let trustGate: HookApprovalAsyncGate?
     private(set) var operations: [String] = []
     private(set) var trustCalls: [TrustCall] = []
@@ -1204,11 +1241,13 @@ private final class HookApprovalFakeCodexController: CodexSessionControllerPassi
         listResults: [Result<CodexHookInventory, Error>],
         trustResults: [Result<CodexHookInventory, Error>] = [],
         startResults: [Result<CodexTurnStartReceipt, Error>] = [],
+        listGate: HookApprovalAsyncGate? = nil,
         trustGate: HookApprovalAsyncGate? = nil
     ) {
         self.listResults = listResults
         self.trustResults = trustResults
         self.startResults = startResults
+        self.listGate = listGate
         self.trustGate = trustGate
     }
 
@@ -1232,6 +1271,7 @@ private final class HookApprovalFakeCodexController: CodexSessionControllerPassi
 
     func listHooksForCurrentWorkspace() async throws -> CodexHookInventory {
         operations.append("list")
+        await listGate?.wait()
         guard !listResults.isEmpty else {
             throw CodexHookTrustError.malformedListResponse
         }

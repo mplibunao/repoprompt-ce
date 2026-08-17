@@ -126,8 +126,10 @@ final class AgentTabSession: ObservableObject {
     @Published var pendingApproval: AgentApprovalRequest? = nil
     @Published var pendingCodexHookReview: AgentCodexHookReviewRequest? = nil
     var codexHookReviewContinuation: CheckedContinuation<Void, Error>?
+    var codexHookGateCoalescedContinuations: [UUID: CheckedContinuation<Void, Error>] = [:]
     var codexHookGateGeneration: UInt64 = 0
     var codexHookGateAttemptToken: UUID?
+    var codexHookGateDispatchOwnerToken: UUID?
     var codexHookGateInventoryFingerprint: String?
     @Published var codexHookGateAudit: AgentCodexHookGateAudit?
     var codexHookGateBindingMemo: CodexHookGateBindingIdentity?
@@ -715,17 +717,49 @@ final class AgentTabSession: ObservableObject {
     }
 
     var hasActiveCodexHookGateOperation: Bool {
-        hasPendingCodexHookReviewWait || codexHookGateAttemptToken != nil
+        hasPendingCodexHookReviewWait
+            || codexHookGateAttemptToken != nil
+            || codexHookGateDispatchOwnerToken != nil
+            || !codexHookGateCoalescedContinuations.isEmpty
+    }
+
+    func finishCodexHookGateOwnerDispatch(
+        token: UUID,
+        succeeded: Bool
+    ) {
+        guard codexHookGateDispatchOwnerToken == token else { return }
+        codexHookGateDispatchOwnerToken = nil
+        codexHookGateActiveBinding = nil
+        let continuations = Array(codexHookGateCoalescedContinuations.values)
+        codexHookGateCoalescedContinuations.removeAll()
+        for continuation in continuations {
+            if succeeded {
+                continuation.resume()
+            } else {
+                continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    func cancelCodexHookGateCoalescedWaiter(_ waiterID: UUID) {
+        codexHookGateCoalescedContinuations.removeValue(forKey: waiterID)?
+            .resume(throwing: CancellationError())
     }
 
     @discardableResult
     func cancelCodexHookReview() -> Bool {
         let continuation = codexHookReviewContinuation
+        let coalescedContinuations = Array(codexHookGateCoalescedContinuations.values)
         guard hasActiveCodexHookGateOperation else { return false }
         codexHookReviewContinuation = nil
+        codexHookGateCoalescedContinuations.removeAll()
         pendingCodexHookReview = nil
         codexHookGateAttemptToken = nil
+        codexHookGateDispatchOwnerToken = nil
         continuation?.resume(throwing: CancellationError())
+        for continuation in coalescedContinuations {
+            continuation.resume(throwing: CancellationError())
+        }
         return true
     }
 
