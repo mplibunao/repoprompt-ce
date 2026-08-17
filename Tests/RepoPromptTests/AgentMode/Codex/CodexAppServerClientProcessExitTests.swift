@@ -439,6 +439,176 @@ final class CodexAppServerClientProcessExitTests: XCTestCase {
         await client.stop()
     }
 
+    func testSettlementDeadlineRetiresOwningGenerationBeforeFreshReconnect() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("requests.jsonl")
+        let executable = try makePersistentServer(
+            in: directory,
+            recordURL: recordURL,
+            ignoredMethods: ["config/batchWrite"]
+        )
+        let client = try await makeClient(executable: executable, launchDirectory: directory, timeout: 5)
+        addTeardownBlock { await client.stop() }
+        try await client.startIfNeeded()
+        let retiredGeneration = await client.debugTransportGeneration()
+        let retiredPIDValue = await client.debugProcessID()
+        let retiredPID = try XCTUnwrap(retiredPIDValue)
+        let deadlineGeneration = SettlementDeadlineGenerationRecorder()
+
+        do {
+            _ = try await client.requestWithSettlementDeadline(
+                method: "config/batchWrite",
+                params: ["edits": []],
+                deadline: 0.05,
+                onUnsettled: { generation in deadlineGeneration.record(generation) }
+            )
+            XCTFail("The ignored mutation must reach its settlement deadline")
+        } catch let CodexAppServerClient.ClientError.requestFailed(failure) {
+            XCTAssertTrue(failure.message.contains("timed out"))
+        } catch {
+            XCTFail("Settlement deadline was relabeled as \(error)")
+        }
+
+        XCTAssertEqual(deadlineGeneration.value, retiredGeneration)
+        let processIsRunning = await client.debugIsProcessRunning()
+        let processIDAfterSettlement = await client.debugProcessID()
+        let terminationReason = await client.debugLastTransportTerminationReason()
+        XCTAssertFalse(processIsRunning)
+        XCTAssertNil(processIDAfterSettlement)
+        XCTAssertEqual(
+            terminationReason,
+            .settlementDeadline(method: "config/batchWrite", generation: retiredGeneration)
+        )
+        var status: Int32 = 0
+        errno = 0
+        XCTAssertEqual(waitpid(retiredPID, &status, WNOHANG), -1)
+        XCTAssertEqual(errno, ECHILD)
+
+        try await client.startIfNeeded()
+        let replacementGeneration = await client.debugTransportGeneration()
+        XCTAssertGreaterThan(replacementGeneration, retiredGeneration)
+        _ = try await client.request(method: "hooks/list", params: ["cwds": [directory.path]], timeout: 1)
+        try await waitForRecordedMethod("hooks/list", at: recordURL)
+    }
+
+    func testSettlementDeadlineReportsCapturedGenerationAfterConcurrentTerminationClaim() async throws {
+        let timeoutDeliveryGate = OneShotAsyncHookGate()
+        let deadlineGeneration = SettlementDeadlineGenerationRecorder()
+        let client = CodexAppServerClient(
+            writeFrameHandler: { _, _ in },
+            livenessProbe: { _ in true },
+            faultInjection: .init(
+                requestTimeoutDelivery: { _, _ in
+                    await timeoutDeliveryGate.holdFirstInvocation()
+                }
+            )
+        )
+        addTeardownBlock { await client.stop() }
+        await client.debugInstallTestTransport()
+        let capturedGeneration = await client.debugTransportGeneration()
+
+        let requestTask = Task {
+            try await client.requestWithSettlementDeadline(
+                method: "config/batchWrite",
+                params: ["edits": []],
+                deadline: 0.01,
+                onUnsettled: { generation in deadlineGeneration.record(generation) }
+            )
+        }
+        try await waitUntil("timeout request removal", timeout: 2) {
+            await timeoutDeliveryGate.hasEntered
+        }
+
+        await client.debugBeginTransportFailure()
+        try await waitUntil("concurrent transport termination", timeout: 2) {
+            await !(client.debugIsProcessRunning())
+        }
+        await timeoutDeliveryGate.release()
+
+        do {
+            _ = try await requestTask.value
+            XCTFail("The mutation must preserve its timeout failure")
+        } catch let CodexAppServerClient.ClientError.requestFailed(failure) {
+            XCTAssertTrue(failure.message.contains("timed out"))
+        } catch {
+            XCTFail("Timeout was relabeled as \(error)")
+        }
+        XCTAssertEqual(deadlineGeneration.value, capturedGeneration)
+    }
+
+    func testSubscriptionCreationRejectsTransportDeathAfterStartupCompletion() async throws {
+        let subscriptionGate = OneShotAsyncHookGate()
+        let client = CodexAppServerClient(
+            livenessProbe: { _ in true },
+            faultInjection: .init(
+                subscriptionPreparation: {
+                    await subscriptionGate.holdFirstInvocation()
+                }
+            )
+        )
+        addTeardownBlock { await client.stop() }
+        await client.debugInstallTestTransport()
+        let retiredGeneration = await client.debugTransportGeneration()
+
+        let subscriptionTask = Task {
+            try await client.subscribeNotificationsWithTransportGeneration()
+        }
+        try await waitUntil("subscription preparation", timeout: 2) {
+            await subscriptionGate.hasEntered
+        }
+        await client.debugBeginTransportFailure()
+        try await waitUntil("transport death before subscription installation", timeout: 2) {
+            await !(client.debugIsProcessRunning())
+        }
+        await subscriptionGate.release()
+
+        do {
+            _ = try await subscriptionTask.value
+            XCTFail("A subscription must not be created without a healthy transport")
+        } catch CodexAppServerClient.ClientError.processNotRunning {
+            // Expected: the retired generation cannot acquire a subscription slot.
+        } catch {
+            XCTFail("Unexpected subscription error: \(error)")
+        }
+
+        await client.debugInstallTestTransport()
+        let replacementGeneration = await client.debugTransportGeneration()
+        let replacement = try await client.subscribeNotificationsWithTransportGeneration()
+        XCTAssertGreaterThan(replacementGeneration, retiredGeneration)
+        XCTAssertEqual(replacement.transportGeneration, replacementGeneration)
+    }
+
+    func testRecoveryInitializationUsesExplicitDeadlineAndReapsTimedOutGeneration() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("requests.jsonl")
+        let executable = try makePersistentServer(
+            in: directory,
+            recordURL: recordURL,
+            ignoredMethods: ["initialize"]
+        )
+        let client = try await makeClient(
+            executable: executable,
+            launchDirectory: directory,
+            timeout: 60
+        )
+        addTeardownBlock { await client.stop() }
+
+        do {
+            try await client.startIfNeeded(initializationTimeout: 0.05)
+            XCTFail("Ignored recovery initialize must reach its explicit deadline")
+        } catch let CodexAppServerClient.ClientError.requestFailed(failure) {
+            XCTAssertTrue(failure.message.contains("timed out"))
+        } catch {
+            XCTFail("Recovery initialize timeout was relabeled as \(error)")
+        }
+
+        await client.stop()
+        let processIsRunning = await client.debugIsProcessRunning()
+        let processID = await client.debugProcessID()
+        XCTAssertFalse(processIsRunning)
+        XCTAssertNil(processID)
+    }
+
     func testStaleObservedExitCannotMutateReplacementGeneration() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("requests.jsonl")
@@ -1028,6 +1198,46 @@ private actor CompletionFlag {
 
     func markComplete() {
         isComplete = true
+    }
+}
+
+private final class SettlementDeadlineGenerationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64?
+
+    func record(_ generation: UInt64) {
+        lock.lock()
+        self.generation = generation
+        lock.unlock()
+    }
+
+    var value: UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+}
+
+private actor OneShotAsyncHookGate {
+    private var didEnter = false
+    private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var hasEntered: Bool {
+        didEnter
+    }
+
+    func holdFirstInvocation() async {
+        guard !didEnter else { return }
+        didEnter = true
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

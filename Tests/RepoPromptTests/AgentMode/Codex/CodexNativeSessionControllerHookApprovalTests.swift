@@ -46,7 +46,24 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
             ("handler-only duplicate conflict", listResult(cwd: "/tmp/repo", hooks: [
                 hook(key: "a", hash: "h", status: "untrusted", handlerType: "command"),
                 hook(key: "a", hash: "h", status: "untrusted", handlerType: "prompt")
-            ]))
+            ])),
+            ("partially decoded data", ["data": [listEntry(cwd: "/tmp/repo", hooks: []), "malformed"]]),
+            ("oversized hook collection", listResult(
+                cwd: "/tmp/repo",
+                hooks: Array(repeating: hook(key: "a", hash: "h", status: "untrusted"), count: 4097)
+            )),
+            ("oversized hook field", listResult(cwd: "/tmp/repo", hooks: [
+                hook(key: String(repeating: "x", count: 256 * 1024 + 1), hash: "h", status: "untrusted")
+            ])),
+            ("oversized empty inventory warnings", listResult(
+                cwd: "/tmp/repo",
+                hooks: [],
+                warnings: Array(repeating: String(repeating: "w", count: 4097), count: 1024)
+            )),
+            ("oversized raw cwd", listResult(
+                cwd: String(repeating: "c", count: 256 * 1024 + 1),
+                hooks: []
+            ))
         ]
 
         for (name, result) in cases {
@@ -363,26 +380,28 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         let secondCallStarted = expectation(description: "second trust call started")
         let writeGate = HookApprovalAsyncGate()
         let firstRecorder = HookRequestRecorder(steps: [
-            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved))
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
         ])
         let secondRecorder = HookRequestRecorder(steps: [
             .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
             .init(method: "config/batchWrite", result: ["status": "ok"]),
             .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
         ])
-        let firstController = makeController(cwd: "/tmp/repo", requestTimeout: 0.01) { method, params, timeout in
-            if method == "config/batchWrite" {
-                firstRecorder.record(method: method, params: params, timeout: timeout)
-                firstWriteStarted.fulfill()
-                if let timeout {
-                    Task { await writeGate.wait() }
-                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    throw NSError(domain: "simulated-client-timeout", code: 1)
+        let firstController = makeController(
+            cwd: "/tmp/repo",
+            requestTimeout: 0.01,
+            faultInjection: .init(
+                settlementRecoveryExecutor: { await writeGate.wait() },
+                mutationExecutor: { method, params, deadline in
+                    firstRecorder.record(method: method, params: params, timeout: deadline)
+                    firstWriteStarted.fulfill()
+                    try await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+                    return .unsettled
                 }
-                await writeGate.wait()
-                return ["status": "ok"]
-            }
-            return try firstRecorder.handle(method: method, params: params, timeout: timeout)
+            )
+        ) { method, params, timeout in
+            try firstRecorder.handle(method: method, params: params, timeout: timeout)
         }
         let secondController = makeController(cwd: "/tmp/repo", requestTimeout: 0.01, recorder: secondRecorder)
         let candidates = [CodexHookTrustCandidate(key: "one", currentHash: "h1")]
@@ -395,7 +414,7 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         }
         await fulfillment(of: [firstWriteStarted], timeout: 2)
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertNil(firstRecorder.requests().last?.timeout)
+        XCTAssertEqual(firstRecorder.requests().last?.timeout, 0.01)
         firstTask.cancel()
         let secondTask = Task {
             secondCallStarted.fulfill()
@@ -420,8 +439,267 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
             }
         }
         _ = try await secondTask.value
-        XCTAssertEqual(firstRecorder.requests().map(\.method), ["hooks/list", "config/batchWrite"])
+        XCTAssertEqual(firstRecorder.requests().map(\.method), ["hooks/list", "config/batchWrite", "hooks/list"])
         XCTAssertEqual(secondRecorder.requests().map(\.method), ["hooks/list", "config/batchWrite", "hooks/list"])
+    }
+
+    func testInjectedSettlementRecoveryBalancesRetiredGenerationAndScopesSuppression() async throws {
+        let unresolved = [hook(key: "one", hash: "h1", status: "untrusted")]
+        let trusted = [hook(key: "one", hash: "h1", status: "trusted")]
+        let displayed = try inventory(hooks: unresolved)
+        let recorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
+        ])
+        let controller = makeController(
+            cwd: "/tmp/repo",
+            requestTimeout: 0.01,
+            faultInjection: .init(
+                settlementRecoveryExecutor: {},
+                mutationExecutor: { _, _, _ in .unsettled }
+            )
+        ) { method, params, timeout in
+            try recorder.handle(method: method, params: params, timeout: timeout)
+        }
+        controller.test_markHookTrustTransportRetiring(generation: 41)
+        XCTAssertTrue(controller.test_shouldSuppressHookTrustStreamEnd(transportGeneration: 41))
+        XCTAssertFalse(controller.test_shouldSuppressHookTrustStreamEnd(transportGeneration: 42))
+
+        _ = try await controller.trustHooksForCurrentWorkspace(
+            expectedCandidates: candidates(from: displayed),
+            expectedInventoryFingerprint: displayed.fingerprint
+        )
+
+        XCTAssertTrue(controller.test_shouldSuppressHookTrustStreamEnd(transportGeneration: 41))
+    }
+
+    func testRecoveryRelistUsesHardDeadlineAndReleasesGlobalTrustMutexOnExpiry() async throws {
+        let unresolved = [hook(key: "one", hash: "h1", status: "untrusted")]
+        let trusted = [hook(key: "one", hash: "h1", status: "trusted")]
+        let displayed = try inventory(hooks: unresolved)
+        let firstRecorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "hooks/list", error: HookApprovalTestError.injectedFailure)
+        ])
+        let firstController = makeController(
+            cwd: "/tmp/repo",
+            requestTimeout: nil,
+            faultInjection: .init(
+                settlementRecoveryExecutor: {},
+                mutationExecutor: { method, params, deadline in
+                    firstRecorder.record(method: method, params: params, timeout: deadline)
+                    return .unsettled
+                }
+            )
+        ) { method, params, timeout in
+            try firstRecorder.handle(method: method, params: params, timeout: timeout)
+        }
+
+        await assertTrustFailure(
+            controller: firstController,
+            candidates: candidates(from: displayed),
+            fingerprint: displayed.fingerprint
+        ) { error in
+            guard case .postWriteVerificationFailed(latest: nil) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(firstRecorder.requests().map(\.timeout), [30, 30, 30])
+
+        let secondRecorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "config/batchWrite", result: ["status": "ok"]),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
+        ])
+        _ = try await makeController(cwd: "/tmp/repo", requestTimeout: nil, recorder: secondRecorder)
+            .trustHooksForCurrentWorkspace(
+                expectedCandidates: candidates(from: displayed),
+                expectedInventoryFingerprint: displayed.fingerprint
+            )
+        XCTAssertEqual(secondRecorder.requests().map(\.timeout), [30, 30, 30])
+    }
+
+    func testAmbiguousTransportFailureHoldsGlobalMutexUntilProcessCleanupSettles() async throws {
+        let unresolved = [hook(key: "one", hash: "h1", status: "untrusted")]
+        let trusted = [hook(key: "one", hash: "h1", status: "trusted")]
+        let displayed = try inventory(hooks: unresolved)
+        let cleanupStarted = expectation(description: "transport cleanup started")
+        let cleanupGate = HookApprovalAsyncGate()
+        let client = CodexAppServerClient(
+            writeFrameHandler: { _, _ in },
+            livenessProbe: { _ in true },
+            faultInjection: .init(
+                transportTerminationCleanup: {
+                    cleanupStarted.fulfill()
+                    await cleanupGate.wait()
+                }
+            )
+        )
+        await client.debugInstallTestTransport()
+        let firstRecorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted)),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
+        ])
+        let recoveryRan = expectation(description: "ambiguous mutation recovery ran")
+        let firstController = makeController(
+            client: client,
+            cwd: "/tmp/repo",
+            faultInjection: .init(
+                settlementRecoveryExecutor: { recoveryRan.fulfill() },
+                mutationExecutor: { method, params, deadline in
+                    do {
+                        return try await .response(
+                            client.requestWithSettlementDeadline(
+                                method: method,
+                                params: params,
+                                deadline: deadline
+                            )
+                        )
+                    } catch {
+                        guard CodexAppServerClient.isTimeoutError(error)
+                            || CodexAppServerClient.isAmbiguousMutationError(error)
+                        else {
+                            throw error
+                        }
+                        return .unsettled
+                    }
+                }
+            )
+        ) { method, params, timeout in
+            try firstRecorder.handle(method: method, params: params, timeout: timeout)
+        }
+        let secondRecorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "config/batchWrite", result: ["status": "ok"]),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: trusted))
+        ])
+        let secondController = makeController(cwd: "/tmp/repo", recorder: secondRecorder)
+        let candidates = candidates(from: displayed)
+
+        let firstTask = Task {
+            try await firstController.trustHooksForCurrentWorkspace(
+                expectedCandidates: candidates,
+                expectedInventoryFingerprint: displayed.fingerprint
+            )
+        }
+        try await waitUntil("mutation request dispatch") {
+            await client.debugPendingRequestCount() == 1
+        }
+        await client.debugBeginTransportFailure()
+        await fulfillment(of: [cleanupStarted], timeout: 2)
+        let secondTask = Task {
+            try await secondController.trustHooksForCurrentWorkspace(
+                expectedCandidates: candidates,
+                expectedInventoryFingerprint: displayed.fingerprint
+            )
+        }
+        for _ in 0 ..< 50 {
+            await Task.yield()
+        }
+        XCTAssertTrue(secondRecorder.requests().isEmpty)
+
+        await cleanupGate.release()
+        _ = try await firstTask.value
+        await fulfillment(of: [recoveryRan], timeout: 2)
+        _ = try await firstController.listHooksForCurrentWorkspace()
+        _ = try await secondTask.value
+        XCTAssertEqual(firstRecorder.requests().map(\.method), ["hooks/list", "hooks/list", "hooks/list"])
+        XCTAssertEqual(secondRecorder.requests().map(\.method), ["hooks/list", "config/batchWrite", "hooks/list"])
+    }
+
+    func testAmbiguousBatchWriteRebuildsTransportBeforeOrdinaryControllerRequest() async throws {
+        let unresolved = [hook(key: "one", hash: "h1", status: "untrusted")]
+        let trusted = [hook(key: "one", hash: "h1", status: "trusted")]
+        let displayed = try inventory(hooks: unresolved)
+        let router = HookApprovalClientFrameRouter(hookListResults: [
+            listResult(cwd: "/tmp/repo", hooks: unresolved),
+            listResult(cwd: "/tmp/repo", hooks: trusted),
+            listResult(cwd: "/tmp/repo", hooks: trusted)
+        ])
+        let client = CodexAppServerClient(
+            writeFrameHandler: { _, frame in try router.handle(frame) },
+            livenessProbe: { _ in true }
+        )
+        router.attach(client)
+        await client.debugInstallTestTransport()
+        let retiredGeneration = await client.debugTransportGeneration()
+        var options = CodexNativeSessionController.Options.agentModeDefault()
+        options.requestTimeout = 120
+        let controller = CodexNativeSessionController(
+            client: client,
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePaths: .uniform("/tmp/repo"),
+            options: options,
+            hookTrustFaultInjection: .init(
+                settlementRecoveryExecutor: { await client.debugInstallTestTransport() }
+            )
+        )
+        try await controller.test_beginBindingSession()
+
+        _ = try await controller.trustHooksForCurrentWorkspace(
+            expectedCandidates: candidates(from: displayed),
+            expectedInventoryFingerprint: displayed.fingerprint
+        )
+        let replacementGeneration = await client.debugTransportGeneration()
+        XCTAssertGreaterThan(replacementGeneration, retiredGeneration)
+
+        _ = try await controller.listHooksForCurrentWorkspace()
+        let installedGenerations = controller.test_inboundStreamTransportGenerations()
+        XCTAssertEqual(installedGenerations.notifications, replacementGeneration)
+        XCTAssertEqual(installedGenerations.serverRequests, replacementGeneration)
+        XCTAssertTrue(controller.test_shouldSuppressHookTrustStreamEnd(transportGeneration: retiredGeneration))
+        XCTAssertFalse(controller.test_shouldSuppressHookTrustStreamEnd(transportGeneration: replacementGeneration))
+        XCTAssertEqual(router.seenMethods, ["hooks/list", "config/batchWrite", "hooks/list", "hooks/list"])
+        await controller.shutdown()
+        await client.stop()
+    }
+
+    func testConcurrentInboundStreamStartupInstallsOneOwnedSubscriptionPerKind() async throws {
+        let client = CodexAppServerClient(livenessProbe: { _ in true })
+        await client.debugInstallTestTransport()
+        let controller = makeController(client: client, cwd: "/tmp/repo") { _, _, _ in [:] }
+        try await controller.test_beginBindingSession()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 16 {
+                group.addTask { await controller.test_ensureInboundStreamsStarted() }
+            }
+        }
+
+        let notificationSubscriberCount = await client.debugNotificationSubscriberCount()
+        let serverRequestSubscriberCount = await client.debugServerRequestSubscriberCount()
+        XCTAssertEqual(notificationSubscriberCount, 1)
+        XCTAssertEqual(serverRequestSubscriberCount, 1)
+        await controller.shutdown()
+        await client.stop()
+    }
+
+    func testInboundStreamStartupReplacesSlotsFromStaleTransportGeneration() async throws {
+        let client = CodexAppServerClient(livenessProbe: { _ in true })
+        await client.debugInstallTestTransport()
+        let controller = makeController(client: client, cwd: "/tmp/repo") { _, _, _ in [:] }
+        try await controller.test_beginBindingSession()
+        await controller.test_ensureInboundStreamsStarted()
+        let retiredGeneration = await client.debugTransportGeneration()
+
+        await client.debugInstallTestTransport()
+        let replacementGeneration = await client.debugTransportGeneration()
+        XCTAssertGreaterThan(replacementGeneration, retiredGeneration)
+        await controller.test_ensureInboundStreamsStarted()
+
+        let installedGenerations = controller.test_inboundStreamTransportGenerations()
+        XCTAssertEqual(installedGenerations.notifications, replacementGeneration)
+        XCTAssertEqual(installedGenerations.serverRequests, replacementGeneration)
+        try await waitUntil("stale inbound subscriptions to retire") {
+            let notificationCount = await client.debugNotificationSubscriberCount()
+            let serverRequestCount = await client.debugServerRequestSubscriberCount()
+            return notificationCount == 1 && serverRequestCount == 1
+        }
+        await controller.shutdown()
+        await client.stop()
     }
 
     func testHookOperationMutexSerializesOverlappingOperationsOnOneController() async throws {
@@ -603,6 +881,29 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
                 return XCTFail("Unexpected error: \(error)")
             }
             XCTAssertEqual(latest?.hooks, [])
+        }
+    }
+
+    func testTrustedNonProjectHookCannotSubstituteForMissingProjectHook() async throws {
+        let unresolved = [hook(key: "one", hash: "h1", status: "untrusted")]
+        let displayed = try inventory(hooks: unresolved)
+        let recorder = HookRequestRecorder(steps: [
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: unresolved)),
+            .init(method: "config/batchWrite", result: ["status": "ok"]),
+            .init(method: "hooks/list", result: listResult(cwd: "/tmp/repo", hooks: [
+                hook(key: "one", hash: "h1", status: "trusted", source: "user")
+            ]))
+        ])
+
+        await assertTrustFailure(
+            controller: makeController(cwd: "/tmp/repo", recorder: recorder),
+            candidates: candidates(from: displayed),
+            fingerprint: displayed.fingerprint
+        ) { error in
+            guard case let .postWriteVerificationFailed(latest) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(latest?.projectHooks, [])
         }
     }
 
@@ -885,31 +1186,48 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         }
     }
 
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 2,
+        condition: () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTFail("Timed out waiting for \(description)")
+    }
+
     private func makeController(
+        client: CodexAppServerClient = CodexAppServerClient(),
         cwd: String?,
         requestTimeout: TimeInterval? = 120,
         recorder: HookRequestRecorder
     ) -> CodexNativeSessionController {
-        makeController(cwd: cwd, requestTimeout: requestTimeout) { method, params, timeout in
+        makeController(client: client, cwd: cwd, requestTimeout: requestTimeout) { method, params, timeout in
             try recorder.handle(method: method, params: params, timeout: timeout)
         }
     }
 
     private func makeController(
+        client: CodexAppServerClient = CodexAppServerClient(),
         cwd: String?,
         requestTimeout: TimeInterval? = 120,
+        faultInjection: CodexNativeSessionController.HookTrustFaultInjection = .init(),
         executor: @escaping @Sendable (String, [String: Any]?, TimeInterval?) async throws -> [String: Any]
     ) -> CodexNativeSessionController {
         var options = CodexNativeSessionController.Options.agentModeDefault()
         options.requestTimeout = requestTimeout
         return CodexNativeSessionController(
-            client: CodexAppServerClient(),
+            client: client,
             runID: UUID(),
             tabID: UUID(),
             windowID: 1,
             workspacePaths: .uniform(cwd),
             options: options,
-            requestExecutor: executor
+            requestExecutor: executor,
+            hookTrustFaultInjection: faultInjection
         )
     }
 
@@ -921,6 +1239,63 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
             return [:]
         }
         return values
+    }
+}
+
+private final class HookApprovalClientFrameRouter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var client: CodexAppServerClient?
+    private var hookListResults: [[String: Any]]
+    private var methods: [String] = []
+
+    init(hookListResults: [[String: Any]]) {
+        self.hookListResults = hookListResults
+    }
+
+    func attach(_ client: CodexAppServerClient) {
+        lock.withLock { self.client = client }
+    }
+
+    var seenMethods: [String] {
+        lock.withLock { methods }
+    }
+
+    func handle(_ frame: Data) throws {
+        guard let object = try JSONSerialization.jsonObject(with: frame) as? [String: Any],
+              let method = object["method"] as? String,
+              let requestID = object["id"]
+        else {
+            throw HookApprovalTestError.unexpectedRequest("invalid JSON-RPC frame")
+        }
+
+        let action = try lock.withLock { () -> (CodexAppServerClient, [String: Any]?) in
+            guard let client else {
+                throw HookApprovalTestError.unexpectedRequest("unattached client")
+            }
+            methods.append(method)
+            switch method {
+            case "hooks/list":
+                guard !hookListResults.isEmpty else {
+                    throw HookApprovalTestError.unexpectedRequest(method)
+                }
+                return (client, hookListResults.removeFirst())
+            case "config/batchWrite":
+                return (client, nil)
+            default:
+                throw HookApprovalTestError.unexpectedRequest(method)
+            }
+        }
+
+        if let result = action.1 {
+            let response = try JSONSerialization.data(withJSONObject: [
+                "jsonrpc": "2.0",
+                "id": requestID,
+                "result": result
+            ])
+            Task { await action.0.debugIngestRawStdoutLine(response) }
+        } else {
+            Task { await action.0.debugBeginTransportFailure() }
+        }
     }
 }
 
@@ -993,6 +1368,7 @@ private final class HookRequestRecorder: @unchecked Sendable {
 }
 
 private enum HookApprovalTestError: Error {
+    case injectedFailure
     case unexpectedRequest(String)
 }
 

@@ -930,8 +930,8 @@ struct AgentRunMCPToolService {
             await Task.yield()
             return await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM).toValue()
         }
-        if let parsed = cancelResult.objectValue.flatMap(snapshot(from:)) {
-            return decoratedRunValue(snapshot: parsed)
+        if let object = cancelResult.objectValue {
+            return try decoratedRunValue(snapshot: snapshot(from: object))
         }
         return cancelResult
     }
@@ -1316,7 +1316,7 @@ struct AgentRunMCPToolService {
                 if let waitScopeRegistration {
                     await endAgentRunWait(waitScopeRegistration.token, resolution.completion)
                 }
-                return await finalDecoratedSingleWaitValue(
+                return try await finalDecoratedSingleWaitValue(
                     from: resolution.rawValue,
                     sessionID: sessionID,
                     agentModeVM: agentModeVM,
@@ -1340,7 +1340,7 @@ struct AgentRunMCPToolService {
             let completion = completionBox.get() ?? singleWaitScopeCompletion(from: snapshot, sessionID: sessionID)
             await endAgentRunWait(waitScopeRegistration.token, completion)
         }
-        return await finalDecoratedSingleWaitValue(
+        return try await finalDecoratedSingleWaitValue(
             from: snapshot,
             sessionID: sessionID,
             agentModeVM: agentModeVM,
@@ -1420,12 +1420,12 @@ struct AgentRunMCPToolService {
         agentModeVM: AgentModeViewModel,
         workflow: AgentWorkflowDefinition?,
         initialDelivery: AgentModeViewModel.MCPInstructionDispatch?
-    ) async -> Value {
+    ) async throws -> Value {
         let resolvedSnapshot: AgentRunMCPSnapshot
         let wakeReason = rawValue.objectValue.flatMap(wakeReason(from:))
         let steeringMessage = rawValue.objectValue.flatMap(steeringMessage(from:))
-        if let parsedSnapshot = rawValue.objectValue.flatMap(snapshot(from:)) {
-            resolvedSnapshot = parsedSnapshot
+        if let object = rawValue.objectValue {
+            resolvedSnapshot = try snapshot(from: object)
         } else {
             resolvedSnapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
         }
@@ -1776,9 +1776,11 @@ struct AgentRunMCPToolService {
     }
 
     #if DEBUG
-        func test_decodeSnapshot(from value: Value) -> AgentRunMCPSnapshot? {
-            guard let object = value.objectValue else { return nil }
-            return snapshot(from: object)
+        func test_decodeSnapshot(from value: Value) throws -> AgentRunMCPSnapshot {
+            guard let object = value.objectValue else {
+                throw MCPError.internalError("Agent run snapshot was not an object.")
+            }
+            return try snapshot(from: object)
         }
 
         static func test_decoratedMultiWaitInterruptValue(
@@ -2174,25 +2176,23 @@ struct AgentRunMCPToolService {
         object["wait"]?.objectValue?["steering_message"]?.stringValue
     }
 
-    private func snapshot(from object: [String: Value]) -> AgentRunMCPSnapshot? {
+    private func snapshot(from object: [String: Value]) throws -> AgentRunMCPSnapshot {
         guard let sessionIDRaw = object["session_id"]?.stringValue,
               let sessionID = UUID(uuidString: sessionIDRaw),
               let statusRaw = object["status"]?.stringValue,
               let status = AgentRunMCPSnapshot.Status(rawValue: statusRaw)
         else {
-            return nil
+            throw MCPError.internalError("Agent run snapshot identity or status was malformed.")
         }
         let session = object["session"]?.objectValue
         let agent = object["agent"]?.objectValue
         let runID = object["run_id"]?.stringValue.flatMap(UUID.init(uuidString:))
         let interaction: AgentRunMCPSnapshot.Interaction?
         if let rawInteraction = object["interaction"] {
-            guard let interactionObject = rawInteraction.objectValue,
-                  let decodedInteraction = self.interaction(from: interactionObject)
-            else {
-                return nil
+            guard let interactionObject = rawInteraction.objectValue else {
+                throw MCPError.internalError("Agent run snapshot interaction was malformed.")
             }
-            interaction = decodedInteraction
+            interaction = try self.interaction(from: interactionObject)
         } else {
             interaction = nil
         }
@@ -2201,7 +2201,7 @@ struct AgentRunMCPToolService {
             guard let hookGateObject = rawHookGate.objectValue,
                   let decodedHookGate = self.hookGate(from: hookGateObject)
             else {
-                return nil
+                throw MCPError.internalError("Agent run snapshot hook gate was malformed.")
             }
             hookGate = decodedHookGate
         } else {
@@ -2211,8 +2211,8 @@ struct AgentRunMCPToolService {
         let tabID = (session?["context_id"] ?? session?["tab_id"])?.stringValue.flatMap(UUID.init(uuidString:))
         let parentSessionID = session?["parent_session_id"]?.stringValue.flatMap(UUID.init(uuidString:))
         let failureReason = object["failure_reason"]?.stringValue.flatMap(AgentRunMCPSnapshot.FailureReason.init(rawValue:))
-        let worktreeBindings = worktreeBindings(from: object)
-        let activeWorktreeMerges = activeWorktreeMerges(from: object)
+        let worktreeBindings = try worktreeBindings(from: object)
+        let activeWorktreeMerges = try activeWorktreeMerges(from: object)
         return AgentRunMCPSnapshot(
             sessionID: sessionID,
             runID: runID,
@@ -2262,9 +2262,12 @@ struct AgentRunMCPToolService {
         )
     }
 
-    private func activeWorktreeMerges(from object: [String: Value]) -> [AgentSessionWorktreeMergeSummary] {
-        guard let values = object["active_worktree_merges"]?.arrayValue else { return [] }
-        return values.compactMap { value in
+    private func activeWorktreeMerges(from object: [String: Value]) throws -> [AgentSessionWorktreeMergeSummary] {
+        guard let rawValue = object["active_worktree_merges"] else { return [] }
+        guard let values = rawValue.arrayValue else {
+            throw MCPError.internalError("Agent run snapshot active worktree merges were malformed.")
+        }
+        return try values.map { value in
             guard let object = value.objectValue,
                   let id = object["id"]?.stringValue,
                   let statusRaw = object["status"]?.stringValue,
@@ -2279,7 +2282,9 @@ struct AgentRunMCPToolService {
                   let targetPath = object["target_path"]?.stringValue,
                   let updatedAtRaw = object["updated_at"]?.stringValue,
                   let updatedAt = Self.timestampFormatter.date(from: updatedAtRaw)
-            else { return nil }
+            else {
+                throw MCPError.internalError("Agent run snapshot active worktree merge was malformed.")
+            }
             return AgentSessionWorktreeMergeSummary(
                 id: id,
                 status: status,
@@ -2299,11 +2304,18 @@ struct AgentRunMCPToolService {
         }
     }
 
-    private func worktreeBindings(from object: [String: Value]) -> [AgentRunMCPSnapshot.WorktreeBinding] {
-        if let values = object["worktree_bindings"]?.arrayValue {
-            return values.compactMap { value in
-                guard let object = value.objectValue else { return nil }
-                return worktreeBinding(from: object)
+    private func worktreeBindings(from object: [String: Value]) throws -> [AgentRunMCPSnapshot.WorktreeBinding] {
+        if let rawValue = object["worktree_bindings"] {
+            guard let values = rawValue.arrayValue else {
+                throw MCPError.internalError("Agent run snapshot worktree bindings were malformed.")
+            }
+            return try values.map { value in
+                guard let object = value.objectValue,
+                      let binding = worktreeBinding(from: object)
+                else {
+                    throw MCPError.internalError("Agent run snapshot worktree binding was malformed.")
+                }
+                return binding
             }
         }
         if let object = object["worktree"]?.objectValue,
@@ -2346,7 +2358,7 @@ struct AgentRunMCPToolService {
         )
     }
 
-    private func interaction(from object: [String: Value]) -> AgentRunMCPSnapshot.Interaction? {
+    private func interaction(from object: [String: Value]) throws -> AgentRunMCPSnapshot.Interaction {
         guard let idRaw = object["id"]?.stringValue,
               let id = UUID(uuidString: idRaw),
               let kindRaw = object["kind"]?.stringValue,
@@ -2354,53 +2366,113 @@ struct AgentRunMCPToolService {
               let responseTypeRaw = object["response_type"]?.stringValue,
               let responseType = AgentRunMCPSnapshot.Interaction.ResponseType(rawValue: responseTypeRaw)
         else {
-            return nil
+            throw MCPError.internalError("Agent run snapshot interaction identity was malformed.")
         }
-        let options = object["options"]?.arrayValue?.compactMap { option -> AgentRunMCPSnapshot.Interaction.Option? in
-            guard let optionObject = option.objectValue,
-                  let label = optionObject["label"]?.stringValue else { return nil }
-            return .init(label: label, description: optionObject["description"]?.stringValue)
-        } ?? []
-        let fields = object["fields"]?.arrayValue?.compactMap { field -> AgentRunMCPSnapshot.Interaction.Field? in
-            guard let fieldObject = field.objectValue,
-                  let id = fieldObject["id"]?.stringValue,
-                  let prompt = fieldObject["prompt"]?.stringValue else { return nil }
-            let fieldOptions = fieldObject["options"]?.arrayValue?.compactMap { option -> AgentRunMCPSnapshot.Interaction.Option? in
-                guard let optionObject = option.objectValue,
-                      let label = optionObject["label"]?.stringValue else { return nil }
-                return .init(label: label, description: optionObject["description"]?.stringValue)
-            } ?? []
-            return .init(
-                id: id,
-                header: fieldObject["header"]?.stringValue,
-                prompt: prompt,
-                context: fieldObject["context"]?.stringValue,
-                isSecret: fieldObject["is_secret"]?.boolValue == true,
-                allowsOther: fieldObject["allows_other"]?.boolValue == true,
-                allowsMultiple: fieldObject["allows_multiple"]?.boolValue,
-                allowsCustom: fieldObject["allows_custom"]?.boolValue,
-                emitAllowsOther: fieldObject.keys.contains("allows_other"),
-                options: fieldOptions
-            )
-        } ?? []
-        let details = object["details"]?.arrayValue?.compactMap { detail -> AgentRunMCPSnapshot.Interaction.Detail? in
-            guard let detailObject = detail.objectValue,
-                  let label = detailObject["label"]?.stringValue,
-                  let value = detailObject["value"]?.stringValue else { return nil }
-            return .init(label: label, value: value, isCode: detailObject["is_code"]?.boolValue == true)
-        } ?? []
-        return .init(
+        let options = try interactionOptions(from: object["options"])
+        let fields: [AgentRunMCPSnapshot.Interaction.Field]
+        if let rawFields = object["fields"] {
+            guard let fieldValues = rawFields.arrayValue else {
+                throw MCPError.internalError("Agent run snapshot interaction fields were malformed.")
+            }
+            fields = try fieldValues.map { field in
+                guard let fieldObject = field.objectValue,
+                      let id = fieldObject["id"]?.stringValue,
+                      let prompt = fieldObject["prompt"]?.stringValue
+                else {
+                    throw MCPError.internalError("Agent run snapshot interaction field was malformed.")
+                }
+                return try .init(
+                    id: id,
+                    header: optionalString(in: fieldObject, key: "header"),
+                    prompt: prompt,
+                    context: optionalString(in: fieldObject, key: "context"),
+                    isSecret: optionalBool(in: fieldObject, key: "is_secret") ?? false,
+                    allowsOther: optionalBool(in: fieldObject, key: "allows_other") ?? false,
+                    allowsMultiple: nullableBool(in: fieldObject, key: "allows_multiple"),
+                    allowsCustom: nullableBool(in: fieldObject, key: "allows_custom"),
+                    emitAllowsOther: fieldObject.keys.contains("allows_other"),
+                    options: interactionOptions(from: fieldObject["options"])
+                )
+            }
+        } else {
+            fields = []
+        }
+        let details: [AgentRunMCPSnapshot.Interaction.Detail]
+        if let rawDetails = object["details"] {
+            guard let detailValues = rawDetails.arrayValue else {
+                throw MCPError.internalError("Agent run snapshot interaction details were malformed.")
+            }
+            details = try detailValues.map { detail in
+                guard let detailObject = detail.objectValue,
+                      let label = detailObject["label"]?.stringValue,
+                      let value = detailObject["value"]?.stringValue
+                else {
+                    throw MCPError.internalError("Agent run snapshot interaction detail was malformed.")
+                }
+                return try .init(
+                    label: label,
+                    value: value,
+                    isCode: optionalBool(in: detailObject, key: "is_code") ?? false
+                )
+            }
+        } else {
+            details = []
+        }
+        return try .init(
             id: id,
             kind: kind,
             responseType: responseType,
-            title: object["title"]?.stringValue,
-            prompt: object["prompt"]?.stringValue,
-            context: object["context"]?.stringValue,
-            allowsMultiple: object["allows_multiple"]?.boolValue,
+            title: optionalString(in: object, key: "title"),
+            prompt: optionalString(in: object, key: "prompt"),
+            context: optionalString(in: object, key: "context"),
+            allowsMultiple: nullableBool(in: object, key: "allows_multiple"),
             options: options,
             fields: fields,
             details: details
         )
+    }
+
+    private func interactionOptions(
+        from value: Value?
+    ) throws -> [AgentRunMCPSnapshot.Interaction.Option] {
+        guard let value else { return [] }
+        guard let optionValues = value.arrayValue else {
+            throw MCPError.internalError("Agent run snapshot interaction options were malformed.")
+        }
+        return try optionValues.map { option in
+            guard let optionObject = option.objectValue,
+                  let label = optionObject["label"]?.stringValue
+            else {
+                throw MCPError.internalError("Agent run snapshot interaction option was malformed.")
+            }
+            return try .init(
+                label: label,
+                description: optionalString(in: optionObject, key: "description")
+            )
+        }
+    }
+
+    private func optionalString(in object: [String: Value], key: String) throws -> String? {
+        guard let value = object[key] else { return nil }
+        if case .null = value { return nil }
+        guard let string = value.stringValue else {
+            throw MCPError.internalError("Agent run snapshot interaction contained a malformed string field.")
+        }
+        return string
+    }
+
+    private func optionalBool(in object: [String: Value], key: String) throws -> Bool? {
+        guard let value = object[key] else { return nil }
+        guard let bool = value.boolValue else {
+            throw MCPError.internalError("Agent run snapshot interaction contained a malformed boolean field.")
+        }
+        return bool
+    }
+
+    private func nullableBool(in object: [String: Value], key: String) throws -> Bool? {
+        guard let value = object[key] else { return nil }
+        if case .null = value { return nil }
+        return try optionalBool(in: object, key: key)
     }
 
     private func collectCurrentSnapshots(sessionIDs: [UUID], agentModeVM: AgentModeViewModel) async -> [AgentRunMCPSnapshot] {

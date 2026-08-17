@@ -1,19 +1,42 @@
 import Foundation
 
+enum CodexHookTrustMutationSettlement {
+    case response([String: Any])
+    case unsettled
+}
+
+typealias CodexHookTrustMutationExecutor = @Sendable (
+    _ method: String,
+    _ params: [String: Any]?,
+    _ deadline: TimeInterval
+) async throws -> CodexHookTrustMutationSettlement
+
 struct CodexHookTrustService {
     typealias RequestExecutor = @Sendable (
         _ method: String,
         _ params: [String: Any]?,
         _ timeout: TimeInterval?
     ) async throws -> [String: Any]
+    enum RequestError: Error {
+        case unsupportedMethod
+    }
+
+    private enum ShieldedWriteOutcome {
+        case response([String: Any])
+        case recovered(CodexHookInventory)
+        case failure(Error)
+        case recoveryFailed
+    }
 
     let requestExecutor: RequestExecutor
+    let mutationExecutor: CodexHookTrustMutationExecutor
     let executionCWD: String?
     let timeout: TimeInterval?
+    let writeSettlementDeadline: TimeInterval
 
     func listHooks() async throws -> CodexHookInventory {
         try Task.checkCancellation()
-        return try await loadHookInventory()
+        return try await loadHookInventory(timeout: timeout)
     }
 
     func trustHooks(
@@ -21,7 +44,7 @@ struct CodexHookTrustService {
         expectedInventoryFingerprint: String
     ) async throws -> CodexHookInventory {
         try Task.checkCancellation()
-        let preflightInventory = try await loadHookInventory()
+        let preflightInventory = try await loadHookInventory(timeout: writeSettlementDeadline)
         guard preflightInventory.fingerprint == expectedInventoryFingerprint else {
             throw CodexHookTrustError.inventoryChanged(replacement: preflightInventory)
         }
@@ -31,7 +54,7 @@ struct CodexHookTrustService {
         )
 
         try Task.checkCancellation()
-        let writeOutcome = await performCancellationShieldedRequest(
+        let writeOutcome = await performCancellationShieldedWrite(
             method: "config/batchWrite",
             params: [
                 "edits": [[
@@ -46,10 +69,17 @@ struct CodexHookTrustService {
             throw CodexHookTrustError.cancelled
         }
 
-        let writeResult: [String: Any]
         switch writeOutcome {
-        case let .success(result):
-            writeResult = result
+        case let .response(writeResult):
+            guard writeResult["status"] as? String == "ok" else {
+                throw CodexHookTrustError.batchWriteFailed
+            }
+            return try await verifyCandidates(expectedCandidates)
+        case let .recovered(recoveredInventory):
+            guard recoveredInventory.verifies(expectedCandidates) else {
+                throw CodexHookTrustError.postWriteVerificationFailed(latest: recoveredInventory)
+            }
+            return recoveredInventory
         case let .failure(error):
             if error is CancellationError {
                 throw CodexHookTrustError.cancelled
@@ -58,12 +88,9 @@ struct CodexHookTrustService {
                 throw CodexHookTrustError.unsupportedMethod(method: "config/batchWrite")
             }
             throw CodexHookTrustError.batchWriteFailed
+        case .recoveryFailed:
+            throw CodexHookTrustError.postWriteVerificationFailed(latest: nil)
         }
-        guard writeResult["status"] as? String == "ok" else {
-            throw CodexHookTrustError.batchWriteFailed
-        }
-
-        return try await verifyCandidates(expectedCandidates)
     }
 
     private func validatedTrustValues(
@@ -87,7 +114,7 @@ struct CodexHookTrustService {
         try Task.checkCancellation()
         let verifiedInventory: CodexHookInventory
         do {
-            verifiedInventory = try await loadHookInventory()
+            verifiedInventory = try await loadHookInventory(timeout: writeSettlementDeadline)
         } catch is CancellationError {
             throw CodexHookTrustError.cancelled
         } catch let error as CodexHookTrustError {
@@ -108,7 +135,7 @@ struct CodexHookTrustService {
         return verifiedInventory
     }
 
-    private func loadHookInventory() async throws -> CodexHookInventory {
+    private func loadHookInventory(timeout: TimeInterval?) async throws -> CodexHookInventory {
         guard let executionCWD,
               !executionCWD.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -133,24 +160,34 @@ struct CodexHookTrustService {
         return try CodexHookInventory.decode(result: result, executionCWD: executionCWD)
     }
 
-    private func performCancellationShieldedRequest(
+    private func performCancellationShieldedWrite(
         method: String,
         params: [String: Any]?
-    ) async -> Result<[String: Any], Error> {
-        let requestTask = Task {
-            try await requestExecutor(method, params, nil)
+    ) async -> ShieldedWriteOutcome {
+        let requestTask = Task<ShieldedWriteOutcome, Never> {
+            do {
+                switch try await mutationExecutor(method, params, writeSettlementDeadline) {
+                case let .response(response):
+                    return ShieldedWriteOutcome.response(response)
+                case .unsettled:
+                    do {
+                        return try await ShieldedWriteOutcome.recovered(
+                            loadHookInventory(timeout: writeSettlementDeadline)
+                        )
+                    } catch {
+                        return ShieldedWriteOutcome.recoveryFailed
+                    }
+                }
+            } catch {
+                return ShieldedWriteOutcome.failure(error)
+            }
         }
-        do {
-            return try await .success(requestTask.value)
-        } catch {
-            return .failure(error)
-        }
+        return await requestTask.value
     }
 
     private static func isUnsupportedMethodError(_ error: Error) -> Bool {
-        guard case let CodexAppServerClient.ClientError.requestFailed(failure) = error else {
-            return false
-        }
-        return failure.code == -32601
+        guard let requestError = error as? RequestError else { return false }
+        guard case .unsupportedMethod = requestError else { return false }
+        return true
     }
 }

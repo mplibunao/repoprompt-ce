@@ -166,7 +166,11 @@ final class AgentRunMCPToolServiceRespondDiagnosticsTests: XCTestCase {
             _ = try await service.execute(args: args)
             XCTFail("Expected invalid params: \(label)")
         } catch let error as MCPError {
-            XCTAssertEqual(String(describing: error), "[-32602] Invalid params: \(expectedMessage)", label)
+            XCTAssertEqual(error.code, -32602, label)
+            guard case let .invalidParams(message) = error else {
+                return XCTFail("Expected MCPError.invalidParams for \(label), got code \(error.code)")
+            }
+            XCTAssertEqual(message, expectedMessage, label)
         } catch {
             XCTFail("Expected MCPError.invalidParams for \(label), got \(error)")
         }

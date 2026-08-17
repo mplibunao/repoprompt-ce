@@ -39,6 +39,64 @@ final class AgentRunMCPToolServiceHookApprovalTests: XCTestCase {
         }
     }
 
+    func testSnapshotRoundTripAcceptsSerializedNullOptionalInteractionFields() async throws {
+        let fixture = try await HookApprovalMCPFixture.make()
+        addTeardownBlock { @MainActor in await fixture.cleanup() }
+        let value = try await fixture.service.execute(args: [
+            "op": .string("poll"),
+            "session_id": .string(fixture.sessionID.uuidString)
+        ])
+        var snapshotObject = try XCTUnwrap(value.objectValue)
+        let interactionID = UUID()
+        let interaction = AgentRunMCPSnapshot.Interaction(
+            id: interactionID,
+            kind: .question,
+            responseType: .structured,
+            title: nil,
+            prompt: nil,
+            context: nil,
+            allowsMultiple: nil,
+            options: [.init(label: "Continue", description: nil)],
+            fields: [.init(
+                id: "choice",
+                header: nil,
+                prompt: "Choose",
+                context: nil,
+                isSecret: false,
+                allowsOther: false,
+                allowsMultiple: nil,
+                allowsCustom: nil,
+                options: [.init(label: "Field option", description: nil)]
+            )],
+            details: []
+        )
+        var serializedInteraction = interaction.asObject()
+        serializedInteraction["context"] = .null
+        serializedInteraction["allows_multiple"] = .null
+        var serializedField = try XCTUnwrap(
+            serializedInteraction["fields"]?.arrayValue?.first?.objectValue
+        )
+        serializedField["context"] = .null
+        serializedField["allows_multiple"] = .null
+        serializedField["allows_custom"] = .null
+        serializedInteraction["fields"] = .array([.object(serializedField)])
+        snapshotObject["interaction"] = .object(serializedInteraction)
+
+        let decoded = try fixture.service.test_decodeSnapshot(from: .object(snapshotObject))
+        let decodedInteraction = try XCTUnwrap(decoded.interaction)
+        XCTAssertEqual(decodedInteraction.id, interactionID)
+        XCTAssertNil(decodedInteraction.title)
+        XCTAssertNil(decodedInteraction.prompt)
+        XCTAssertNil(decodedInteraction.context)
+        XCTAssertNil(decodedInteraction.allowsMultiple)
+        XCTAssertNil(decodedInteraction.options.first?.description)
+        XCTAssertNil(decodedInteraction.fields.first?.header)
+        XCTAssertNil(decodedInteraction.fields.first?.context)
+        XCTAssertNil(decodedInteraction.fields.first?.allowsMultiple)
+        XCTAssertNil(decodedInteraction.fields.first?.allowsCustom)
+        XCTAssertNil(decodedInteraction.fields.first?.options.first?.description)
+    }
+
     func testAllPhasesMapOptionsAndStrictModeFiltersLive() async throws {
         let fixture = try await HookApprovalMCPFixture.make()
         addTeardownBlock { @MainActor in await fixture.cleanup() }
@@ -253,11 +311,37 @@ final class AgentRunMCPToolServiceHookApprovalTests: XCTestCase {
         var object = try XCTUnwrap(value.objectValue)
 
         object["interaction"] = .object([:])
-        XCTAssertNil(fixture.service.test_decodeSnapshot(from: .object(object)))
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
 
         object = try XCTUnwrap(value.objectValue)
         object["hook_gate"] = .string("malformed")
-        XCTAssertNil(fixture.service.test_decodeSnapshot(from: .object(object)))
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
+
+        object = try XCTUnwrap(value.objectValue)
+        var interaction = try XCTUnwrap(object["interaction"]?.objectValue)
+        interaction["fields"] = .array([
+            .object(["id": .string("hook_keys")])
+        ])
+        object["interaction"] = .object(interaction)
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
+
+        object = try XCTUnwrap(value.objectValue)
+        object["worktree_bindings"] = .array([.object([:])])
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
+
+        object = try XCTUnwrap(value.objectValue)
+        object["active_worktree_merges"] = .array([.object([:])])
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
     }
 
     func testHookGateCountsDecodeFailClosedAndAbsentSkippedMeansUnknown() async throws {
@@ -276,18 +360,22 @@ final class AgentRunMCPToolServiceHookApprovalTests: XCTestCase {
         ).asObject()
 
         object["hook_gate"] = .object(validHookGate)
-        let decoded = try XCTUnwrap(fixture.service.test_decodeSnapshot(from: .object(object)))
+        let decoded = try fixture.service.test_decodeSnapshot(from: .object(object))
         XCTAssertNil(decoded.hookGate?.skippedHookCount)
 
         var missingApprovedCount = validHookGate
         missingApprovedCount.removeValue(forKey: "approved_hook_count")
         object["hook_gate"] = .object(missingApprovedCount)
-        XCTAssertNil(fixture.service.test_decodeSnapshot(from: .object(object)))
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
 
         var malformedSkippedCount = validHookGate
         malformedSkippedCount["skipped_hook_count"] = .string("unknown")
         object["hook_gate"] = .object(malformedSkippedCount)
-        XCTAssertNil(fixture.service.test_decodeSnapshot(from: .object(object)))
+        XCTAssertThrowsError(try fixture.service.test_decodeSnapshot(from: .object(object))) { error in
+            self.assertInternalMCPError(error)
+        }
     }
 
     func testConcurrentAndDuplicateResponsesDoNotDoubleMutate() async throws {
@@ -343,6 +431,20 @@ final class AgentRunMCPToolServiceHookApprovalTests: XCTestCase {
             )
             XCTAssertTrue(message.localizedCaseInsensitiveContains("already in progress"), message)
             XCTAssertEqual(fixture.session.pendingCodexHookReview?.id, request.id)
+        }
+    }
+
+    private func assertInternalMCPError(
+        _ error: Error,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let mcpError = error as? MCPError else {
+            return XCTFail("Expected MCPError.internalError, got \(error)", file: file, line: line)
+        }
+        XCTAssertEqual(mcpError.code, -32603, file: file, line: line)
+        guard case .internalError = mcpError else {
+            return XCTFail("Expected MCPError.internalError, got code \(mcpError.code)", file: file, line: line)
         }
     }
 }
@@ -484,7 +586,12 @@ private final class HookApprovalMCPFixture {
             XCTFail("Expected invalid params")
             return ""
         } catch let error as MCPError {
-            return String(describing: error)
+            XCTAssertEqual(error.code, -32602)
+            guard case let .invalidParams(message) = error else {
+                XCTFail("Expected MCPError.invalidParams, got code \(error.code)")
+                return ""
+            }
+            return message ?? ""
         } catch {
             XCTFail("Expected MCPError.invalidParams, got \(error)")
             return ""

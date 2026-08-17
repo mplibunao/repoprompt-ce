@@ -1,6 +1,59 @@
 import Foundation
 import OSLog
 
+private actor CodexInboundStreamTaskStartGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class CodexHookTrustRecoveryRace: @unchecked Sendable {
+    enum Outcome {
+        case succeeded
+        case failed(Error)
+        case deadline
+    }
+
+    private let lock = NSLock()
+    private var outcome: Outcome?
+    private var continuation: CheckedContinuation<Outcome, Never>?
+
+    func wait() async -> Outcome {
+        lock.lock()
+        if let outcome {
+            lock.unlock()
+            return outcome
+        }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func resolve(_ outcome: Outcome) {
+        lock.lock()
+        guard self.outcome == nil else {
+            lock.unlock()
+            return
+        }
+        self.outcome = outcome
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: outcome)
+    }
+}
+
 struct CodexTurnStartReceipt: Equatable {
     let provisionalSubmissionID: String
 }
@@ -140,6 +193,12 @@ extension CodexSessionControlling {
 }
 
 final class CodexNativeSessionController {
+    private struct InboundStreamTaskRecord {
+        let token: UUID
+        let transportGeneration: UInt64
+        let task: Task<Void, Never>
+    }
+
     private static let logger = Logger(
         subsystem: "com.repoprompt.agents",
         category: "CodexNativeSessionController"
@@ -184,6 +243,7 @@ final class CodexNativeSessionController {
     private static let maxCanonicalCompletionTurnIDs = 128
     private static let maxPendingTurnFailures = 64
     private static let hookTrustWriteMutex = AsyncMutex()
+    private static let maxHookTrustWriteSettlementDeadline: TimeInterval = 30
     private static let computerUseMCPServerName = "computer-use"
     private static let runningOutputTruncationMarker = "\n...(output truncated)...\n"
     private static let removedSyntheticNotificationMethods: Set<String> = [
@@ -662,6 +722,19 @@ final class CodexNativeSessionController {
         case stopOnShutdown
     }
 
+    struct HookTrustFaultInjection {
+        let settlementRecoveryExecutor: (@Sendable () async throws -> Void)?
+        let mutationExecutor: CodexHookTrustMutationExecutor?
+
+        init(
+            settlementRecoveryExecutor: (@Sendable () async throws -> Void)? = nil,
+            mutationExecutor: CodexHookTrustMutationExecutor? = nil
+        ) {
+            self.settlementRecoveryExecutor = settlementRecoveryExecutor
+            self.mutationExecutor = mutationExecutor
+        }
+    }
+
     private enum ThreadMemoryMode: String {
         case enabled
         case disabled
@@ -683,6 +756,13 @@ final class CodexNativeSessionController {
     private enum InboundStreamKind {
         case notifications
         case serverRequests
+
+        var sourceDescription: String {
+            switch self {
+            case .notifications: "notifications"
+            case .serverRequests: "serverRequests"
+            }
+        }
     }
 
     private struct LifecycleAuthorityReconciliationLineage: Equatable {
@@ -711,6 +791,7 @@ final class CodexNativeSessionController {
     private let clientShutdownBehavior: ClientShutdownBehavior
     private let expectedMCPClientName: String?
     private let requestExecutor: (@Sendable (String, [String: Any]?, TimeInterval?) async throws -> [String: Any])?
+    private let hookTrustFaultInjection: HookTrustFaultInjection
     private let rawEventFileLoggingEnabled: Bool
     private var rawEventLogFileURL: URL?
     private var rawEventLogFileThreadID: String?
@@ -747,12 +828,24 @@ final class CodexNativeSessionController {
         threadID?.isEmpty == false
     }
 
-    private var notificationTask: Task<Void, Never>?
-    private var serverRequestTask: Task<Void, Never>?
+    private let inboundStreamInstallationMutex = AsyncMutex()
+    private let inboundStreamTaskLock = NSLock()
+    /// Protected by `inboundStreamTaskLock`.
+    private var notificationTask: InboundStreamTaskRecord?
+    /// Protected by `inboundStreamTaskLock`.
+    private var serverRequestTask: InboundStreamTaskRecord?
     private var eventsContinuation: AsyncStream<Event>.Continuation?
     private let eventsContinuationLock = NSLock()
     private let eventHandlingMutex = AsyncMutex()
     private let hookOperationMutex = AsyncMutex()
+    private let hookTrustSettlementStateLock = NSLock()
+    /// Protected by `hookTrustSettlementStateLock`. While set, inbound stream closure
+    /// belongs to a planned unsettled-write retirement and must not terminalize this
+    /// otherwise reusable controller.
+    private var retiringHookTrustGeneration: UInt64?
+    /// Protected by `hookTrustSettlementStateLock`. Generations are monotonic and
+    /// retained so a cancelled handler that exits after recovery remains suppressed.
+    private var retiredHookTrustTransportGenerations: Set<UInt64> = []
     private let eventsStream: AsyncStream<Event>
     /// Protected by `eventsContinuationLock`.
     private var lifecycleState: LifecycleState = .fresh
@@ -882,23 +975,239 @@ final class CodexNativeSessionController {
         CodexHookTrustService(
             requestExecutor: { [weak self] method, params, timeout in
                 guard let self else { throw CodexAppServerClient.ClientError.invalidResponse }
-                return try await performRequest(
+                do {
+                    if let requestExecutor {
+                        return try await requestExecutor(method, params, timeout)
+                    }
+                    try await ensureHookTrustTransportReady()
+                    return try await client.request(
+                        method: method,
+                        params: params,
+                        timeout: timeout,
+                        useDefaultTimeout: false
+                    )
+                } catch {
+                    throw mapHookTrustRequestError(error)
+                }
+            },
+            mutationExecutor: { [weak self] method, params, deadline in
+                guard let self else { throw CodexAppServerClient.ClientError.invalidResponse }
+                return try await executeHookTrustMutation(
                     method: method,
                     params: params,
-                    timeout: timeout,
-                    useDefaultTimeout: false
+                    deadline: deadline
                 )
             },
             executionCWD: workspacePaths.executionDirectory,
-            timeout: options.requestTimeout
+            timeout: options.requestTimeout,
+            writeSettlementDeadline: hookTrustWriteSettlementDeadline
         )
+    }
+
+    private func executeHookTrustMutation(
+        method: String,
+        params: [String: Any]?,
+        deadline: TimeInterval
+    ) async throws -> CodexHookTrustMutationSettlement {
+        let settlement: CodexHookTrustMutationSettlement
+        do {
+            if let mutationExecutor = hookTrustFaultInjection.mutationExecutor {
+                settlement = try await mutationExecutor(method, params, deadline)
+            } else if let requestExecutor {
+                settlement = try await .response(requestExecutor(method, params, deadline))
+            } else {
+                try await ensureHookTrustTransportReady()
+                settlement = try await .response(
+                    client.requestWithSettlementDeadline(
+                        method: method,
+                        params: params,
+                        deadline: deadline,
+                        onUnsettled: { [weak self] generation in
+                            self?.markHookTrustTransportRetiring(generation: generation)
+                        }
+                    )
+                )
+            }
+        } catch {
+            guard CodexAppServerClient.isTimeoutError(error)
+                || CodexAppServerClient.isAmbiguousMutationError(error)
+            else {
+                throw mapHookTrustRequestError(error)
+            }
+            settlement = .unsettled
+        }
+
+        if case .unsettled = settlement {
+            try await performHookTrustTransportRecovery()
+        }
+        return settlement
+    }
+
+    private func mapHookTrustRequestError(_ error: Error) -> Error {
+        guard case let CodexAppServerClient.ClientError.requestFailed(failure) = error,
+              failure.code == -32601
+        else {
+            return error
+        }
+        return CodexHookTrustService.RequestError.unsupportedMethod
+    }
+
+    private var hookTrustWriteSettlementDeadline: TimeInterval {
+        guard let configured = options.requestTimeout,
+              configured.isFinite,
+              configured > 0
+        else {
+            return Self.maxHookTrustWriteSettlementDeadline
+        }
+        return min(configured, Self.maxHookTrustWriteSettlementDeadline)
+    }
+
+    private func ensureHookTrustTransportReady() async throws {
+        let canUseController = withEventsStateLock {
+            lifecycleState == .binding || lifecycleState == .active
+        }
+        guard canUseController else {
+            throw CodexAppServerClient.ClientError.processNotRunning
+        }
+        try await client.startIfNeeded()
+        try await ensureInboundStreamsStartedForRecovery()
+    }
+
+    private func markHookTrustTransportRetiring(generation: UInt64) {
+        hookTrustSettlementStateLock.lock()
+        retiringHookTrustGeneration = generation
+        hookTrustSettlementStateLock.unlock()
+        recordRetiredHookTrustGeneration(generation)
+        Self.logger.error("Codex hook-trust mutation unsettled; retiring transport generation=\(generation, privacy: .public)")
+        #if DEBUG
+            AgentModePerfDiagnostics.event(
+                "provider.codex.hookTrust.transportRetiring",
+                tabID: tabID,
+                fields: [
+                    "settlementDeadlineSeconds": String(hookTrustWriteSettlementDeadline),
+                    "transportGeneration": String(generation)
+                ]
+            )
+        #endif
+    }
+
+    private func recordRetiredHookTrustGeneration(_ generation: UInt64) {
+        hookTrustSettlementStateLock.lock()
+        retiredHookTrustTransportGenerations.insert(generation)
+        if retiredHookTrustTransportGenerations.count > 32,
+           let oldest = retiredHookTrustTransportGenerations.min()
+        {
+            retiredHookTrustTransportGenerations.remove(oldest)
+        }
+        hookTrustSettlementStateLock.unlock()
+    }
+
+    private func shouldSuppressHookTrustStreamEnd(transportGeneration: UInt64?) -> Bool {
+        guard let transportGeneration else { return false }
+        hookTrustSettlementStateLock.lock()
+        defer { hookTrustSettlementStateLock.unlock() }
+        return retiredHookTrustTransportGenerations.contains(transportGeneration)
+    }
+
+    private func finishHookTrustTransportRecovery(succeeded: Bool) {
+        hookTrustSettlementStateLock.lock()
+        let generation = retiringHookTrustGeneration
+        retiringHookTrustGeneration = nil
+        hookTrustSettlementStateLock.unlock()
+        guard let generation else { return }
+        Self.logger.notice("Codex hook-trust settlement recovery finished; generation=\(generation, privacy: .public) succeeded=\(succeeded, privacy: .public)")
+        #if DEBUG
+            AgentModePerfDiagnostics.event(
+                "provider.codex.hookTrust.settlementRecoveryFinished",
+                tabID: tabID,
+                fields: [
+                    "succeeded": String(succeeded),
+                    "retiredTransportGeneration": String(generation)
+                ]
+            )
+        #endif
+    }
+
+    private func recoverHookTrustTransportAfterUnsettledWrite() async throws {
+        let retiredGeneration = currentRetiringHookTrustGeneration()
+        retireInboundStreamTasks(transportGeneration: retiredGeneration)
+
+        let race = CodexHookTrustRecoveryRace()
+        let recoveryTask = Task { [weak self] in
+            guard let self else {
+                race.resolve(.failed(CodexAppServerClient.ClientError.invalidResponse))
+                return
+            }
+            do {
+                try await client.startIfNeeded(
+                    initializationTimeout: hookTrustWriteSettlementDeadline
+                )
+                try await ensureInboundStreamsStartedForRecovery()
+                race.resolve(.succeeded)
+            } catch {
+                race.resolve(.failed(error))
+            }
+        }
+        let timeoutTask = Task.detached { [deadline = hookTrustWriteSettlementDeadline] in
+            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            race.resolve(.deadline)
+        }
+
+        switch await race.wait() {
+        case .succeeded:
+            timeoutTask.cancel()
+        case let .failed(error):
+            timeoutTask.cancel()
+            recoveryTask.cancel()
+            retireAllInboundStreamTasks()
+            await client.stop()
+            throw error
+        case .deadline:
+            recoveryTask.cancel()
+            retireAllInboundStreamTasks()
+            await client.stop()
+            throw CodexAppServerClient.ClientError.requestFailed(.init(
+                method: "initialize",
+                code: nil,
+                message: "Hook-trust transport recovery timed out after \(hookTrustWriteSettlementDeadline)s",
+                data: nil
+            ))
+        }
+    }
+
+    private func currentRetiringHookTrustGeneration() -> UInt64? {
+        hookTrustSettlementStateLock.lock()
+        defer { hookTrustSettlementStateLock.unlock() }
+        return retiringHookTrustGeneration
+    }
+
+    private func performHookTrustTransportRecovery() async throws {
+        var succeeded = false
+        defer { finishHookTrustTransportRecovery(succeeded: succeeded) }
+        if let settlementRecoveryExecutor = hookTrustFaultInjection.settlementRecoveryExecutor {
+            try await settlementRecoveryExecutor()
+        } else {
+            try await recoverHookTrustTransportAfterUnsettledWrite()
+        }
+        succeeded = true
     }
 
     func listHooksForCurrentWorkspace() async throws -> CodexHookInventory {
         let service = hookTrustService()
+        #if DEBUG
+            let lockWaitStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+        #endif
         do {
             return try await hookOperationMutex.withLock {
-                try await service.listHooks()
+                #if DEBUG
+                    AgentModePerfDiagnostics.durationEvent(
+                        "provider.codex.hookTrust.localLockWait",
+                        startMS: lockWaitStartMS,
+                        tabID: tabID
+                    )
+                #endif
+                return try await service.listHooks()
             }
         } catch is CancellationError {
             throw CodexHookTrustError.cancelled
@@ -914,10 +1223,28 @@ final class CodexNativeSessionController {
         expectedInventoryFingerprint: String
     ) async throws -> CodexHookInventory {
         let service = hookTrustService()
+        #if DEBUG
+            let localLockWaitStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+        #endif
         do {
             return try await hookOperationMutex.withLock {
-                try await Self.hookTrustWriteMutex.withLock {
-                    try await service.trustHooks(
+                #if DEBUG
+                    AgentModePerfDiagnostics.durationEvent(
+                        "provider.codex.hookTrust.localLockWait",
+                        startMS: localLockWaitStartMS,
+                        tabID: tabID
+                    )
+                    let globalLockWaitStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+                #endif
+                return try await Self.hookTrustWriteMutex.withLock {
+                    #if DEBUG
+                        AgentModePerfDiagnostics.durationEvent(
+                            "provider.codex.hookTrust.globalLockWait",
+                            startMS: globalLockWaitStartMS,
+                            tabID: tabID
+                        )
+                    #endif
+                    return try await service.trustHooks(
                         expectedCandidates: expectedCandidates,
                         expectedInventoryFingerprint: expectedInventoryFingerprint
                     )
@@ -955,7 +1282,8 @@ final class CodexNativeSessionController {
         options: Options? = nil,
         clientShutdownBehavior: ClientShutdownBehavior = .none,
         expectedMCPClientName: String? = nil,
-        requestExecutor: (@Sendable (String, [String: Any]?, TimeInterval?) async throws -> [String: Any])? = nil
+        requestExecutor: (@Sendable (String, [String: Any]?, TimeInterval?) async throws -> [String: Any])? = nil,
+        hookTrustFaultInjection: HookTrustFaultInjection = .init()
     ) {
         self.client = client
         self.runID = runID
@@ -966,6 +1294,7 @@ final class CodexNativeSessionController {
         self.clientShutdownBehavior = clientShutdownBehavior
         self.expectedMCPClientName = expectedMCPClientName
         self.requestExecutor = requestExecutor
+        self.hookTrustFaultInjection = hookTrustFaultInjection
         rawEventFileLoggingEnabled = Self.isRawEventFileLoggingEnabled()
         rawEventLogFileURL = nil
         rawEventLogFileThreadID = nil
@@ -978,6 +1307,10 @@ final class CodexNativeSessionController {
     }
 
     deinit {
+        inboundStreamTaskLock.lock()
+        let notificationTask = notificationTask?.task
+        let serverRequestTask = serverRequestTask?.task
+        inboundStreamTaskLock.unlock()
         notificationTask?.cancel()
         serverRequestTask?.cancel()
         finishEventsStreamIfNeeded()
@@ -2059,10 +2392,7 @@ final class CodexNativeSessionController {
                 lifecycleState = .shuttingDown
             }
         }
-        notificationTask?.cancel()
-        notificationTask = nil
-        serverRequestTask?.cancel()
-        serverRequestTask = nil
+        retireAllInboundStreamTasks()
         assistantEmittedTextByTurnID.removeAll(keepingCapacity: false)
         completedCanonicalItemScopes.removeAll(keepingCapacity: false)
         completedCanonicalItemScopeOrder.removeAll(keepingCapacity: false)
@@ -2394,8 +2724,14 @@ final class CodexNativeSessionController {
     }
 
     private func ensureInboundStreamsStarted() async {
-        await startNotificationStreamIfNeeded()
-        await startServerRequestStreamIfNeeded()
+        try? await ensureInboundStreamsStartedForRecovery()
+    }
+
+    private func ensureInboundStreamsStartedForRecovery() async throws {
+        try await inboundStreamInstallationMutex.withLock {
+            try await startNotificationStreamIfNeeded()
+            try await startServerRequestStreamIfNeeded()
+        }
     }
 
     private func shouldInstallInboundStreamTask() -> Bool {
@@ -2409,16 +2745,60 @@ final class CodexNativeSessionController {
         }
     }
 
-    private func startNotificationStreamIfNeeded() async {
-        guard notificationTask == nil else { return }
-        let stream = await client.subscribeNotifications()
+    private func startNotificationStreamIfNeeded() async throws {
+        try await installInboundStreamIfNeeded(
+            kind: .notifications,
+            acquireSubscription: { [client] in
+                let subscription = try await client.subscribeNotificationsWithTransportGeneration()
+                return (subscription.stream, subscription.transportGeneration)
+            },
+            handleElement: { controller, notification in
+                await controller.handleOrBufferNotification(notification)
+            }
+        )
+    }
+
+    private func startServerRequestStreamIfNeeded() async throws {
+        try await installInboundStreamIfNeeded(
+            kind: .serverRequests,
+            acquireSubscription: { [client] in
+                let subscription = try await client.subscribeServerRequestsWithTransportGeneration()
+                return (subscription.stream, subscription.transportGeneration)
+            },
+            handleElement: { controller, request in
+                await controller.handleOrBufferServerRequest(request)
+            }
+        )
+    }
+
+    private func installInboundStreamIfNeeded<Element>(
+        kind: InboundStreamKind,
+        acquireSubscription: () async throws -> (stream: AsyncStream<Element>, transportGeneration: UInt64),
+        handleElement: @escaping (CodexNativeSessionController, Element) async -> Void
+    ) async throws {
+        guard let healthyGeneration = await client.healthyTransportGeneration() else {
+            retireInboundStreamTask(kind: kind)
+            throw CodexAppServerClient.ClientError.processNotRunning
+        }
+        if reconcileInboundStreamTask(kind: kind, healthyGeneration: healthyGeneration) {
+            return
+        }
+
+        let subscription = try await acquireSubscription()
+        try Task.checkCancellation()
+        guard await client.healthyTransportGeneration() == subscription.transportGeneration else {
+            throw CodexAppServerClient.ClientError.processNotRunning
+        }
         guard shouldInstallInboundStreamTask() else { return }
-        notificationTask = Task { [weak self] in
-            for await notification in stream {
+        let token = UUID()
+        let startGate = CodexInboundStreamTaskStartGate()
+        let task = Task { [weak self] in
+            await startGate.wait()
+            for await element in subscription.stream {
                 guard let self else { return }
                 do {
                     try await eventHandlingMutex.withLock {
-                        await self.handleOrBufferNotification(notification)
+                        await handleElement(self, element)
                     }
                 } catch is CancellationError {
                     return
@@ -2427,30 +2807,108 @@ final class CodexNativeSessionController {
                 }
             }
             guard let self else { return }
-            await handleInboundStreamDidExit(kind: .notifications, source: "notifications")
+            await handleInboundStreamDidExit(
+                kind: kind,
+                source: kind.sourceDescription,
+                ownershipToken: token,
+                transportGeneration: subscription.transportGeneration
+            )
+        }
+        installInboundStreamTask(
+            .init(
+                token: token,
+                transportGeneration: subscription.transportGeneration,
+                task: task
+            ),
+            kind: kind
+        )
+        await startGate.open()
+    }
+
+    private func currentInboundStreamTask(kind: InboundStreamKind) -> InboundStreamTaskRecord? {
+        inboundStreamTaskLock.lock()
+        defer { inboundStreamTaskLock.unlock() }
+        switch kind {
+        case .notifications:
+            return notificationTask
+        case .serverRequests:
+            return serverRequestTask
         }
     }
 
-    private func startServerRequestStreamIfNeeded() async {
-        guard serverRequestTask == nil else { return }
-        let stream = await client.subscribeServerRequests()
-        guard shouldInstallInboundStreamTask() else { return }
-        serverRequestTask = Task { [weak self] in
-            for await request in stream {
-                guard let self else { return }
-                do {
-                    try await eventHandlingMutex.withLock {
-                        await self.handleOrBufferServerRequest(request)
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    return
-                }
+    private func reconcileInboundStreamTask(
+        kind: InboundStreamKind,
+        healthyGeneration: UInt64
+    ) -> Bool {
+        let existing = currentInboundStreamTask(kind: kind)
+        guard let existing else { return false }
+        guard existing.transportGeneration != healthyGeneration else { return true }
+        retireInboundStreamTask(kind: kind, ownershipToken: existing.token)
+        return false
+    }
+
+    private func retireInboundStreamTask(
+        kind: InboundStreamKind,
+        ownershipToken: UUID? = nil
+    ) {
+        let retired = inboundStreamTaskLock.withLock { () -> InboundStreamTaskRecord? in
+            switch kind {
+            case .notifications:
+                guard ownershipToken == nil || notificationTask?.token == ownershipToken else { return nil }
+                let record = notificationTask
+                notificationTask = nil
+                return record
+            case .serverRequests:
+                guard ownershipToken == nil || serverRequestTask?.token == ownershipToken else { return nil }
+                let record = serverRequestTask
+                serverRequestTask = nil
+                return record
             }
-            guard let self else { return }
-            await handleInboundStreamDidExit(kind: .serverRequests, source: "serverRequests")
         }
+        retired?.task.cancel()
+    }
+
+    private func installInboundStreamTask(
+        _ record: InboundStreamTaskRecord,
+        kind: InboundStreamKind
+    ) {
+        inboundStreamTaskLock.lock()
+        switch kind {
+        case .notifications:
+            notificationTask = record
+        case .serverRequests:
+            serverRequestTask = record
+        }
+        inboundStreamTaskLock.unlock()
+    }
+
+    private func retireInboundStreamTasks(transportGeneration: UInt64?) {
+        guard let transportGeneration else { return }
+        recordRetiredHookTrustGeneration(transportGeneration)
+
+        inboundStreamTaskLock.lock()
+        let notification = notificationTask?.transportGeneration == transportGeneration
+            ? notificationTask
+            : nil
+        let serverRequests = serverRequestTask?.transportGeneration == transportGeneration
+            ? serverRequestTask
+            : nil
+        if notification != nil { notificationTask = nil }
+        if serverRequests != nil { serverRequestTask = nil }
+        inboundStreamTaskLock.unlock()
+        notification?.task.cancel()
+        serverRequests?.task.cancel()
+    }
+
+    private func retireAllInboundStreamTasks() {
+        inboundStreamTaskLock.lock()
+        let notification = notificationTask
+        let serverRequests = serverRequestTask
+        notificationTask = nil
+        serverRequestTask = nil
+        inboundStreamTaskLock.unlock()
+        notification?.task.cancel()
+        serverRequests?.task.cancel()
     }
 
     private func beginBindingSession() {
@@ -2503,12 +2961,38 @@ final class CodexNativeSessionController {
         bufferedInbound.append(inbound)
     }
 
-    private func handleInboundStreamDidExit(kind: InboundStreamKind, source: String) async {
-        switch kind {
-        case .notifications:
-            notificationTask = nil
-        case .serverRequests:
-            serverRequestTask = nil
+    private func handleInboundStreamDidExit(
+        kind: InboundStreamKind,
+        source: String,
+        ownershipToken: UUID,
+        transportGeneration: UInt64?
+    ) async {
+        let stillOwnsSlot = inboundStreamTaskLock.withLock {
+            switch kind {
+            case .notifications:
+                let ownsSlot = notificationTask?.token == ownershipToken
+                if ownsSlot { notificationTask = nil }
+                return ownsSlot
+            case .serverRequests:
+                let ownsSlot = serverRequestTask?.token == ownershipToken
+                if ownsSlot { serverRequestTask = nil }
+                return ownsSlot
+            }
+        }
+        if shouldSuppressHookTrustStreamEnd(transportGeneration: transportGeneration) {
+            let generationDescription = transportGeneration.map(String.init) ?? "unknown"
+            Self.logCodexDebug(
+                "[CodexNativeController] suppressing planned hook-trust transport retirement "
+                    + "source=\(source) generation=\(generationDescription)"
+            )
+            return
+        }
+        guard stillOwnsSlot else {
+            Self.logCodexDebug(
+                "[CodexNativeController] ignoring superseded inbound stream ending "
+                    + "source=\(source)"
+            )
+            return
         }
         do {
             try await eventHandlingMutex.withLock {
@@ -3714,6 +4198,24 @@ final class CodexNativeSessionController {
     }
 
     #if DEBUG
+        func test_markHookTrustTransportRetiring(generation: UInt64) {
+            markHookTrustTransportRetiring(generation: generation)
+        }
+
+        func test_shouldSuppressHookTrustStreamEnd(transportGeneration: UInt64?) -> Bool {
+            shouldSuppressHookTrustStreamEnd(transportGeneration: transportGeneration)
+        }
+
+        func test_ensureInboundStreamsStarted() async {
+            await ensureInboundStreamsStarted()
+        }
+
+        func test_inboundStreamTransportGenerations() -> (notifications: UInt64?, serverRequests: UInt64?) {
+            inboundStreamTaskLock.withLock {
+                (notificationTask?.transportGeneration, serverRequestTask?.transportGeneration)
+            }
+        }
+
         func test_installThreadState(
             threadID: String,
             authoritativeTurnID: String? = nil,

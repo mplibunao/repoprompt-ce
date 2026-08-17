@@ -130,6 +130,11 @@ struct CodexHookMetadata: Hashable {
 }
 
 struct CodexHookInventory: Hashable {
+    private static let maxHookCount = 4096
+    private static let maxDiagnosticCount = 1024
+    private static let maxFieldUTF8Bytes = 256 * 1024
+    private static let maxInventoryUTF8Bytes = 4 * 1024 * 1024
+
     let executionCWD: String
     let hooks: [CodexHookMetadata]
     let warnings: [String]
@@ -210,7 +215,7 @@ struct CodexHookInventory: Hashable {
 
     func verifies(_ candidates: [CodexHookTrustCandidate]) -> Bool {
         candidates.allSatisfy { candidate in
-            hooks.contains {
+            projectHooks.contains {
                 $0.selectionIdentity == candidate.selectionIdentity && $0.trustStatus.isResolved
             }
         }
@@ -227,18 +232,20 @@ struct CodexHookInventory: Hashable {
     }
 
     static func decode(result: [String: Any], executionCWD: String) throws -> Self {
-        guard let entries = result["data"] as? [[String: Any]] else {
+        guard executionCWD.utf8.count <= maxFieldUTF8Bytes,
+              let entries = result["data"] as? [[String: Any]],
+              entries.count == 1,
+              let entry = entries.first,
+              let rawEntryCWD = entry["cwd"] as? String,
+              !rawEntryCWD.isBlank,
+              rawEntryCWD.utf8.count <= maxFieldUTF8Bytes
+        else {
             throw CodexHookTrustError.malformedListResponse
         }
 
         let standardizedExpectedCWD = standardizedPath(executionCWD)
-        let matchingEntries = try entries.filter { entry in
-            guard let cwd = entry["cwd"] as? String, !cwd.isBlank else {
-                throw CodexHookTrustError.malformedListResponse
-            }
-            return standardizedPath(cwd) == standardizedExpectedCWD
-        }
-        guard matchingEntries.count == 1, entries.count == 1, let entry = matchingEntries.first,
+        guard !standardizedExpectedCWD.isBlank,
+              standardizedPath(rawEntryCWD) == standardizedExpectedCWD,
               let rawHooks = entry["hooks"] as? [[String: Any]],
               let errors = entry["errors"] as? [String],
               let warnings = entry["warnings"] as? [String]
@@ -246,15 +253,60 @@ struct CodexHookInventory: Hashable {
             throw CodexHookTrustError.malformedListResponse
         }
 
+        guard rawHooks.count <= maxHookCount,
+              errors.count <= maxDiagnosticCount,
+              warnings.count <= maxDiagnosticCount
+        else {
+            throw CodexHookTrustError.malformedListResponse
+        }
+
+        var inventoryUTF8Bytes = 0
+        try addInventoryUTF8Bytes(rawEntryCWD, total: &inventoryUTF8Bytes)
+        for error in errors {
+            try addInventoryUTF8Bytes(error, total: &inventoryUTF8Bytes)
+        }
+        for warning in warnings {
+            try addInventoryUTF8Bytes(warning, total: &inventoryUTF8Bytes)
+        }
+
         guard errors.isEmpty else {
             throw CodexHookTrustError.discoveryFailed(cwdErrors: errors)
         }
         let hooks = try rawHooks.map(Self.decodeHook)
+        for hook in hooks {
+            var fields = [
+                hook.eventName,
+                hook.source,
+                hook.sourcePath,
+                hook.key,
+                hook.currentHash,
+                hook.handlerType
+            ]
+            if let commandOrHandler = hook.commandOrHandler {
+                fields.append(commandOrHandler)
+            }
+            for field in fields {
+                try addInventoryUTF8Bytes(field, total: &inventoryUTF8Bytes)
+            }
+        }
         return try Self(
             executionCWD: standardizedExpectedCWD,
             hooks: hooks,
             warnings: warnings
         )
+    }
+
+    private static func addInventoryUTF8Bytes(
+        _ value: String,
+        total: inout Int
+    ) throws {
+        let count = value.utf8.count
+        guard count <= maxFieldUTF8Bytes,
+              total <= maxInventoryUTF8Bytes - count
+        else {
+            throw CodexHookTrustError.malformedListResponse
+        }
+        total += count
     }
 
     private static func decodeHook(_ raw: [String: Any]) throws -> CodexHookMetadata {
