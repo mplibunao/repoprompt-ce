@@ -685,6 +685,36 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             && binding == codexHookGateBinding(for: session, controller: controller)
     }
 
+    private func synchronizeCodexThreadReferenceAfterHookGate(
+        session: AgentTabSession,
+        controller: any CodexSessionControlling
+    ) {
+        guard let currentController = session.codexController,
+              Self.sameCodexControllerInstance(currentController, controller),
+              let reference = controller.currentSessionReference
+        else {
+            return
+        }
+        let conversationID = reference.conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !conversationID.isEmpty,
+              conversationID != session.codexConversationID
+              || reference.rolloutPath != session.codexRolloutPath
+        else {
+            return
+        }
+        session.codexConversationID = conversationID
+        session.codexRolloutPath = reference.rolloutPath
+        session.providerCleanupHandle = ProviderConversationCleanupHandle(
+            provider: AgentProviderKind.codexExec.rawValue,
+            conversationID: conversationID,
+            rolloutPath: reference.rolloutPath
+        )
+        session.codexModel = reference.model
+        session.codexReasoningEffort = reference.reasoningEffort
+        session.isDirty = true
+        viewModel?.scheduleSave(for: session.tabID)
+    }
+
     private func publishCodexHookGateState(for session: AgentTabSession) {
         viewModel?.reconcileInteractiveRunState(session)
         updateCodexStallWatchdogState(for: session)
@@ -801,6 +831,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 throw AgentCodexHookReviewResolutionError.staleController
             }
             try await suspendForCodexHookReview(session: session, binding: binding)
+            synchronizeCodexThreadReferenceAfterHookGate(
+                session: session,
+                controller: controller
+            )
             return
         }
 
@@ -827,6 +861,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 session.codexHookGateActiveBinding = nil
                 session.codexHookGateInventoryFingerprint = nil
                 session.codexHookGateBindingMemo = binding
+                synchronizeCodexThreadReferenceAfterHookGate(
+                    session: session,
+                    controller: controller
+                )
                 return
             }
             session.codexHookGateAttemptToken = nil
@@ -861,6 +899,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
 
         publishCodexHookGateState(for: session)
         try await suspendForCodexHookReview(session: session, binding: binding)
+        synchronizeCodexThreadReferenceAfterHookGate(
+            session: session,
+            controller: controller
+        )
     }
 
     func resolveCodexHookReview(

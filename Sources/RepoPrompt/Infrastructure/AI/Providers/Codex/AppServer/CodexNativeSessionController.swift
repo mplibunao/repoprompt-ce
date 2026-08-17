@@ -52,6 +52,23 @@ private final class CodexHookTrustRecoveryRace: @unchecked Sendable {
         lock.unlock()
         continuation?.resume(returning: outcome)
     }
+
+    @discardableResult
+    func resolveSucceeded(commit: () -> Void) -> Bool {
+        lock.lock()
+        guard outcome == nil else {
+            lock.unlock()
+            return false
+        }
+        commit()
+        let resolved = Outcome.succeeded
+        outcome = resolved
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: resolved)
+        return true
+    }
 }
 
 struct CodexTurnStartReceipt: Equatable {
@@ -106,6 +123,7 @@ enum CodexTurnInterruptError: Error, LocalizedError, Equatable {
 
 protocol CodexSessionControlling: AnyObject {
     var hasActiveThread: Bool { get }
+    var currentSessionReference: CodexNativeSessionController.SessionRef? { get }
     var events: AsyncStream<CodexNativeSessionController.Event> { get }
 
     func ensureEventsStreamReady()
@@ -172,6 +190,10 @@ protocol CodexSessionControlling: AnyObject {
 }
 
 extension CodexSessionControlling {
+    var currentSessionReference: CodexNativeSessionController.SessionRef? {
+        nil
+    }
+
     func outstandingBlockingNativeToolCallNames() async -> [String] {
         []
     }
@@ -725,13 +747,16 @@ final class CodexNativeSessionController {
     struct HookTrustFaultInjection {
         let settlementRecoveryExecutor: (@Sendable () async throws -> Void)?
         let mutationExecutor: CodexHookTrustMutationExecutor?
+        let threadRebindCommitPreparation: (@Sendable () async -> Void)?
 
         init(
             settlementRecoveryExecutor: (@Sendable () async throws -> Void)? = nil,
-            mutationExecutor: CodexHookTrustMutationExecutor? = nil
+            mutationExecutor: CodexHookTrustMutationExecutor? = nil,
+            threadRebindCommitPreparation: (@Sendable () async -> Void)? = nil
         ) {
             self.settlementRecoveryExecutor = settlementRecoveryExecutor
             self.mutationExecutor = mutationExecutor
+            self.threadRebindCommitPreparation = threadRebindCommitPreparation
         }
     }
 
@@ -780,6 +805,14 @@ final class CodexNativeSessionController {
         let kind: LifecycleAuthorityObservationKind
     }
 
+    private struct ThreadBindingContext {
+        let existing: SessionRef?
+        let baseInstructions: String
+        let model: String?
+        let reasoningEffort: String?
+        let serviceTier: String?
+    }
+
     private let client: CodexAppServerClient
     private let runID: UUID
     private let tabID: UUID
@@ -799,6 +832,8 @@ final class CodexNativeSessionController {
 
     private var threadID: String?
     private var threadPath: String?
+    private var activeSessionReference: SessionRef?
+    private var threadBindingContext: ThreadBindingContext?
     private var routingCurrentTurnID: String?
     private var authoritativeLifecycleTurnID: String?
     private var activeTurnIDs: Set<String> = []
@@ -826,6 +861,10 @@ final class CodexNativeSessionController {
 
     var hasActiveThread: Bool {
         threadID?.isEmpty == false
+    }
+
+    var currentSessionReference: SessionRef? {
+        activeSessionReference
     }
 
     private let inboundStreamInstallationMutex = AsyncMutex()
@@ -1128,6 +1167,100 @@ final class CodexNativeSessionController {
         #endif
     }
 
+    private static func isMissingFreshThreadResumeError(
+        _ error: Error,
+        threadID: String
+    ) -> Bool {
+        guard case let CodexAppServerClient.ClientError.requestFailed(failure) = error,
+              failure.method == "thread/resume",
+              failure.code == -32600
+        else {
+            return false
+        }
+        let normalized = failure.message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let normalizedThreadID = threadID.lowercased()
+        return normalized == "no rollout found for thread id \(normalizedThreadID)"
+            || normalized == "thread not found: \(normalizedThreadID)"
+            || normalized == "thread not loaded: \(normalizedThreadID)"
+    }
+
+    private func prepareHookTrustThreadBindingRestoration() async throws -> ThreadSnapshot {
+        guard let binding = threadBindingContext,
+              let priorReference = activeSessionReference,
+              let priorThreadID = Self.nonEmptyString(priorReference.conversationID)
+        else {
+            throw CodexAppServerClient.ClientError.invalidResponse
+        }
+
+        let skillExtraRoots = options.skillExtraRootsProvider().map(\.standardizedFileURL.path)
+        if !skillExtraRoots.isEmpty {
+            _ = try await performRequest(
+                method: "skills/extraRoots/set",
+                params: ["extraRoots": skillExtraRoots],
+                timeout: hookTrustWriteSettlementDeadline
+            )
+        }
+
+        if binding.existing != nil {
+            let desiredMemoryMode: ThreadMemoryMode? = await MainActor.run {
+                guard let memoriesEnabledProvider = options.memoriesEnabledProvider else { return nil }
+                return memoriesEnabledProvider() ? .enabled : .disabled
+            }
+            if let desiredMemoryMode {
+                try await setThreadMemoryMode(
+                    desiredMemoryMode,
+                    threadID: priorThreadID,
+                    timeout: hookTrustWriteSettlementDeadline
+                )
+            }
+        }
+
+        let configOverrides = await options.configOverridesProvider()
+        let result: [String: Any]
+        var startedFreshReplacement = false
+        do {
+            result = try await requestThreadBinding(
+                resumeThreadID: priorThreadID,
+                existing: priorReference,
+                baseInstructions: binding.baseInstructions,
+                model: binding.model,
+                serviceTier: binding.serviceTier,
+                configOverrides: configOverrides,
+                timeout: hookTrustWriteSettlementDeadline
+            )
+        } catch {
+            guard binding.existing == nil,
+                  Self.isMissingFreshThreadResumeError(error, threadID: priorThreadID)
+            else {
+                throw error
+            }
+            startedFreshReplacement = true
+            Self.logger.notice("Codex hook-trust recovery could not resume the pre-turn thread; starting a fresh replacement thread")
+            result = try await requestThreadBinding(
+                resumeThreadID: nil,
+                existing: nil,
+                baseInstructions: binding.baseInstructions,
+                model: binding.model,
+                serviceTier: binding.serviceTier,
+                configOverrides: configOverrides,
+                timeout: hookTrustWriteSettlementDeadline
+            )
+        }
+
+        let snapshot = Self.parseThreadSnapshot(from: result, fallbackEffort: binding.reasoningEffort)
+        guard Self.nonEmptyString(snapshot.conversationID) != nil else {
+            throw CodexAppServerClient.ClientError.invalidResponse
+        }
+        if !startedFreshReplacement,
+           snapshot.conversationID != priorThreadID
+        {
+            throw CodexAppServerClient.ClientError.invalidResponse
+        }
+        return snapshot
+    }
+
     private func recoverHookTrustTransportAfterUnsettledWrite() async throws {
         let retiredGeneration = currentRetiringHookTrustGeneration()
         retireInboundStreamTasks(transportGeneration: retiredGeneration)
@@ -1143,7 +1276,16 @@ final class CodexNativeSessionController {
                     initializationTimeout: hookTrustWriteSettlementDeadline
                 )
                 try await ensureInboundStreamsStartedForRecovery()
-                race.resolve(.succeeded)
+                let snapshot = try await prepareHookTrustThreadBindingRestoration()
+                await hookTrustFaultInjection.threadRebindCommitPreparation?()
+                let didCommit = try await eventHandlingMutex.withLock {
+                    race.resolveSucceeded {
+                        restoreThreadSnapshot(snapshot)
+                    }
+                }
+                if didCommit {
+                    recordAppliedThreadSnapshot(snapshot)
+                }
             } catch {
                 race.resolve(.failed(error))
             }
@@ -1563,6 +1705,74 @@ final class CodexNativeSessionController {
         appendRawEventLogRecord(record)
     }
 
+    private func requestThreadBinding(
+        resumeThreadID: String?,
+        existing: SessionRef?,
+        baseInstructions: String,
+        model: String?,
+        serviceTier: String?,
+        configOverrides: [String: Any],
+        timeout: TimeInterval?
+    ) async throws -> [String: Any] {
+        if let resumeThreadID {
+            var params: [String: Any] = ["threadId": resumeThreadID]
+            if let rolloutPath = existing?.rolloutPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !rolloutPath.isEmpty
+            {
+                params["path"] = rolloutPath
+            }
+            if let model {
+                params["model"] = model
+            }
+            Self.addServiceTier(serviceTier, to: &params)
+            if let executionDirectory = workspacePaths.executionDirectory {
+                params["cwd"] = executionDirectory
+            }
+            if !configOverrides.isEmpty {
+                params["config"] = configOverrides
+            }
+            // baseInstructions is intentionally omitted on thread/resume: the app-server
+            // preserves original instructions across resume (confirmed by Codex protocol
+            // tests: resume_switches_models_preserves_base_instructions). Resending them
+            // wastes ~5-6k tokens on every reconnect for no benefit.
+            return try await requestWithCompatibleAppServerRequestValueStyle(
+                method: "thread/resume",
+                timeout: timeout
+            ) { requestValueStyle in
+                var requestParams = params
+                requestParams["approvalPolicy"] = options.approvalPolicyProvider().appServerRequestValue(style: requestValueStyle)
+                requestParams["sandbox"] = options.sandboxModeProvider().appServerRequestValue(style: requestValueStyle)
+                requestParams["approvalsReviewer"] = options.approvalReviewerProvider().appServerRequestValue
+                return requestParams
+            }
+        }
+
+        var params: [String: Any] = [:]
+        if let model {
+            params["model"] = model
+        }
+        Self.addServiceTier(serviceTier, to: &params)
+        if let executionDirectory = workspacePaths.executionDirectory {
+            params["cwd"] = executionDirectory
+        }
+        if !configOverrides.isEmpty {
+            params["config"] = configOverrides
+        }
+        if !baseInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["baseInstructions"] = baseInstructions
+        }
+        return try await requestWithCompatibleAppServerRequestValueStyle(
+            method: "thread/start",
+            timeout: timeout
+        ) { requestValueStyle in
+            var requestParams = params
+            requestParams["approvalPolicy"] = options.approvalPolicyProvider().appServerRequestValue(style: requestValueStyle)
+            requestParams["sandbox"] = options.sandboxModeProvider().appServerRequestValue(style: requestValueStyle)
+            requestParams["approvalsReviewer"] = options.approvalReviewerProvider().appServerRequestValue
+            return requestParams
+        }
+    }
+
     func startOrResume(existing: SessionRef?, baseInstructions: String) async throws -> SessionRef {
         try await startOrResume(
             existing: existing,
@@ -1718,7 +1928,11 @@ final class CodexNativeSessionController {
                     return memoriesEnabledProvider() ? .enabled : .disabled
                 }
                 if let desiredMemoryMode {
-                    try await setThreadMemoryMode(desiredMemoryMode, threadID: resumeThreadID)
+                    try await setThreadMemoryMode(
+                        desiredMemoryMode,
+                        threadID: resumeThreadID,
+                        timeout: options.requestTimeout
+                    )
                 }
             }
 
@@ -1732,63 +1946,15 @@ final class CodexNativeSessionController {
             #endif
 
             do {
-                if let resumeThreadID {
-                    var params: [String: Any] = ["threadId": resumeThreadID]
-                    if let rolloutPath = existing?.rolloutPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !rolloutPath.isEmpty
-                    {
-                        params["path"] = rolloutPath
-                    }
-                    if let model {
-                        params["model"] = model
-                    }
-                    Self.addServiceTier(serviceTier, to: &params)
-                    if let executionDirectory = workspacePaths.executionDirectory {
-                        params["cwd"] = executionDirectory
-                    }
-                    if !configOverrides.isEmpty {
-                        params["config"] = configOverrides
-                    }
-                    // baseInstructions is intentionally omitted on thread/resume: the app-server
-                    // preserves original instructions across resume (confirmed by Codex protocol
-                    // tests: resume_switches_models_preserves_base_instructions). Resending them
-                    // wastes ~5-6k tokens on every reconnect for no benefit.
-                    result = try await requestWithCompatibleAppServerRequestValueStyle(
-                        method: "thread/resume",
-                        timeout: options.requestTimeout
-                    ) { requestValueStyle in
-                        var requestParams = params
-                        requestParams["approvalPolicy"] = options.approvalPolicyProvider().appServerRequestValue(style: requestValueStyle)
-                        requestParams["sandbox"] = options.sandboxModeProvider().appServerRequestValue(style: requestValueStyle)
-                        requestParams["approvalsReviewer"] = options.approvalReviewerProvider().appServerRequestValue
-                        return requestParams
-                    }
-                } else {
-                    var params: [String: Any] = [:]
-                    if let model {
-                        params["model"] = model
-                    }
-                    Self.addServiceTier(serviceTier, to: &params)
-                    if let executionDirectory = workspacePaths.executionDirectory {
-                        params["cwd"] = executionDirectory
-                    }
-                    if !configOverrides.isEmpty {
-                        params["config"] = configOverrides
-                    }
-                    if !baseInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        params["baseInstructions"] = baseInstructions
-                    }
-                    result = try await requestWithCompatibleAppServerRequestValueStyle(
-                        method: "thread/start",
-                        timeout: options.requestTimeout
-                    ) { requestValueStyle in
-                        var requestParams = params
-                        requestParams["approvalPolicy"] = options.approvalPolicyProvider().appServerRequestValue(style: requestValueStyle)
-                        requestParams["sandbox"] = options.sandboxModeProvider().appServerRequestValue(style: requestValueStyle)
-                        requestParams["approvalsReviewer"] = options.approvalReviewerProvider().appServerRequestValue
-                        return requestParams
-                    }
-                }
+                result = try await requestThreadBinding(
+                    resumeThreadID: resumeThreadID,
+                    existing: existing,
+                    baseInstructions: baseInstructions,
+                    model: model,
+                    serviceTier: serviceTier,
+                    configOverrides: configOverrides,
+                    timeout: options.requestTimeout
+                )
                 #if DEBUG
                     await recordLifecyclePhase(
                         threadPhase,
@@ -1816,6 +1982,13 @@ final class CodexNativeSessionController {
                 return sessionRef
             }
             try markStartOrResumeSucceeded()
+            threadBindingContext = ThreadBindingContext(
+                existing: existing,
+                baseInstructions: baseInstructions,
+                model: model,
+                reasoningEffort: reasoningEffort,
+                serviceTier: serviceTier
+            )
             return sessionRef
         } catch {
             try? await eventHandlingMutex.withLockIgnoringCancellation {
@@ -1829,14 +2002,18 @@ final class CodexNativeSessionController {
         }
     }
 
-    private func setThreadMemoryMode(_ mode: ThreadMemoryMode, threadID: String) async throws {
+    private func setThreadMemoryMode(
+        _ mode: ThreadMemoryMode,
+        threadID: String,
+        timeout: TimeInterval?
+    ) async throws {
         _ = try await performRequest(
             method: "thread/memoryMode/set",
             params: [
                 "threadId": threadID,
                 "mode": mode.rawValue
             ],
-            timeout: options.requestTimeout
+            timeout: timeout
         )
     }
 
@@ -2430,6 +2607,7 @@ final class CodexNativeSessionController {
     private func restoreThreadSnapshot(_ snapshot: ThreadSnapshot) {
         threadID = snapshot.conversationID
         threadPath = snapshot.rolloutPath
+        activeSessionReference = snapshot.sessionRef
         routingCurrentTurnID = snapshot.currentTurnID
         activeTurnIDs = Set(snapshot.activeTurnIDs)
         activeTurnOrder = snapshot.activeTurnIDs
@@ -2452,11 +2630,18 @@ final class CodexNativeSessionController {
 
     private func applyThreadResponse(_ result: [String: Any], fallbackEffort: String?) -> SessionRef {
         let snapshot = Self.parseThreadSnapshot(from: result, fallbackEffort: fallbackEffort)
+        return applyThreadSnapshot(snapshot)
+    }
+
+    private func applyThreadSnapshot(_ snapshot: ThreadSnapshot) -> SessionRef {
         restoreThreadSnapshot(snapshot)
+        recordAppliedThreadSnapshot(snapshot)
+        return snapshot.sessionRef
+    }
+
+    private func recordAppliedThreadSnapshot(_ snapshot: ThreadSnapshot) {
         #if DEBUG
             ensureRawEventLogFileReadyIfNeeded()
-        #endif
-        #if DEBUG
             writeRawEventLogRecord(kind: "session.threadReady", payload: [
                 "conversationID": snapshot.conversationID,
                 "rolloutPath": snapshot.rolloutPath ?? NSNull(),
@@ -2464,7 +2649,6 @@ final class CodexNativeSessionController {
                 "currentTurnID": snapshot.currentTurnID ?? NSNull()
             ] as [String: Any])
         #endif
-        return snapshot.sessionRef
     }
 
     private static func parseThreadSnapshot(

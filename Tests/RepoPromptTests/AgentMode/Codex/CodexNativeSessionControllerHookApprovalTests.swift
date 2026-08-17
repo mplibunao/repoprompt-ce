@@ -657,6 +657,127 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         await client.stop()
     }
 
+    func testUnsettledMutationRecoveryRebindsThreadBeforeFirstTurn() async throws {
+        let fixture = try await makeHookTrustRebindFixture()
+
+        let verified = try await fixture.controller.trustHooksForCurrentWorkspace(
+            expectedCandidates: candidates(from: fixture.inventory),
+            expectedInventoryFingerprint: fixture.inventory.fingerprint
+        )
+        XCTAssertTrue(verified.verifies(candidates(from: fixture.inventory)))
+        XCTAssertEqual(fixture.controller.currentSessionReference?.conversationID, "replacement-thread")
+
+        let receipt = try await fixture.controller.startUserTurn(
+            text: "first turn after approval",
+            images: [],
+            model: "gpt-test",
+            reasoningEffort: "medium",
+            serviceTier: nil
+        )
+        XCTAssertEqual(receipt.provisionalSubmissionID, "replacement-turn")
+
+        let requestLog = try String(contentsOf: fixture.requestLogURL, encoding: .utf8)
+        let records = try requestLog.split(separator: "\n").map { line in
+            try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            )
+        }
+        let replacementMethods = records.compactMap { record -> String? in
+            guard record["process"] as? Int == 2 else { return nil }
+            return record["method"] as? String
+        }
+        let resumeIndex = try XCTUnwrap(replacementMethods.firstIndex(of: "thread/resume"))
+        let startIndex = try XCTUnwrap(replacementMethods.firstIndex(of: "thread/start"))
+        XCTAssertLessThan(resumeIndex, startIndex)
+        let turnStart = try XCTUnwrap(records.first { record in
+            record["process"] as? Int == 2 && record["method"] as? String == "turn/start"
+        })
+        let turnParams = try XCTUnwrap(turnStart["params"] as? [String: Any])
+        XCTAssertEqual(turnParams["threadId"] as? String, "replacement-thread")
+    }
+
+    func testWrongRecoveryResumeIdentityDoesNotCommitAndRetryCanRecover() async throws {
+        let fixture = try await makeHookTrustRebindFixture(wrongResumeProcessNumber: 2)
+
+        do {
+            _ = try await fixture.controller.trustHooksForCurrentWorkspace(
+                expectedCandidates: candidates(from: fixture.inventory),
+                expectedInventoryFingerprint: fixture.inventory.fingerprint
+            )
+            XCTFail("Expected the mismatched recovery identity to fail closed")
+        } catch {}
+        XCTAssertEqual(fixture.controller.currentSessionReference, fixture.initialReference)
+
+        try FileManager.default.removeItem(at: fixture.trustedMarkerURL)
+        let verified = try await fixture.controller.trustHooksForCurrentWorkspace(
+            expectedCandidates: candidates(from: fixture.inventory),
+            expectedInventoryFingerprint: fixture.inventory.fingerprint
+        )
+        XCTAssertTrue(verified.verifies(candidates(from: fixture.inventory)))
+        XCTAssertEqual(fixture.controller.currentSessionReference?.conversationID, "replacement-thread")
+        let receipt = try await fixture.controller.startUserTurn(
+            text: "first turn after retry",
+            images: [],
+            model: "gpt-test",
+            reasoningEffort: "medium",
+            serviceTier: nil
+        )
+        XCTAssertEqual(receipt.provisionalSubmissionID, "replacement-turn")
+    }
+
+    func testRecoveryDeadlineBeforeThreadCommitPreservesIdentityAndRetryCanRecover() async throws {
+        let commitGate = HookApprovalAsyncGate()
+        let firstCommitClaim = HookApprovalFirstCallClaim()
+        let rebindPrepared = expectation(description: "replacement thread response prepared")
+        let rebindReleased = expectation(description: "losing rebind continued after deadline")
+        let fixture = try await makeHookTrustRebindFixture(
+            requestTimeout: 0.15,
+            faultInjection: .init(
+                threadRebindCommitPreparation: {
+                    guard await firstCommitClaim.claim() else { return }
+                    rebindPrepared.fulfill()
+                    await commitGate.wait()
+                    rebindReleased.fulfill()
+                }
+            )
+        )
+        addTeardownBlock { await commitGate.release() }
+
+        let firstAttempt = Task {
+            try await fixture.controller.trustHooksForCurrentWorkspace(
+                expectedCandidates: candidates(from: fixture.inventory),
+                expectedInventoryFingerprint: fixture.inventory.fingerprint
+            )
+        }
+        await fulfillment(of: [rebindPrepared], timeout: 2)
+        do {
+            _ = try await firstAttempt.value
+            XCTFail("Expected the recovery deadline to fail closed")
+        } catch {}
+        XCTAssertEqual(fixture.controller.currentSessionReference, fixture.initialReference)
+
+        await commitGate.release()
+        await fulfillment(of: [rebindReleased], timeout: 2)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(fixture.controller.currentSessionReference, fixture.initialReference)
+
+        try FileManager.default.removeItem(at: fixture.trustedMarkerURL)
+        let verified = try await fixture.controller.trustHooksForCurrentWorkspace(
+            expectedCandidates: candidates(from: fixture.inventory),
+            expectedInventoryFingerprint: fixture.inventory.fingerprint
+        )
+        XCTAssertTrue(verified.verifies(candidates(from: fixture.inventory)))
+        XCTAssertEqual(fixture.controller.currentSessionReference?.conversationID, "replacement-thread")
+        let receipt = try await fixture.controller.startUserTurn(
+            text: "first turn after deadline retry",
+            images: [],
+            model: "gpt-test",
+            reasoningEffort: "medium",
+            serviceTier: nil
+        )
+        XCTAssertEqual(receipt.provisionalSubmissionID, "replacement-turn")
+    }
+
     func testConcurrentInboundStreamStartupInstallsOneOwnedSubscriptionPerKind() async throws {
         let client = CodexAppServerClient(livenessProbe: { _ in true })
         await client.debugInstallTestTransport()
@@ -1231,6 +1352,174 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         )
     }
 
+    private struct HookTrustRebindFixture {
+        let controller: CodexNativeSessionController
+        let trustedMarkerURL: URL
+        let requestLogURL: URL
+        let initialReference: CodexNativeSessionController.SessionRef
+        let inventory: CodexHookInventory
+    }
+
+    private func makeHookTrustRebindFixture(
+        requestTimeout: TimeInterval = 2,
+        wrongResumeProcessNumber: Int? = nil,
+        faultInjection: CodexNativeSessionController.HookTrustFaultInjection = .init()
+    ) async throws -> HookTrustRebindFixture {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexHookTrustRebindTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let processCountURL = directory.appendingPathComponent("process-count")
+        let trustedMarkerURL = directory.appendingPathComponent("trusted")
+        let requestLogURL = directory.appendingPathComponent("requests.jsonl")
+        let executableURL = try makeHookTrustRebindServer(
+            in: directory,
+            processCountURL: processCountURL,
+            trustedMarkerURL: trustedMarkerURL,
+            requestLogURL: requestLogURL,
+            wrongResumeProcessNumber: wrongResumeProcessNumber
+        )
+        let client = CodexAppServerClient()
+        await client.updateConfig(.init(
+            commandName: executableURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            processLaunchDirectory: directory.path
+        ))
+        var options = CodexNativeSessionController.Options.agentModeDefault(
+            approvalPolicyProvider: { .never },
+            sandboxModeProvider: { .readOnly },
+            approvalReviewerProvider: { .user }
+        )
+        options.requestTimeout = requestTimeout
+        options.skillExtraRootsProvider = { [] }
+        let controller = CodexNativeSessionController(
+            client: client,
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePaths: .uniform(directory.path),
+            options: options,
+            clientShutdownBehavior: .stopOnShutdown,
+            hookTrustFaultInjection: faultInjection
+        )
+        addTeardownBlock {
+            await controller.shutdown()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let initialReference = try await controller.startOrResume(
+            existing: nil,
+            baseInstructions: "Agent",
+            model: "gpt-test",
+            reasoningEffort: "medium",
+            serviceTier: nil
+        )
+        XCTAssertEqual(initialReference.conversationID, "initial-thread")
+        let inventory = try await controller.listHooksForCurrentWorkspace()
+        return HookTrustRebindFixture(
+            controller: controller,
+            trustedMarkerURL: trustedMarkerURL,
+            requestLogURL: requestLogURL,
+            initialReference: initialReference,
+            inventory: inventory
+        )
+    }
+
+    private func makeHookTrustRebindServer(
+        in directory: URL,
+        processCountURL: URL,
+        trustedMarkerURL: URL,
+        requestLogURL: URL,
+        wrongResumeProcessNumber: Int? = nil
+    ) throws -> URL {
+        let executableURL = directory.appendingPathComponent("fake-codex")
+        let script = """
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+
+        if sys.argv[1:] == ["--version"]:
+            print("codex 0.147.0")
+            raise SystemExit(0)
+
+        process_count_path = \(String(reflecting: processCountURL.path))
+        trusted_marker_path = \(String(reflecting: trustedMarkerURL.path))
+        request_log_path = \(String(reflecting: requestLogURL.path))
+        wrong_resume_process_number = \(wrongResumeProcessNumber.map(String.init) ?? "None")
+        try:
+            with open(process_count_path, "r", encoding="utf-8") as handle:
+                process_number = int(handle.read()) + 1
+        except Exception:
+            process_number = 1
+        with open(process_count_path, "w", encoding="utf-8") as handle:
+            handle.write(str(process_number))
+
+        loaded_threads = set()
+
+        def respond(request_id, result):
+            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+
+        def reject(request_id, message):
+            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32600, "message": message}}), flush=True)
+
+        def hook_list():
+            status = "trusted" if os.path.exists(trusted_marker_path) else "untrusted"
+            return {"data": [{"cwd": \(String(reflecting: directory.path)), "errors": [], "warnings": [], "hooks": [{
+                "eventName": "preToolUse",
+                "source": "project",
+                "sourcePath": \(String(reflecting: directory.appendingPathComponent(".codex/config.toml").path)),
+                "key": "one",
+                "currentHash": "h1",
+                "enabled": True,
+                "trustStatus": status,
+                "handlerType": "command"
+            }]}]}
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            method = request.get("method")
+            params = request.get("params") or {}
+            with open(request_log_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"process": process_number, "method": method, "params": params}, sort_keys=True) + "\\n")
+            if "id" not in request:
+                continue
+            request_id = request["id"]
+            if method == "initialize":
+                respond(request_id, {})
+            elif method == "thread/start":
+                thread_id = "initial-thread" if process_number == 1 else "replacement-thread"
+                loaded_threads.add(thread_id)
+                respond(request_id, {"thread": {"id": thread_id, "path": None, "status": {"type": "idle"}, "turns": []}, "model": "gpt-test", "reasoningEffort": "medium"})
+            elif method == "thread/resume":
+                if process_number == wrong_resume_process_number:
+                    respond(request_id, {"thread": {"id": "wrong-thread", "path": "/tmp/wrong-rollout.jsonl", "status": {"type": "idle"}, "turns": []}, "model": "gpt-test", "reasoningEffort": "medium"})
+                else:
+                    reject(request_id, "no rollout found for thread id " + str(params.get("threadId")))
+            elif method == "hooks/list":
+                respond(request_id, hook_list())
+            elif method == "config/batchWrite":
+                with open(trusted_marker_path, "w", encoding="utf-8") as handle:
+                    handle.write("trusted")
+                os._exit(0)
+            elif method == "turn/start":
+                thread_id = params.get("threadId")
+                if thread_id not in loaded_threads:
+                    reject(request_id, "thread not found: " + str(thread_id))
+                else:
+                    respond(request_id, {"turn": {"id": "replacement-turn"}})
+            else:
+                respond(request_id, {})
+        """
+        try script.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        return executableURL
+    }
+
     private func batchValues(from requests: [HookRequestRecorder.Request]) -> [String: Any] {
         guard let write = requests.first(where: { $0.method == "config/batchWrite" }),
               let edits = write.params?["edits"] as? [[String: Any]],
@@ -1370,6 +1659,16 @@ private final class HookRequestRecorder: @unchecked Sendable {
 private enum HookApprovalTestError: Error {
     case injectedFailure
     case unexpectedRequest(String)
+}
+
+private actor HookApprovalFirstCallClaim {
+    private var isClaimed = false
+
+    func claim() -> Bool {
+        guard !isClaimed else { return false }
+        isClaimed = true
+        return true
+    }
 }
 
 private actor HookApprovalAsyncGate {

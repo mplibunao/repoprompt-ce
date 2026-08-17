@@ -577,6 +577,35 @@ final class CodexAgentModeCoordinatorHookApprovalTests: XCTestCase {
         XCTAssertEqual(session.codexHookGateAudit?.status, .approvedAll)
     }
 
+    func testFailedHookGateDoesNotPersistUncommittedControllerReferenceOnCancellation() async throws {
+        let unresolved = try inventory(hooks: [hook(key: "alpha")])
+        let controller = HookApprovalFakeCodexController(
+            listResults: [.success(unresolved)],
+            trustResults: [.failure(CodexHookTrustError.batchWriteFailed)]
+        )
+        controller.currentSessionReference = .init(
+            conversationID: "uncommitted-recovery-thread",
+            rolloutPath: "/tmp/uncommitted-rollout.jsonl",
+            model: "gpt-test",
+            reasoningEffort: "medium"
+        )
+        let (viewModel, session) = makeSession(controller: controller)
+        let sendTask = Task { await self.send(on: viewModel, session: session) }
+        let request = try await waitForRequest(session)
+
+        try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+            session: session,
+            requestID: request.id,
+            decision: .approveAll
+        )
+        XCTAssertEqual(session.pendingCodexHookReview?.phase, .writeFailed)
+
+        _ = session.cancelCodexHookReview()
+        await assertOutcome(sendTask, equals: .cancelled)
+        XCTAssertEqual(session.codexConversationID, "thread")
+        XCTAssertNil(session.codexRolloutPath)
+    }
+
     func testRetryDiscoveryNonemptyInventoryReplacesIdentityWithoutResumingTurn() async throws {
         let controller = try HookApprovalFakeCodexController(
             listResults: [
@@ -1137,6 +1166,7 @@ private final class HookApprovalFakeCodexController: CodexSessionControllerPassi
     private(set) var operations: [String] = []
     private(set) var trustCalls: [TrustCall] = []
     private(set) var startCount = 0
+    var currentSessionReference: CodexNativeSessionController.SessionRef?
 
     var listCount: Int {
         operations.count(where: { $0 == "list" })
