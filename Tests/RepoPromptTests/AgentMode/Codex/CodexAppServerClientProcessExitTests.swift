@@ -439,6 +439,82 @@ final class CodexAppServerClientProcessExitTests: XCTestCase {
         await client.stop()
     }
 
+    func testStoppedControllerPreflightReleasesGlobalTrustMutexAndRetrySucceeds() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("requests.jsonl")
+        let executable = try makeHookTrustServer(in: directory, recordURL: recordURL)
+        let firstClient = try await makeClient(executable: executable, launchDirectory: directory, timeout: 5)
+        let secondClient = try await makeClient(executable: executable, launchDirectory: directory, timeout: 5)
+        addTeardownBlock {
+            await firstClient.stop()
+            await secondClient.stop()
+        }
+        try await firstClient.startIfNeeded()
+        try await secondClient.startIfNeeded()
+
+        var options = CodexNativeSessionController.Options.agentModeDefault()
+        options.requestTimeout = 0.1
+        let firstController = CodexNativeSessionController(
+            client: firstClient,
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePaths: .uniform(directory.path),
+            options: options
+        )
+        let secondController = CodexNativeSessionController(
+            client: secondClient,
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePaths: .uniform(directory.path),
+            options: options
+        )
+        addTeardownBlock {
+            await firstController.shutdown()
+            await secondController.shutdown()
+        }
+        try await firstController.test_beginBindingSession()
+        try await secondController.test_beginBindingSession()
+        await firstController.test_ensureInboundStreamsStarted()
+        await secondController.test_ensureInboundStreamsStarted()
+        let firstDisplayed = try await firstController.listHooksForCurrentWorkspace()
+        let secondDisplayed = try await secondController.listHooksForCurrentWorkspace()
+        let candidate = CodexHookTrustCandidate(key: "hook-key", currentHash: "hook-hash")
+
+        let firstProcessIDValue = await firstClient.debugProcessID()
+        let firstProcessID = try XCTUnwrap(firstProcessIDValue)
+        XCTAssertEqual(Darwin.kill(firstProcessID, SIGSTOP), 0)
+        addTeardownBlock { _ = Darwin.kill(firstProcessID, SIGCONT) }
+
+        let startedAt = ContinuousClock.now
+        do {
+            _ = try await firstController.trustHooksForCurrentWorkspace(
+                expectedCandidates: [candidate],
+                expectedInventoryFingerprint: firstDisplayed.fingerprint
+            )
+            XCTFail("Hook trust must fail closed when preflight cannot settle")
+        } catch CodexHookTrustError.malformedListResponse {
+            // Expected: the explicit preflight deadline fired while the child was stopped.
+        } catch {
+            XCTFail("Stopped-process hook preflight was relabeled as \(error)")
+        }
+        XCTAssertLessThan(startedAt.duration(to: .now), .seconds(2))
+
+        let secondVerified = try await secondController.trustHooksForCurrentWorkspace(
+            expectedCandidates: [candidate],
+            expectedInventoryFingerprint: secondDisplayed.fingerprint
+        )
+        XCTAssertTrue(secondVerified.verifies([candidate]))
+
+        XCTAssertEqual(Darwin.kill(firstProcessID, SIGCONT), 0)
+        let firstVerified = try await firstController.trustHooksForCurrentWorkspace(
+            expectedCandidates: [candidate],
+            expectedInventoryFingerprint: firstDisplayed.fingerprint
+        )
+        XCTAssertTrue(firstVerified.verifies([candidate]))
+    }
+
     func testSettlementDeadlineRetiresOwningGenerationBeforeFreshReconnect() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("requests.jsonl")
@@ -987,6 +1063,46 @@ final class CodexAppServerClientProcessExitTests: XCTestCase {
         os.write(2, os.getcwd().encode("utf-8"))
         os.close(1)
         os._exit(41)
+        """
+        return try writeExecutable(script, to: executable)
+    }
+
+    private func makeHookTrustServer(in directory: URL, recordURL: URL) throws -> URL {
+        let executable = directory.appendingPathComponent("hook-trust-codex")
+        let script = """
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        record_path = \(String(reflecting: recordURL.path))
+        cwd = \(String(reflecting: directory.path))
+        trusted = False
+        for line in sys.stdin:
+            request = json.loads(line)
+            method = request.get("method")
+            with open(record_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"method": method}) + "\\n")
+                handle.flush()
+            if "id" not in request:
+                continue
+            if method == "hooks/list":
+                hook = {
+                    "eventName": "preToolUse",
+                    "source": "project",
+                    "sourcePath": cwd + "/.codex/config.toml",
+                    "key": "hook-key",
+                    "currentHash": "hook-hash",
+                    "enabled": True,
+                    "trustStatus": "trusted" if trusted else "untrusted",
+                    "handlerType": "command",
+                }
+                result = {"data": [{"cwd": cwd, "hooks": [hook], "errors": [], "warnings": []}]}
+            elif method == "config/batchWrite":
+                trusted = True
+                result = {"status": "ok"}
+            else:
+                result = {}
+            print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
         """
         return try writeExecutable(script, to: executable)
     }

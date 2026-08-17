@@ -1198,6 +1198,9 @@ actor CodexAppServerClient {
     private static func defaultProcessAppearsAlive(_ process: SpawnedProcess) -> Bool {
         // Use a non-destructive child-state check so exited/zombie children do not
         // look healthy, while leaving final reap/cleanup to the normal teardown path.
+        // `waitid` can report a stopped child on Darwin even with WEXITED; accepting
+        // any matching si_pid would misclassify SIGSTOP as exit and then join the
+        // exit observer forever before a request deadline can be armed.
         if ProcessTermination.childIsTerminalOrAlreadyReaped(process.pid) {
             return false
         }
