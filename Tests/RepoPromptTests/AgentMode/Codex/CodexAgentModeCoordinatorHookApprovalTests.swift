@@ -171,6 +171,98 @@ final class CodexAgentModeCoordinatorHookApprovalTests: XCTestCase {
         XCTAssertEqual(session.codexHookGateAudit?.skippedCount, 0)
     }
 
+    func testStrictModeEnabledDuringPartialApprovalRefreshesSkippedHooks() async throws {
+        let alpha = try hook(key: "alpha")
+        let beta = try hook(key: "beta")
+        let initial = try inventory(hooks: [alpha, beta])
+        let partiallyVerified = try inventory(hooks: [
+            hook(key: "alpha", status: .trusted),
+            beta
+        ])
+        let fullyVerified = try inventory(hooks: [
+            hook(key: "alpha", status: .trusted),
+            hook(key: "beta", status: .trusted)
+        ])
+        let settings = HookApprovalFakeSettingsProvider(enabled: false)
+        let trustGate = HookApprovalAsyncGate()
+        let controller = HookApprovalFakeCodexController(
+            listResults: [.success(initial)],
+            trustResults: [.success(partiallyVerified), .success(fullyVerified)],
+            trustGate: trustGate
+        )
+        let (viewModel, session) = makeSession(controller: controller, settings: settings)
+        let sendTask = Task { await self.send(on: viewModel, session: session) }
+        let request = try await waitForRequest(session)
+        let response = Task {
+            try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+                session: session,
+                requestID: request.id,
+                decision: .approveSelected(hookKeys: ["alpha"])
+            )
+        }
+        try await trustGate.waitUntilWaiting()
+
+        settings.enabled = true
+        await trustGate.release()
+        try await response.value
+
+        let replacement = try XCTUnwrap(session.pendingCodexHookReview)
+        XCTAssertNotEqual(replacement.id, request.id)
+        XCTAssertEqual(replacement.hooks.map(\.key), ["beta"])
+        XCTAssertNotNil(session.codexHookReviewContinuation)
+        XCTAssertNil(session.codexHookGateAudit)
+        XCTAssertNil(session.codexHookGateBindingMemo)
+        XCTAssertEqual(controller.startCount, 0)
+
+        try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+            session: session,
+            requestID: replacement.id,
+            decision: .approveAll
+        )
+        await assertOutcome(sendTask, equals: .sent)
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(controller.trustCalls.count, 2)
+        XCTAssertEqual(session.codexHookGateAudit?.status, .approvedAll)
+    }
+
+    func testStrictModeEnabledDuringFullApprovalWithCleanVerificationCompletes() async throws {
+        let initial = try inventory(hooks: [hook(key: "alpha"), hook(key: "beta")])
+        let verified = try inventory(hooks: [
+            hook(key: "alpha", status: .trusted),
+            hook(key: "beta", status: .trusted)
+        ])
+        let settings = HookApprovalFakeSettingsProvider(enabled: false)
+        let trustGate = HookApprovalAsyncGate()
+        let controller = HookApprovalFakeCodexController(
+            listResults: [.success(initial)],
+            trustResults: [.success(verified)],
+            trustGate: trustGate
+        )
+        let (viewModel, session) = makeSession(controller: controller, settings: settings)
+        let sendTask = Task { await self.send(on: viewModel, session: session) }
+        let request = try await waitForRequest(session)
+        let response = Task {
+            try await viewModel.test_codexCoordinator.resolveCodexHookReview(
+                session: session,
+                requestID: request.id,
+                decision: .approveAll
+            )
+        }
+        try await trustGate.waitUntilWaiting()
+
+        settings.enabled = true
+        await trustGate.release()
+        try await response.value
+
+        await assertOutcome(sendTask, equals: .sent)
+        XCTAssertNil(session.pendingCodexHookReview)
+        XCTAssertNil(session.codexHookReviewContinuation)
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(controller.trustCalls.count, 1)
+        XCTAssertEqual(session.codexHookGateAudit?.status, .approvedAll)
+        XCTAssertNotNil(session.codexHookGateBindingMemo)
+    }
+
     func testDiscoveryFailureCarriesCwdErrorAndRetryToZeroResolvesExternally() async throws {
         let controller = try HookApprovalFakeCodexController(
             listResults: [

@@ -1031,7 +1031,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             let expectedSkippedIdentities = Set(request.trustCandidates.map(\.selectionIdentity))
                 .subtracting(approvedIdentities)
             let verifiedUnresolvedIdentities = Set(verified.unresolvedProjectHooks.map(\.selectionIdentity))
-            guard verifiedUnresolvedIdentities.isSubset(of: expectedSkippedIdentities) else {
+            let strictModeRequiresRefresh = isCodexHookApprovalStrictModeEnabled()
+                && !verifiedUnresolvedIdentities.isEmpty
+            guard !strictModeRequiresRefresh,
+                  verifiedUnresolvedIdentities.isSubset(of: expectedSkippedIdentities)
+            else {
                 applyCodexHookInventoryRefresh(
                     verified,
                     session: session,
