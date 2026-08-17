@@ -3967,6 +3967,15 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
     }
 
+    private static func capturedSendIsCurrent(
+        session: AgentTabSession,
+        sendRunID: UUID,
+        controller: any CodexSessionControlling
+    ) -> Bool {
+        session.runID == sendRunID
+            && session.codexController.map { sameCodexControllerInstance($0, controller) } == true
+    }
+
     private func clearCodexRecoveryAttempt(
         for runID: UUID?,
         runAttemptID: UUID? = nil
@@ -6289,10 +6298,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             return .sent
         } catch let steerError as CodexTurnSteerError {
             session.codexPendingTurnKind = nil
-            guard session.runID == sendRunID,
-                  let activeController = session.codexController,
-                  Self.sameCodexControllerInstance(activeController, controller)
-            else {
+            guard Self.capturedSendIsCurrent(
+                session: session,
+                sendRunID: sendRunID,
+                controller: controller
+            ) else {
                 return .stale(reason: "Codex ignored a late steer rejection because the active run/controller changed.")
             }
             let decision: CodexTurnFallbackDecision = switch steerError {
@@ -6319,8 +6329,20 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 controller: controller
             )
         } catch {
-            session.codexPendingTurnKind = nil
             if error is CancellationError {
+                guard Self.capturedSendIsCurrent(
+                    session: session,
+                    sendRunID: sendRunID,
+                    controller: controller
+                ) else {
+                    viewModel?.finalizeAttachmentsForTurn(
+                        for: session,
+                        reservationID: attachmentReservationID,
+                        disposition: .restoreToPending
+                    )
+                    return .stale(reason: "Codex ignored a late send cancellation because the active run/controller changed.")
+                }
+                session.codexPendingTurnKind = nil
                 clearCodexPendingAuthRetryTurn(session)
                 if terminalizeRejectedSend {
                     await finalizeCodexRun(
@@ -6340,10 +6362,12 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 }
                 return .cancelled
             }
-            guard session.runID == sendRunID,
-                  let activeController = session.codexController,
-                  Self.sameCodexControllerInstance(activeController, controller)
-            else {
+            session.codexPendingTurnKind = nil
+            guard Self.capturedSendIsCurrent(
+                session: session,
+                sendRunID: sendRunID,
+                controller: controller
+            ) else {
                 logCodex("[AgentModeVM] sendCodexNativeMessage: ignoring late send error for stale controller - \(error.localizedDescription)")
                 return .stale(reason: "Codex ignored a late send failure because the active run/controller changed.")
             }

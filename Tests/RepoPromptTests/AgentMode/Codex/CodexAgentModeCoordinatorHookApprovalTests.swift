@@ -394,7 +394,9 @@ final class CodexAgentModeCoordinatorHookApprovalTests: XCTestCase {
         session.codexController = replacement
 
         let outcome = await sendTask.value
-        XCTAssertEqual(outcome, .cancelled)
+        guard case .stale = outcome else {
+            return XCTFail("Expected stale cancellation after controller replacement, got \(outcome)")
+        }
         XCTAssertNil(session.pendingCodexHookReview)
         XCTAssertNil(session.codexHookReviewContinuation)
         XCTAssertEqual(controller.startCount, 0)
