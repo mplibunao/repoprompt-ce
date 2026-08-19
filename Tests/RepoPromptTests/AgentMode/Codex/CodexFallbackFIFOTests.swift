@@ -229,6 +229,397 @@ final class CodexFallbackFIFOTests: XCTestCase {
         XCTAssertNil(session.codexAuthoritativeActiveTurn)
     }
 
+    func testIdlePumpDrainsQueueTailInOrderAfterHeadOpensItsOwnTurn() async throws {
+        let noActiveTurn = CodexTurnSteerError.noActiveTurn(
+            requestFailure(message: "no active turn to steer")
+        )
+        let controller = FallbackFIFOController(
+            snapshot: .idle,
+            activeTurnIDs: [],
+            steerResults: [.failure(noActiveTurn), .failure(noActiveTurn)]
+        )
+        let (viewModel, session) = makeRunningSession(controller: controller)
+
+        _ = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "first",
+            attachments: []
+        )
+        _ = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "second",
+            attachments: []
+        )
+        XCTAssertEqual(session.codexFallbackQueue.count, 2)
+
+        try await waitUntil { controller.startCount == 1 }
+        XCTAssertEqual(session.codexFallbackQueue.count, 1)
+        XCTAssertEqual(controller.startedTexts, ["first"])
+
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: "pumped-1"),
+            session: session
+        )
+        XCTAssertEqual(session.codexFallbackQueue.first?.blockingTurn?.turnID, "pumped-1")
+        XCTAssertEqual(controller.startCount, 1)
+
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnCompleted(turnID: "pumped-1", status: .completed),
+            session: session
+        )
+        try await waitUntil { controller.startCount == 2 }
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty)
+        XCTAssertEqual(controller.startedTexts, ["first", "second"])
+    }
+
+    // MARK: - Owner-turn binding races
+
+    /// Sequences a hook-gate owner to accept its turn while the pump's thread read is already
+    /// in flight, so the pump resumes holding an idle answer that predates the binding.
+    private func makeOwnerBindingRaceSession(
+        startGate: FallbackAsyncGate? = nil,
+        snapshotGate: FallbackAsyncGate? = nil
+    ) -> (AgentModeViewModel, AgentModeViewModel.TabSession, FallbackFIFOController) {
+        let controller = FallbackFIFOController(
+            snapshot: .idle,
+            activeTurnIDs: [],
+            steerResults: [
+                .failure(CodexTurnSteerError.noActiveTurn(
+                    requestFailure(message: "no active turn to steer")
+                ))
+            ],
+            startGate: startGate,
+            snapshotGate: snapshotGate
+        )
+        let (viewModel, session) = makeRunningSession(controller: controller)
+        session.runState = .idle
+        return (viewModel, session, controller)
+    }
+
+    func testIdleSnapshotDeliveredAfterOwnerBindingDoesNotReleaseTheQueue() async throws {
+        let snapshotGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(snapshotGate: snapshotGate)
+        session.runState = .running
+
+        let queued = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "queued behind the owner",
+            attachments: []
+        )
+        guard case .queuedFallback = queued else {
+            await snapshotGate.release()
+            return XCTFail("Expected queued follow-up, got \(queued)")
+        }
+        guard await snapshotGate.waitUntilWaiting() else {
+            return XCTFail("Idle pump did not reach the thread read")
+        }
+
+        // The read is now in flight against an unblocked head: the state the pump would
+        // otherwise act on when the answer arrives.
+        session.codexFallbackQueue[0].blockingTurn = nil
+        session.codexAuthoritativeActiveTurn = nil
+        session.runState = .idle
+
+        let ownerOutcome = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "owner start",
+            attachments: []
+        )
+        XCTAssertEqual(ownerOutcome, .sent)
+        XCTAssertEqual(controller.startCount, 1)
+        let boundTurnID = session.codexFallbackQueue.first?.blockingTurn?.turnID
+        XCTAssertEqual(boundTurnID, "submission-1")
+        XCTAssertNotNil(session.codexFallbackHookGateOwnerBlocker)
+
+        await snapshotGate.release()
+        try await waitUntil { session.codexFallbackPumpTask == nil }
+
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(controller.startedTexts, ["owner start"])
+        XCTAssertEqual(session.codexFallbackQueue.count, 1)
+        XCTAssertEqual(session.codexFallbackQueue.first?.blockingTurn?.turnID, "submission-1")
+        XCTAssertNil(session.codexFallbackDispatchInFlight)
+    }
+
+    func testOwnerLifecycleCompletingBeforeStartReceiptStillDrainsQueueInOrder() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        // Both lifecycle events land while the owner's turn/start call is still outstanding.
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: "owner-turn"),
+            session: session
+        )
+        XCTAssertEqual(session.codexFallbackQueue.first?.blockingTurn?.turnID, "owner-turn")
+        XCTAssertEqual(controller.startCount, 1)
+
+        // Successor release coalesces behind the very gate this owner still holds, so the
+        // completion is delivered now and settles once the outstanding call returns.
+        let completion = Task {
+            await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+                .turnCompleted(turnID: "owner-turn", status: .completed),
+                session: session
+            )
+        }
+
+        await startGate.release()
+        let ownerOutcome = await ownerSend.value
+        XCTAssertEqual(ownerOutcome, .sent)
+        await completion.value
+        try await waitUntil { controller.startCount == 2 }
+        try await waitUntil { session.codexFallbackPumpTask == nil }
+        XCTAssertEqual(controller.startedTexts, ["owner start", "queued follow-up"])
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty)
+        XCTAssertNil(session.codexFallbackHookGateOwnerBlocker)
+    }
+
+    func testAnonymousOwnerTurnTerminalRestoresBoundFollowUps() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        try await settleGatedOwnerReceipt(
+            viewModel: viewModel,
+            session: session,
+            controller: controller,
+            startGate: startGate,
+            ownerSend: ownerSend
+        )
+
+        // A nil-ID lifecycle can never be matched by successor release, so the follow-up has
+        // to come back rather than wait on a turn that is already gone.
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: nil),
+            session: session
+        )
+        XCTAssertEqual(session.codexFallbackQueue.first?.blockingTurn?.turnID, "submission-1")
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnCompleted(turnID: nil, status: .completed),
+            session: session
+        )
+
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty)
+        XCTAssertNil(session.codexFallbackHookGateOwnerBlocker)
+        XCTAssertNil(session.codexFallbackDispatchInFlight)
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(controller.startedTexts, ["owner start"])
+        let restoration = try XCTUnwrap(viewModel.draftRestorationEvent)
+        XCTAssertEqual(restoration.text, "queued follow-up")
+    }
+
+    func testAnonymousOwnerTurnInterruptedAbandonsBoundFollowUps() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        try await settleGatedOwnerReceipt(
+            viewModel: viewModel,
+            session: session,
+            controller: controller,
+            startGate: startGate,
+            ownerSend: ownerSend
+        )
+
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: nil),
+            session: session
+        )
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnCompleted(turnID: nil, status: .interrupted),
+            session: session
+        )
+
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty)
+        XCTAssertNil(session.codexFallbackHookGateOwnerBlocker)
+        XCTAssertEqual(controller.startCount, 1)
+        let restoration = try XCTUnwrap(viewModel.draftRestorationEvent)
+        XCTAssertEqual(restoration.tabID, session.tabID)
+        XCTAssertEqual(restoration.text, "queued follow-up")
+    }
+
+    func testControllerReplacementDuringStartRPCDropsTheOwnerBinding() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        // The controller is retired while the request is still outstanding. Its queue is
+        // pinned to that instance, so it can never be claimed again under any later lineage.
+        viewModel.test_codexCoordinator.test_retireCodexControllerInstance(session: session)
+
+        await startGate.release()
+        _ = await ownerSend.value
+
+        try assertFollowUpReturnedToComposer(
+            viewModel: viewModel,
+            session: session,
+            controller: controller
+        )
+        XCTAssertEqual(controller.startCount, 1)
+    }
+
+    /// Drives an owner to the point where it holds the hook gate inside `turn/start` with a
+    /// coalesced, unblocked follow-up behind it — the window where the owner has no blocker
+    /// yet and the queue has nothing to wait on but the gate.
+    private func startGatedOwnerWithCoalescedFollowUp(
+        viewModel: AgentModeViewModel,
+        session: AgentModeViewModel.TabSession,
+        startGate: FallbackAsyncGate
+    ) async throws -> Task<CodexAgentModeCoordinator.NativeSendOutcome, Never> {
+        let ownerSend = Task {
+            await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+                session: session,
+                text: "owner start",
+                attachments: []
+            )
+        }
+        guard await startGate.waitUntilWaiting() else {
+            ownerSend.cancel()
+            XCTFail("Owner send did not reach turn/start")
+            return ownerSend
+        }
+        let queued = await viewModel.test_codexCoordinator.sendCodexNativeMessage(
+            session: session,
+            text: "queued follow-up",
+            attachments: []
+        )
+        guard case .queuedFallback = queued else {
+            ownerSend.cancel()
+            await startGate.release()
+            XCTFail("Expected queued follow-up, got \(queued)")
+            return ownerSend
+        }
+        // The pump clears the finished fixture turn and then coalesces behind the owner's gate.
+        try await waitUntil { session.codexFallbackQueue.first?.blockingTurn == nil }
+        return ownerSend
+    }
+
+    /// Lets the gated owner's `turn/start` return, which binds the queue to the receipt and
+    /// releases the coalesced waiter. Returns once that waiter has run its claim and been
+    /// refused, so a scenario can deliver lifecycle events against a settled arrangement.
+    private func settleGatedOwnerReceipt(
+        viewModel: AgentModeViewModel,
+        session: AgentModeViewModel.TabSession,
+        controller: FallbackFIFOController,
+        startGate: FallbackAsyncGate,
+        ownerSend: Task<CodexAgentModeCoordinator.NativeSendOutcome, Never>
+    ) async throws {
+        await startGate.release()
+        let ownerOutcome = await ownerSend.value
+        XCTAssertEqual(ownerOutcome, .sent)
+        try await waitUntil { session.codexFallbackPumpTask == nil }
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(session.codexFallbackQueue.first?.blockingTurn?.turnID, "submission-1")
+    }
+
+    private func assertFollowUpReturnedToComposer(
+        viewModel: AgentModeViewModel,
+        session: AgentModeViewModel.TabSession,
+        controller: FallbackFIFOController,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        XCTAssertTrue(session.codexFallbackQueue.isEmpty, file: file, line: line)
+        XCTAssertNil(session.codexFallbackDispatchInFlight, file: file, line: line)
+        XCTAssertNil(session.codexFallbackHookGateOwnerBlocker, file: file, line: line)
+        XCTAssertEqual(controller.startedTexts, ["owner start"], file: file, line: line)
+        let restoration = try XCTUnwrap(viewModel.draftRestorationEvent, file: file, line: line)
+        XCTAssertEqual(restoration.tabID, session.tabID, file: file, line: line)
+        XCTAssertEqual(restoration.text, "queued follow-up", file: file, line: line)
+    }
+
+    func testAnonymousOwnerLifecycleBeforeStartReceiptReturnsFollowUpToComposer() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        // Both nil-ID events land while the owner's turn/start is still outstanding, so no
+        // blocker exists yet and no identity will ever exist to release the queue.
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: nil),
+            session: session
+        )
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnCompleted(turnID: nil, status: .completed),
+            session: session
+        )
+        try assertFollowUpReturnedToComposer(
+            viewModel: viewModel,
+            session: session,
+            controller: controller
+        )
+
+        await startGate.release()
+        let ownerOutcome = await ownerSend.value
+        XCTAssertEqual(ownerOutcome, .sent)
+        try assertFollowUpReturnedToComposer(
+            viewModel: viewModel,
+            session: session,
+            controller: controller
+        )
+        XCTAssertEqual(controller.startCount, 1)
+    }
+
+    func testServerRequestIssueBeforeAuthoritativeStartReturnsFollowUpToComposer() async throws {
+        let startGate = FallbackAsyncGate()
+        let (viewModel, session, controller) = makeOwnerBindingRaceSession(startGate: startGate)
+        let ownerSend = try await startGatedOwnerWithCoalescedFollowUp(
+            viewModel: viewModel,
+            session: session,
+            startGate: startGate
+        )
+
+        // Terminalizes the run directly: no turnCompleted is ever correlated for this turn.
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .serverRequestIssue(.init(
+                requestID: .int(1),
+                method: "applyPatchApproval",
+                kind: .unsupportedMethod,
+                message: "server request issue"
+            )),
+            session: session
+        )
+        try assertFollowUpReturnedToComposer(
+            viewModel: viewModel,
+            session: session,
+            controller: controller
+        )
+
+        await startGate.release()
+        let ownerOutcome = await ownerSend.value
+        XCTAssertEqual(ownerOutcome, .sent)
+        try assertFollowUpReturnedToComposer(
+            viewModel: viewModel,
+            session: session,
+            controller: controller
+        )
+        XCTAssertEqual(controller.startCount, 1)
+    }
+
     func testIdlePumpFallbackWaitsForHookReviewBeforeClaimingHeadOrAttachments() async throws {
         let image = AgentImageAttachment(
             source: .localFile(path: "/tmp/idle-hook-gate.png"),
@@ -363,6 +754,35 @@ final class CodexFallbackFIFOTests: XCTestCase {
         await dispatchGate.release()
         let initialOutcome = await initialSend.value
         XCTAssertEqual(initialOutcome, .sent)
+
+        // The pump task only finishes once the resumed waiter has run its claim, so waiting
+        // on it proves the claim path executed and was refused rather than merely delayed.
+        try await waitUntil { session.codexFallbackPumpTask == nil }
+        XCTAssertEqual(controller.startCount, 1)
+        XCTAssertEqual(controller.startedTexts, ["initial gated send"])
+        XCTAssertNil(session.codexFallbackDispatchInFlight)
+        XCTAssertEqual(session.codexFallbackQueue.count, 1)
+        XCTAssertEqual(session.codexFallbackQueue.first?.state, .queued)
+        XCTAssertEqual(
+            session.codexFallbackQueue.first?.blockingTurn?.turnID,
+            "submission-1"
+        )
+
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnStarted(turnID: "initial-turn"),
+            session: session
+        )
+        XCTAssertEqual(session.codexAuthoritativeActiveTurn?.turnID, "initial-turn")
+        XCTAssertEqual(
+            session.codexFallbackQueue.first?.blockingTurn?.turnID,
+            "initial-turn"
+        )
+        XCTAssertEqual(controller.startCount, 1)
+
+        await viewModel.test_codexCoordinator.test_handleCodexNativeEvent(
+            .turnCompleted(turnID: "initial-turn", status: .completed),
+            session: session
+        )
         try await waitUntil { controller.startCount == 2 }
         XCTAssertTrue(session.codexFallbackQueue.isEmpty)
         XCTAssertEqual(session.runID, runID)
@@ -1309,6 +1729,7 @@ private final class FallbackFIFOController: CodexSessionControlling {
     private var steerResults: [Result<CodexTurnSteerReceipt, Error>]
     private let startGate: FallbackAsyncGate?
     private let steerGate: FallbackAsyncGate?
+    private let snapshotGate: FallbackAsyncGate?
     private let hookInventory: CodexHookInventory?
     private let hookListGate: FallbackAsyncGate?
 
@@ -1325,6 +1746,7 @@ private final class FallbackFIFOController: CodexSessionControlling {
         steerResults: [Result<CodexTurnSteerReceipt, Error>],
         startGate: FallbackAsyncGate? = nil,
         steerGate: FallbackAsyncGate? = nil,
+        snapshotGate: FallbackAsyncGate? = nil,
         hookInventory: CodexHookInventory? = nil,
         hookListGate: FallbackAsyncGate? = nil
     ) {
@@ -1334,6 +1756,7 @@ private final class FallbackFIFOController: CodexSessionControlling {
         self.steerResults = steerResults
         self.startGate = startGate
         self.steerGate = steerGate
+        self.snapshotGate = snapshotGate
         self.hookInventory = hookInventory
         self.hookListGate = hookListGate
     }
@@ -1391,6 +1814,9 @@ private final class FallbackFIFOController: CodexSessionControlling {
         includeTurns _: Bool,
         timeout _: TimeInterval?
     ) async throws -> CodexNativeSessionController.ThreadSnapshot {
+        // Held after the answer is determined, so the caller observes a read that was issued
+        // against one state and delivered against another.
+        await snapshotGate?.wait()
         if !snapshotResults.isEmpty {
             return try snapshotResults.removeFirst().get()
         }
@@ -1517,14 +1943,16 @@ private final class MismatchRetryNativeControllerRecorder: @unchecked Sendable {
 }
 
 private actor FallbackAsyncGate {
-    private var continuation: CheckedContinuation<Void, Never>?
+    // A gated call can be entered more than once concurrently — an owner turn and the queued
+    // follow-up released behind it both sit on the same gate — so every waiter is retained.
+    private var continuations: [CheckedContinuation<Void, Never>] = []
     private var released = false
     private var waiting = false
 
     func wait() async {
         guard !released else { return }
         waiting = true
-        await withCheckedContinuation { continuation = $0 }
+        await withCheckedContinuation { continuations.append($0) }
     }
 
     func waitUntilWaiting(timeout: TimeInterval = 5) async -> Bool {
@@ -1538,7 +1966,10 @@ private actor FallbackAsyncGate {
 
     func release() {
         released = true
-        continuation?.resume()
-        continuation = nil
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
     }
 }

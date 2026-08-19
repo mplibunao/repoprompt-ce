@@ -428,6 +428,12 @@ final class AgentTabSession: ObservableObject {
     var codexPendingSteerLifecycleReconciliation: CodexPendingSteerLifecycleReconciliation?
     var codexFallbackQueue: [CodexFallbackQueueEntry] = []
     var codexFallbackDispatchInFlight: CodexFallbackQueueEntry?
+    /// Bridges queued follow-ups to a hook-gate owner's turn for as long as that turn has no
+    /// settled identity of its own. Whichever of the accepted `turn/start` receipt or the
+    /// lifecycle start arrives first supplies the value — they race, and the queue has to be
+    /// bound by then either way. It is transient by design: the turn's terminal event either
+    /// upgrades it to the identity-derived blocker or resolves the queue outright.
+    var codexFallbackHookGateOwnerBlocker: CodexFallbackBlockingTurn?
     var codexFallbackPumpTask: Task<Void, Never>?
     var codexFallbackSuccessorRetryTask: Task<Void, Never>?
     let codexDispatchSerialGate = CodexDispatchSerialGate()
@@ -535,6 +541,11 @@ final class AgentTabSession: ObservableObject {
             codexAuthoritativeActiveTurn = nil
             codexAnonymousActiveTurn = nil
             codexRoutingObservedTurnID = nil
+            // A replaced controller can never deliver the lifecycle of a turn the previous
+            // one accepted, so a surviving blocker would gate the fallback pump on an event
+            // that is never coming. Disposition of the entries themselves belongs to the
+            // coordinator, which retires the queue with the controller.
+            codexFallbackHookGateOwnerBlocker = nil
         }
     }
 

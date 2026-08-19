@@ -2925,6 +2925,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         if let identity = session.codexAuthoritativeActiveTurn {
             return codexFallbackBlockingTurn(for: identity)
         }
+        // An owner turn that has been accepted but has not yet reached its lifecycle start
+        // still owns the thread, so anything queued in that window belongs behind it.
+        if let hookGateOwnerBlocker = session.codexFallbackHookGateOwnerBlocker {
+            return hookGateOwnerBlocker
+        }
         guard let inFlight = session.codexFallbackDispatchInFlight else {
             return nil
         }
@@ -3051,6 +3056,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         var retryDelayNanos: UInt64 = 100_000_000
         while !Task.isCancelled {
             guard session.codexFallbackDispatchInFlight == nil,
+                  // An accepted owner turn owns the queue until its lifecycle resolves, and
+                  // resolving it releases or abandons these entries through the lifecycle
+                  // paths. Polling the thread in the meantime can only reach a wrong answer.
+                  session.codexFallbackHookGateOwnerBlocker == nil,
                   let head = session.codexFallbackQueue.first,
                   head.id == queueID,
                   head.state == .queued,
@@ -3062,19 +3071,38 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                   session.runID == head.originRunID,
                   session.activeRunAttemptID == head.originRunAttemptID
             else { return }
+            let observedBlockingTurn = head.blockingTurn
+            let observedHookGateGeneration = session.codexHookGateGeneration
             do {
                 let snapshot = try await controller.readThreadSnapshot(includeTurns: true, timeout: 2)
+                // Reading the snapshot suspends, so the answer only describes a queue that is
+                // still exactly as it was when the read was issued. A blocker installed or
+                // rebound in that window refers to a turn the read never saw, and an owner
+                // turn that has been accepted may not have reached the thread yet — neither
+                // can be retired by this answer, so both send the pump back around.
                 if snapshot.conversationID == head.originThreadID,
                    snapshot.runtimeStatus == .idle,
                    snapshot.currentTurnID == nil,
-                   snapshot.activeTurnIDs.isEmpty
+                   snapshot.activeTurnIDs.isEmpty,
+                   session.codexFallbackDispatchInFlight == nil,
+                   session.codexFallbackHookGateOwnerBlocker == nil,
+                   session.codexHookGateGeneration == observedHookGateGeneration,
+                   let currentHead = session.codexFallbackQueue.first,
+                   currentHead.id == queueID,
+                   currentHead.state == .queued,
+                   currentHead.blockingTurn == observedBlockingTurn
                 {
-                    if let blockingTurn = head.blockingTurn,
-                       session.codexAuthoritativeActiveTurn?.turnID == blockingTurn.turnID
+                    if let observedBlockingTurn,
+                       session.codexAuthoritativeActiveTurn?.turnID == observedBlockingTurn.turnID
                     {
                         session.codexAuthoritativeActiveTurn = nil
                     }
                     session.codexAnonymousActiveTurn = nil
+                    // Dropping the proven-finished blocker is what lets the claim path — which
+                    // refuses a still-blocked head — take the head, and clearing by value keeps
+                    // the rest of the queue on one shared blocker so the head's own lifecycle
+                    // start rebinds them onto the turn it opens.
+                    clearCodexFallbackBlockers(matching: observedBlockingTurn, session: session)
                     _ = await dispatchCodexFallbackHead(
                         session: session,
                         expectedQueueID: queueID,
@@ -3122,6 +3150,10 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             guard !session.runState.isActive else { return nil }
         } else {
             guard session.activeRunAttemptID == head.originRunAttemptID else { return nil }
+            // A bound entry is releasable only through the successor path, which claims it
+            // against the completion of the exact turn it is bound to. Claiming it here would
+            // start a second turn while that turn is still running.
+            guard head.blockingTurn == nil else { return nil }
         }
         guard activateCodexFallbackAttachmentReservation(head, session: session) else { return nil }
         if beginsSuccessorAttempt {
@@ -3301,6 +3333,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session.codexFallbackSuccessorRetryTask?.cancel()
         session.codexFallbackSuccessorRetryTask = nil
         session.mcpFollowUpRunPending = false
+        session.codexFallbackHookGateOwnerBlocker = nil
         let queued = session.codexFallbackQueue
         session.codexFallbackQueue.removeAll()
         for entry in queued {
@@ -3364,6 +3397,39 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         abandonCodexFallbackQueue(session: session, reason: reason)
     }
 
+    /// Retargets every queued entry currently waiting on `previousBlockingTurn`. Only
+    /// `.queued` entries participate: a claimed entry's blocker describes a dispatch already
+    /// under way, which each caller resolves on its own terms.
+    private func retargetQueuedCodexFallbackBlockers(
+        from previousBlockingTurn: AgentTabSession.CodexFallbackBlockingTurn?,
+        to blockingTurn: AgentTabSession.CodexFallbackBlockingTurn?,
+        session: AgentTabSession
+    ) {
+        for index in session.codexFallbackQueue.indices {
+            guard session.codexFallbackQueue[index].state == .queued,
+                  session.codexFallbackQueue[index].blockingTurn == previousBlockingTurn
+            else { continue }
+            session.codexFallbackQueue[index].blockingTurn = blockingTurn
+        }
+    }
+
+    /// Releases entries whose blocking turn is proven finished. An in-flight dispatch is
+    /// deliberately left alone: it is already past the claim and owns its own completion.
+    private func clearCodexFallbackBlockers(
+        matching blockingTurn: AgentTabSession.CodexFallbackBlockingTurn?,
+        session: AgentTabSession
+    ) {
+        guard blockingTurn != nil else { return }
+        retargetQueuedCodexFallbackBlockers(
+            from: blockingTurn,
+            to: nil,
+            session: session
+        )
+    }
+
+    /// Moves the queue onto a different blocking turn, in-flight dispatch included: a rebind
+    /// means the turn everything was waiting on has been superseded rather than finished, and
+    /// the in-flight entry is the one whose lifecycle carries the queue forward.
     private func rebindCodexFallbackBlockers(
         from previousBlockingTurn: AgentTabSession.CodexFallbackBlockingTurn?,
         to blockingTurn: AgentTabSession.CodexFallbackBlockingTurn,
@@ -3375,18 +3441,189 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             inFlight.blockingTurn = blockingTurn
             session.codexFallbackDispatchInFlight = inFlight
         }
-        for index in session.codexFallbackQueue.indices {
-            guard session.codexFallbackQueue[index].state == .queued,
-                  session.codexFallbackQueue[index].blockingTurn == previousBlockingTurn
-            else { continue }
-            session.codexFallbackQueue[index].blockingTurn = blockingTurn
-        }
+        retargetQueuedCodexFallbackBlockers(
+            from: previousBlockingTurn,
+            to: blockingTurn,
+            session: session
+        )
+    }
+
+    /// The gate ownership and run lineage a first-turn dispatch held when it issued
+    /// `turn/start`. Captured before the call because the call can outlive all of it:
+    /// cancellation or controller replacement can hand the session to a different
+    /// controller, run attempt, and gate owner while the request is still in flight.
+    private struct CodexHookGateOwnerDispatchScope {
+        let ownerToken: UUID
+        let controllerInstanceID: ObjectIdentifier
+        let controllerGeneration: UUID
+        let threadID: String
+        let runID: UUID?
+        let runAttemptID: UUID
+    }
+
+    private func codexHookGateOwnerDispatchScope(
+        ownerToken: UUID?,
+        controller: any CodexSessionControlling,
+        session: AgentTabSession
+    ) -> CodexHookGateOwnerDispatchScope? {
+        guard let ownerToken,
+              let threadID = session.codexConversationID,
+              let runAttemptID = session.activeRunAttemptID
+        else { return nil }
+        return .init(
+            ownerToken: ownerToken,
+            controllerInstanceID: ObjectIdentifier(controller),
+            controllerGeneration: session.codexControllerGeneration,
+            threadID: threadID,
+            runID: session.runID,
+            runAttemptID: runAttemptID
+        )
+    }
+
+    /// Issues a hook-gate owner's first `turn/start` and binds the coalesced queue to the
+    /// turn it accepts. The scope is captured before the call rather than after, because the
+    /// call can outlive the gate ownership and run lineage it was issued under.
+    @discardableResult
+    private func startCodexHookGateOwnerTurn(
+        ownerToken: UUID?,
+        controller: any CodexSessionControlling,
+        session: AgentTabSession,
+        start: () async throws -> CodexTurnStartReceipt
+    ) async throws -> CodexTurnStartReceipt {
+        let scope = codexHookGateOwnerDispatchScope(
+            ownerToken: ownerToken,
+            controller: controller,
+            session: session
+        )
+        let receipt = try await start()
+        bindQueuedCodexFallbacksToAcceptedHookGateTurn(
+            scope: scope,
+            submissionID: receipt.provisionalSubmissionID,
+            session: session
+        )
+        return receipt
+    }
+
+    /// Binds queued follow-ups to the turn a hook-gate owner has just had accepted.
+    ///
+    /// Releasing the gate resumes every coalesced waiter at once, and a resumed waiter's
+    /// claim path validates run lineage only, so without a blocker it would start a second
+    /// turn while this one is still running. The accepted `turn/start` receipt is the only
+    /// identifier for the new turn available synchronously here — the authoritative identity
+    /// arrives later on an independent event stream — so binding cannot wait for it.
+    ///
+    /// Every field of the blocker comes from the captured scope, and the scope must still be
+    /// the session's current gate owner and lineage: a return that lost either would otherwise
+    /// stamp a superseded turn's submission ID onto whatever controller and run now hold the
+    /// session, and the gate would reject that same token moments later.
+    private func bindQueuedCodexFallbacksToAcceptedHookGateTurn(
+        scope: CodexHookGateOwnerDispatchScope?,
+        submissionID: String,
+        session: AgentTabSession
+    ) {
+        guard let scope,
+              session.codexHookGateDispatchOwnerToken == scope.ownerToken,
+              let controller = session.codexController,
+              ObjectIdentifier(controller) == scope.controllerInstanceID,
+              session.codexControllerGeneration == scope.controllerGeneration,
+              session.codexConversationID == scope.threadID,
+              session.runID == scope.runID,
+              session.activeRunAttemptID == scope.runAttemptID,
+              session.codexFallbackDispatchInFlight == nil,
+              session.codexFallbackHookGateOwnerBlocker == nil,
+              session.codexFallbackQueue.contains(where: {
+                  $0.state == .queued && $0.blockingTurn == nil
+              })
+        else { return }
+        let blockingTurn = AgentTabSession.CodexFallbackBlockingTurn(
+            threadID: scope.threadID,
+            turnID: submissionID,
+            controllerInstanceID: scope.controllerInstanceID,
+            controllerGeneration: scope.controllerGeneration,
+            runID: scope.runID,
+            runAttemptID: scope.runAttemptID
+        )
+        session.codexFallbackHookGateOwnerBlocker = blockingTurn
+        rebindCodexFallbackBlockers(from: nil, to: blockingTurn, session: session)
+    }
+
+    /// Binds queued follow-ups when a hook-gate owner's turn announces its lifecycle start
+    /// before its `turn/start` call returns — the receipt and the event stream are
+    /// independent, so either can arrive first. The gate is still held, so no waiter has
+    /// resumed and the queue is still bindable. Waiting for the receipt instead would risk
+    /// this turn ending first, leaving the completion with no blocker to release.
+    private func bindQueuedCodexFallbacksToStartedHookGateOwnerTurn(
+        _ identity: AgentTabSession.CodexAuthoritativeTurnIdentity,
+        session: AgentTabSession
+    ) {
+        guard session.codexHookGateDispatchOwnerToken != nil,
+              session.codexFallbackHookGateOwnerBlocker == nil,
+              session.codexFallbackDispatchInFlight == nil,
+              identity.threadID == session.codexConversationID,
+              identity.runID == session.runID,
+              identity.runAttemptID == session.activeRunAttemptID,
+              session.codexFallbackQueue.contains(where: {
+                  $0.state == .queued && $0.blockingTurn == nil
+              })
+        else { return }
+        let blockingTurn = codexFallbackBlockingTurn(for: identity)
+        session.codexFallbackHookGateOwnerBlocker = blockingTurn
+        rebindCodexFallbackBlockers(from: nil, to: blockingTurn, session: session)
+    }
+
+    /// Resolves follow-ups belonging to an owner turn that ended without ever becoming
+    /// identifiable — a nil-ID lifecycle, or a run terminalized with no correlated
+    /// completion. Successor release matches an exact identity and a terminal run only hands
+    /// work on through that path, so such a turn can never release its queue.
+    ///
+    /// Both shapes of ownership are resolved here, because the receipt and the lifecycle race
+    /// each other. An owner that has already had its turn accepted is found through the
+    /// receipt-derived blocker; one still inside `turn/start` has no blocker to match yet, and
+    /// is found through the gate it still holds — its coalesced follow-ups are exactly the
+    /// unblocked entries that gate is holding back. Missing the second shape would leave those
+    /// entries with no owner to wait on and a run lineage they can no longer claim under.
+    private func reconcileCodexFallbackQueueForUnidentifiedOwnerTerminal(
+        session: AgentTabSession,
+        reason: String
+    ) {
+        let pending = session.codexFallbackHookGateOwnerBlocker
+        session.codexFallbackHookGateOwnerBlocker = nil
+        let boundToAcceptedOwnerTurn = pending.map { blockingTurn in
+            session.codexFallbackQueue.contains { $0.blockingTurn == blockingTurn }
+                || session.codexFallbackDispatchInFlight?.blockingTurn == blockingTurn
+        } ?? false
+        let coalescedBehindUnacceptedOwnerTurn = session.codexHookGateDispatchOwnerToken != nil
+            && session.codexFallbackQueue.contains { $0.state == .queued && $0.blockingTurn == nil }
+        guard boundToAcceptedOwnerTurn || coalescedBehindUnacceptedOwnerTurn else { return }
+        abandonCodexFallbackQueue(session: session, reason: reason)
+    }
+
+    /// Promotes a receipt-derived blocker to the authoritative blocker for the same turn.
+    /// Successor release matches blockers by exact equality, so an entry left holding the
+    /// receipt-derived value would never be handed to the turn it is waiting on.
+    private func upgradeCodexFallbackHookGateOwnerBlocker(
+        to identity: AgentTabSession.CodexAuthoritativeTurnIdentity,
+        session: AgentTabSession
+    ) {
+        guard let pending = session.codexFallbackHookGateOwnerBlocker,
+              identity.threadID == pending.threadID,
+              identity.controllerInstanceID == pending.controllerInstanceID,
+              identity.controllerGeneration == pending.controllerGeneration,
+              identity.runID == pending.runID,
+              identity.runAttemptID == pending.runAttemptID
+        else { return }
+        session.codexFallbackHookGateOwnerBlocker = nil
+        let blockingTurn = codexFallbackBlockingTurn(for: identity)
+        guard blockingTurn != pending else { return }
+        rebindCodexFallbackBlockers(from: pending, to: blockingTurn, session: session)
     }
 
     private func bindCodexFallbackQueueToStartedTurn(
         _ identity: AgentTabSession.CodexAuthoritativeTurnIdentity,
         session: AgentTabSession
     ) {
+        upgradeCodexFallbackHookGateOwnerBlocker(to: identity, session: session)
+        bindQueuedCodexFallbacksToStartedHookGateOwnerTurn(identity, session: session)
         guard var inFlight = session.codexFallbackDispatchInFlight else { return }
         // Successor dispatches begin a new run attempt, so lineage deliberately
         // excludes runAttemptID.
@@ -5055,13 +5292,19 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     )
                 }
             }
-            _ = try await controller.startUserTurn(
-                text: replayTurn.text,
-                images: replayTurn.images,
-                model: replayTurn.model,
-                reasoningEffort: replayTurn.reasoningEffort,
-                serviceTier: replayTurn.serviceTier
-            )
+            try await startCodexHookGateOwnerTurn(
+                ownerToken: hookGateDispatchOwnerToken,
+                controller: controller,
+                session: session
+            ) {
+                try await controller.startUserTurn(
+                    text: replayTurn.text,
+                    images: replayTurn.images,
+                    model: replayTurn.model,
+                    reasoningEffort: replayTurn.reasoningEffort,
+                    serviceTier: replayTurn.serviceTier
+                )
+            }
             dispatched = true
             await applySuccessfulCodexNativeSend(
                 for: session,
@@ -5129,11 +5372,28 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     /// lifecycle work — shutdown, event tasks, run IDs, reconnect flags, pending interactions,
     /// tracking — stays with each teardown path.
     private func clearCodexControllerInstanceState(for session: AgentTabSession) {
+        abandonCodexFallbackQueueForRetiredCodexController(session: session)
         session.codexController = nil
         session.codexControllerPermissionProfile = nil
         session.codexControllerTaskLabelKind = nil
         session.codexControllerWorkspacePaths = nil
         session.codexControllerFeatureState = nil
+    }
+
+    /// Queued follow-ups are pinned to the controller instance that accepted them, so a
+    /// retired controller leaves them unclaimable by construction — no later lineage check can
+    /// ever match them again. Returning them to the composer is the only disposition that does
+    /// not silently drop the user's text.
+    private func abandonCodexFallbackQueueForRetiredCodexController(session: AgentTabSession) {
+        guard session.codexController != nil,
+              !session.codexFallbackQueue.isEmpty
+              || session.codexFallbackDispatchInFlight != nil
+              || session.codexFallbackHookGateOwnerBlocker != nil
+        else { return }
+        abandonCodexFallbackQueue(
+            session: session,
+            reason: "Codex queued follow-up was cancelled because the controller was replaced."
+        )
     }
 
     /// Cancels every tab-scoped background task that watches or drives the
@@ -6290,13 +6550,19 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     beginTrackedCodexUserTurn(session)
                     updateCodexStallWatchdogState(for: session)
                     logCodex("[AgentModeVM] sendCodexNativeMessage: calling controller.startUserTurn")
-                    _ = try await controller.startUserTurn(
-                        text: text,
-                        images: attachments,
-                        model: selection.model,
-                        reasoningEffort: selection.reasoningEffort,
-                        serviceTier: selection.serviceTier
-                    )
+                    try await startCodexHookGateOwnerTurn(
+                        ownerToken: hookGateDispatchOwnerToken,
+                        controller: controller,
+                        session: session
+                    ) {
+                        try await controller.startUserTurn(
+                            text: text,
+                            images: attachments,
+                            model: selection.model,
+                            reasoningEffort: selection.reasoningEffort,
+                            serviceTier: selection.serviceTier
+                        )
+                    }
                     dispatched = true
                 }
             case let .steer(identity):
@@ -7335,6 +7601,13 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         clearCodexPendingAuthRetryTurn(session)
         cancelCodexTransportClosedFallback(for: session.tabID)
         resetTrackedCodexTurns(session)
+        // Terminalizing without a correlated completion — a server request issue, a watchdog
+        // teardown — retires the very turn the queue is waiting on. Resetting tracked turns
+        // without resolving the queue here is what would leave the pump nothing to wait for.
+        reconcileCodexFallbackQueueForUnidentifiedOwnerTerminal(
+            session: session,
+            reason: "Codex queued follow-ups were cancelled because the run ended before the turn they followed was identified."
+        )
         resetCodexWatchdogState(session)
         clearCodexNativeToolLiveness(session)
         session.activeReasoningItemID = nil
@@ -7921,6 +8194,12 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             }
             let turnKind = completion.turnKind
             let completedIdentity = completion.authoritativeIdentity
+            // The lifecycle start event can land before the accepted receipt is recorded, in
+            // which case it never rebound the queue. Upgrade here so successor matching and
+            // blocked-queue abandonment both see the authoritative blocker.
+            if let completedIdentity {
+                upgradeCodexFallbackHookGateOwnerBlocker(to: completedIdentity, session: session)
+            }
             let providerSuccessor = await codexFallbackSuccessorForCompletion(
                 turnID: turnID,
                 status: status,
@@ -7932,6 +8211,12 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 status: status,
                 session: session
             )
+            if completedIdentity == nil {
+                reconcileCodexFallbackQueueForUnidentifiedOwnerTerminal(
+                    session: session,
+                    reason: "Codex queued follow-ups were cancelled because the turn they followed ended with \(status) without an identifiable turn."
+                )
+            }
             if turnKind == .compact {
                 if status == .completed {
                     markCodexContextCompacted(session)
@@ -8944,7 +9229,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         }
 
         @_spi(TestSupport)
-        public func test_handleCodexNativeEvent(
+        public func test_retireCodexControllerInstance(session: AgentTabSession) {
+            clearCodexControllerInstanceState(for: session)
+        }
+
+        func test_handleCodexNativeEvent(
             _ event: CodexNativeSessionController.Event,
             session: AgentTabSession,
             sourceController: (any CodexSessionControlling)? = nil
