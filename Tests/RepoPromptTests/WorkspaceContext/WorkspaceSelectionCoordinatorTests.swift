@@ -378,10 +378,14 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
                 harness.manager.firstMirrorGate = gate
             }
             harness.manager.firstMirrorIgnoresCancellation = mode == 1
+            // Only the timeout mode uses the short deadline. Completion and caller cancellation
+            // get a deliberately distant deadline so this test controls which terminal event wins
+            // instead of racing the main-actor cancellation handler against a 20 ms sleep.
+            let mirrorTimeout: Duration = mode == 1 ? .milliseconds(20) : .seconds(30)
             let coordinator = WorkspaceSelectionCoordinator(
                 workspaceManager: harness.manager,
                 store: harness.store,
-                mcpSelectionMirrorTimeout: .milliseconds(20)
+                mcpSelectionMirrorTimeout: mirrorTimeout
             )
 
             let request = Task { @MainActor in
@@ -420,6 +424,8 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
             XCTAssertEqual(snapshot.liveDeadlineCount, 0, "iteration \(iteration)")
             XCTAssertEqual(snapshot.workersCreated, snapshot.workersExited, "iteration \(iteration)")
             XCTAssertEqual(snapshot.deadlinesCreated, snapshot.deadlinesExited, "iteration \(iteration)")
+            XCTAssertEqual(snapshot.deadlinesCreated, 1, "iteration \(iteration)")
+            XCTAssertEqual(snapshot.deadlinesFired, mode == 1 ? 1 : 0, "iteration \(iteration)")
             XCTAssertEqual(harness.manager.maximumConcurrentMirrorAttempts, 1, "iteration \(iteration)")
         }
     }
