@@ -188,7 +188,6 @@ final class WorkspaceSelectionCoordinator {
     }
 
     private struct MCPSelectionMirrorWorker {
-        let id: UInt64
         let demand: MCPSelectionMirrorDemand
         let task: Task<Void, Never>
     }
@@ -1076,7 +1075,6 @@ final class WorkspaceSelectionCoordinator {
 
     private func startSelectionMirrorWorker(for demand: MCPSelectionMirrorDemand) {
         precondition(mcpSelectionMirrorWorker == nil)
-        let workerID = allocateSelectionMirrorTaskID()
         #if DEBUG
             selectionMirrorWorkersCreated &+= 1
         #endif
@@ -1084,7 +1082,7 @@ final class WorkspaceSelectionCoordinator {
             guard let self, let workspaceManager else { return }
             var outcome: SelectionMirrorOutcome = .invalidated
             var attemptedTarget: WorkspaceSelectionMirrorTarget?
-            if mcpSelectionMirrorWorker?.id == workerID,
+            if mcpSelectionMirrorWorker?.demand.requestID == demand.requestID,
                canApplyPeerMirror(demand.peerMutationFence, workspaceManager: workspaceManager),
                let target = demand.target ?? workspaceManager.activeSelectionMirrorTarget()
             {
@@ -1100,7 +1098,7 @@ final class WorkspaceSelectionCoordinator {
                             workspaceID: target.workspaceID
                         )
                     }
-                    if mcpSelectionMirrorWorker?.id == workerID,
+                    if mcpSelectionMirrorWorker?.demand.requestID == demand.requestID,
                        canApplyPeerMirror(demand.peerMutationFence, workspaceManager: workspaceManager),
                        workspaceManager.activeSelectionMirrorTarget() == target,
                        !Task.isCancelled
@@ -1112,17 +1110,17 @@ final class WorkspaceSelectionCoordinator {
                     }
                 }
             }
-            selectionMirrorWorkerExited(workerID, attemptedTarget: attemptedTarget, outcome: outcome)
+            selectionMirrorWorkerExited(demand.requestID, attemptedTarget: attemptedTarget, outcome: outcome)
         }
-        mcpSelectionMirrorWorker = MCPSelectionMirrorWorker(id: workerID, demand: demand, task: task)
+        mcpSelectionMirrorWorker = MCPSelectionMirrorWorker(demand: demand, task: task)
     }
 
     private func selectionMirrorWorkerExited(
-        _ workerID: UInt64,
+        _ requestID: UInt64,
         attemptedTarget: WorkspaceSelectionMirrorTarget?,
         outcome: SelectionMirrorOutcome
     ) {
-        guard let worker = mcpSelectionMirrorWorker, worker.id == workerID else { return }
+        guard let worker = mcpSelectionMirrorWorker, worker.demand.requestID == requestID else { return }
         #if DEBUG
             selectionMirrorWorkersExited &+= 1
         #endif

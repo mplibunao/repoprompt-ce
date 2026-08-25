@@ -488,7 +488,6 @@ final class MCPReadFileAutoSelectionCoordinator {
         var acceptedTicket: UInt64 = 0
         var completedTicket: UInt64 = 0
         var convergedTicket: UInt64 = 0
-        var generation: UInt64 = 0
         var pending: QueuedMirrorBatch?
         var inFlight: QueuedMirrorBatch?
         var waiters: [UUID: SequenceWaiter] = [:]
@@ -503,7 +502,6 @@ final class MCPReadFileAutoSelectionCoordinator {
 
     private struct MirrorWorker {
         let id: UUID
-        let generation: UInt64
         let task: Task<Void, Never>
     }
 
@@ -1089,18 +1087,14 @@ final class MCPReadFileAutoSelectionCoordinator {
 
     private func scheduleMirrorWorkerIfNeeded(for key: TabMirrorKey) {
         guard mirrorWorkers[key] == nil,
-              var lane = mirrorLanes[key],
-              lane.pending != nil
+              mirrorLanes[key]?.pending != nil
         else { return }
         let workerID = UUID()
-        lane.generation &+= 1
-        let generation = lane.generation
-        mirrorLanes[key] = lane
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await runMirrorWorker(for: key, workerID: workerID, generation: generation)
+            await runMirrorWorker(for: key, workerID: workerID)
         }
-        mirrorWorkers[key] = MirrorWorker(id: workerID, generation: generation, task: task)
+        mirrorWorkers[key] = MirrorWorker(id: workerID, task: task)
         emitMirrorDiagnostic(
             .workerStarted,
             for: key,
@@ -1108,10 +1102,9 @@ final class MCPReadFileAutoSelectionCoordinator {
         )
     }
 
-    private func runMirrorWorker(for key: TabMirrorKey, workerID: UUID, generation: UInt64) async {
+    private func runMirrorWorker(for key: TabMirrorKey, workerID: UUID) async {
         defer {
             let ownsLane = mirrorWorkers[key]?.id == workerID
-                && mirrorWorkers[key]?.generation == generation
             if ownsLane {
                 mirrorWorkers.removeValue(forKey: key)
             }
@@ -1126,7 +1119,7 @@ final class MCPReadFileAutoSelectionCoordinator {
                 cleanupMirrorLaneIfSettled(key)
             }
         }
-        while ownsMirrorLane(key, workerID: workerID, generation: generation),
+        while ownsMirrorLane(key, workerID: workerID),
               var lane = mirrorLanes[key],
               let queued = lane.pending
         {
@@ -1147,7 +1140,7 @@ final class MCPReadFileAutoSelectionCoordinator {
                     await applyMirror(key)
                 }
             }
-            guard ownsMirrorLane(key, workerID: workerID, generation: generation) else { return }
+            guard ownsMirrorLane(key, workerID: workerID) else { return }
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.mirrorApplyEnded,
                 correlation: queued.lifecycleCorrelation
@@ -1158,14 +1151,12 @@ final class MCPReadFileAutoSelectionCoordinator {
                 outcome: mirrorOutcome
             )
             await Task.yield()
-            guard ownsMirrorLane(key, workerID: workerID, generation: generation) else { return }
+            guard ownsMirrorLane(key, workerID: workerID) else { return }
         }
     }
 
-    private func ownsMirrorLane(_ key: TabMirrorKey, workerID: UUID, generation: UInt64) -> Bool {
+    private func ownsMirrorLane(_ key: TabMirrorKey, workerID: UUID) -> Bool {
         mirrorWorkers[key]?.id == workerID
-            && mirrorWorkers[key]?.generation == generation
-            && mirrorLanes[key]?.generation == generation
     }
 
     private func completeMirrorBatch(
@@ -1177,10 +1168,10 @@ final class MCPReadFileAutoSelectionCoordinator {
         let lowerTicket = lane.completedTicket &+ 1
         lane.completedTicket = max(lane.completedTicket, throughTicket)
         lane.inFlight = nil
-        let terminalResult: SequenceWaitResult
+        let terminalResult: SequenceWaitResult?
         switch outcome {
         case .converged:
-            terminalResult = .converged
+            terminalResult = nil
             lane.convergedTicket = max(lane.convergedTicket, throughTicket)
         case .deferred:
             terminalResult = .deferred
@@ -1189,10 +1180,12 @@ final class MCPReadFileAutoSelectionCoordinator {
         case .cancelled:
             terminalResult = .cancelled
         }
-        recordMirrorSettlement(
-            MirrorSettlement(lowerTicket: lowerTicket, upperTicket: throughTicket, result: terminalResult),
-            in: &lane
-        )
+        if let terminalResult {
+            recordMirrorSettlement(
+                MirrorSettlement(lowerTicket: lowerTicket, upperTicket: throughTicket, result: terminalResult),
+                in: &lane
+            )
+        }
         let satisfied = lane.waiters.filter { $0.value.target <= lane.completedTicket }
         for (id, _) in satisfied {
             lane.waiters.removeValue(forKey: id)
@@ -1433,7 +1426,7 @@ final class MCPReadFileAutoSelectionCoordinator {
     }
 
     /// Invalidating one exact route must not let its parked worker keep ownership of the shared
-    /// tab lane. Surviving same-tab owners are requeued under a new generation; the old task is
+    /// tab lane. Surviving same-tab owners are requeued under a new worker ID; the old task is
     /// retained only until its body physically exits and is fenced from every lane mutation.
     private func retireMirrorOwnership(for contextKey: ContextKey) {
         let key = contextKey.mirrorKey
@@ -1446,7 +1439,6 @@ final class MCPReadFileAutoSelectionCoordinator {
         if var inFlight = lane.inFlight {
             inFlight.owners.remove(contextKey)
             if let worker = mirrorWorkers[key] {
-                lane.generation &+= 1
                 mirrorWorkers.removeValue(forKey: key)
                 retiredMirrorWorkerTasks[worker.id] = worker.task
                 worker.task.cancel()
