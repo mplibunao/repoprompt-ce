@@ -38,15 +38,22 @@ final class MCPPromptContextToolProvider {
         args: [String: Value],
         appContext: MCPServerViewModel.DomainReadAppExecutionContext? = nil
     ) async throws -> Value {
-        let op = (args["op"]?.stringValue ?? "snapshot").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if op != "snapshot" {
+        let operation = MCPPromptContextOperation.parse(
+            toolName: MCPWindowToolName.workspaceContext,
+            arguments: args
+        )
+        if operation != .snapshot {
             var forwarded = args
-            forwarded["op"] = .string(op)
-            switch op {
-            case "export", "list_presets", "select_preset":
-                return try await executePrompt(args: forwarded, appContext: appContext)
+            forwarded["op"] = .string(operation.rawValue)
+            switch operation {
+            case .export, .listPresets, .selectPreset:
+                return try await executePromptBody(
+                    operation: operation,
+                    args: forwarded,
+                    appContext: appContext
+                )
             default:
-                throw MCPError.invalidParams("Unsupported workspace_context op '\(op)'. Use snapshot, export, list_presets, or select_preset.")
+                throw MCPError.invalidParams("Unsupported workspace_context op '\(operation.rawValue)'. Use snapshot, export, list_presets, or select_preset.")
             }
         }
         let includeArr = args["include"]?.arrayValue?.compactMap { $0.stringValue?.lowercased() } ?? ["prompt", "selection", "code", "tokens"]
@@ -89,15 +96,23 @@ final class MCPPromptContextToolProvider {
         args: [String: Value],
         appContext: MCPServerViewModel.DomainReadAppExecutionContext? = nil
     ) async throws -> Value {
-        try await executePromptBody(args: args, appContext: appContext)
+        let operation = MCPPromptContextOperation.parse(
+            toolName: MCPWindowToolName.prompt,
+            arguments: args
+        )
+        return try await executePromptBody(
+            operation: operation,
+            args: args,
+            appContext: appContext
+        )
     }
 
     private func executePromptBody(
+        operation: MCPPromptContextOperation,
         args: [String: Value],
         appContext: MCPServerViewModel.DomainReadAppExecutionContext?
     ) async throws -> Value {
-        let op = (args["op"]?.stringValue ?? "get").lowercased()
-        if op == "list_presets" {
+        if operation == .listPresets {
             return try Value(ToolResultDTOs.PromptToolEnvelope.forPresetsList(dependencies.prompt.buildCopyPresetsListDTO()))
         }
         let metadata: MCPServerViewModel.RequestMetadata = if let appContext {
@@ -105,7 +120,7 @@ final class MCPPromptContextToolProvider {
         } else {
             await dependencies.context.captureRequestMetadata()
         }
-        if op == "export" {
+        if operation == .export {
             guard try await dependencies.files.drainReadFileAutoSelection(metadata, .mirroredSelectionAndMetrics) == .completed else {
                 throw CancellationError()
             }
@@ -118,35 +133,37 @@ final class MCPPromptContextToolProvider {
                 MCPWindowToolName.prompt
             )
         }
-        return try await executeTabScopedPrompt(op: op, args: args, resolvedContext: resolvedContext)
+        return try await executeTabScopedPrompt(
+            operation: operation,
+            args: args,
+            resolvedContext: resolvedContext
+        )
     }
 
-    private func executeTabScopedPrompt(op: String, args: [String: Value], resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot) async throws -> Value {
+    private func executeTabScopedPrompt(operation: MCPPromptContextOperation, args: [String: Value], resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot) async throws -> Value {
         let tabContext = resolvedContext.snapshot
-        switch op {
-        case "get":
-            return try Value(simplePromptReply(tabContext.promptText, op: op))
-        case "set":
+        switch operation {
+        case .get:
+            return try Value(simplePromptReply(tabContext.promptText, op: operation.rawValue))
+        case .set:
             guard let text = args["text"]?.stringValue else { throw MCPError.invalidParams("text required for set") }
             try await MCPDomainMutationCommitContext.willCommit()
             try await dependencies.context.updateCurrentTabContext(MCPWindowToolName.prompt) { $0.promptText = text }
             let context = try await dependencies.execution.requireCurrentTabContext(MCPWindowToolName.prompt)
-            return try Value(simplePromptReply(context.promptText, op: op))
-        case "append":
+            return try Value(simplePromptReply(context.promptText, op: operation.rawValue))
+        case .append:
             guard let text = args["text"]?.stringValue else { throw MCPError.invalidParams("text required for append") }
             try await MCPDomainMutationCommitContext.willCommit()
             try await dependencies.context.updateCurrentTabContext(MCPWindowToolName.prompt) { $0.promptText += text }
             let context = try await dependencies.execution.requireCurrentTabContext(MCPWindowToolName.prompt)
-            return try Value(simplePromptReply(context.promptText, op: op))
-        case "clear":
+            return try Value(simplePromptReply(context.promptText, op: operation.rawValue))
+        case .clear:
             try await MCPDomainMutationCommitContext.willCommit()
             try await dependencies.context.updateCurrentTabContext(MCPWindowToolName.prompt) { $0.promptText = "" }
-            return try Value(simplePromptReply("", op: op))
-        case "export":
+            return try Value(simplePromptReply("", op: operation.rawValue))
+        case .export:
             return try await exportPrompt(args: args, resolvedContext: resolvedContext, tabContext: tabContext)
-        case "list_presets":
-            return try Value(ToolResultDTOs.PromptToolEnvelope.forPresetsList(dependencies.prompt.buildCopyPresetsListDTO()))
-        case "select_preset":
+        case .selectPreset:
             guard tabContext.explicitlyBound, tabContext.runID == nil else {
                 throw MCPError.invalidParams("select_preset requires an explicitly bound tab (bind_context or _tabID). It is disabled for run-based bindings; use copy_preset override in workspace_context or export instead.")
             }
@@ -154,8 +171,8 @@ final class MCPPromptContextToolProvider {
             try await MCPDomainMutationCommitContext.willCommit()
             await MainActor.run { dependencies.context.promptVM.selectCopyPreset(preset.id) }
             return try Value(ToolResultDTOs.PromptToolEnvelope.forSelectPreset(dependencies.prompt.copyPresetDescriptorDTO(preset)))
-        default:
-            throw MCPError.invalidParams("Unsupported op '\(op)' for prompt when tab context is active")
+        case .snapshot, .listPresets, .unknown:
+            throw MCPError.invalidParams("Unsupported op '\(operation.rawValue)' for prompt when tab context is active")
         }
     }
 

@@ -7,6 +7,7 @@ import XCTest
 final class MCPToolExecutionContractTests: XCTestCase {
     func testCentralTimeoutPolicyMatchesProductContract() {
         XCTAssertEqual(MCPTimeoutPolicy.boundedToolExecutionDeadlineSeconds, 30)
+        XCTAssertEqual(MCPTimeoutPolicy.promptExportExecutionDeadlineSeconds, 240)
         XCTAssertEqual(MCPTimeoutPolicy.fileActionTrashExecutionDeadlineSeconds, 60)
         XCTAssertEqual(MCPTimeoutPolicy.workspaceFreshnessWaitTimeoutSeconds, 30)
         XCTAssertEqual(MCPTimeoutPolicy.workspaceSwitchToolExecutionDeadlineSeconds, 120)
@@ -18,6 +19,57 @@ final class MCPToolExecutionContractTests: XCTestCase {
         XCTAssertEqual(MCPTimeoutPolicy.nextUserInstructionDefaultWaitSeconds, 600)
         XCTAssertEqual(MCPTimeoutPolicy.applyEditsApprovalTimeoutSeconds, 300)
         XCTAssertEqual(MCPTimeoutPolicy.worktreeMergeApprovalTimeoutSeconds, 600)
+    }
+
+    func testPromptContextExportUsesExtendedBoundedForceDisconnectContract() {
+        let cases: [(label: String, toolName: String, arguments: [String: Value])] = [
+            ("prompt", MCPWindowToolName.prompt, ["op": .string("export")]),
+            ("normalized prompt", MCPWindowToolName.prompt, ["op": .string("  ExPoRt  ")]),
+            ("workspace context", MCPWindowToolName.workspaceContext, ["op": .string("export")]),
+            ("normalized workspace context", MCPWindowToolName.workspaceContext, ["op": .string("  ExPoRt  ")])
+        ]
+
+        for testCase in cases {
+            guard case let .bounded(deadline, cancellationGrace, cleanupDisposition) = MCPToolExecutionContractCatalog.contract(
+                for: testCase.toolName,
+                arguments: testCase.arguments
+            ) else {
+                XCTFail("Expected bounded export contract for \(testCase.label)")
+                continue
+            }
+            XCTAssertEqual(deadline, MCPTimeoutPolicy.promptExportExecutionDeadline, testCase.label)
+            XCTAssertEqual(cancellationGrace, MCPTimeoutPolicy.boundedToolCancellationCleanupGrace, testCase.label)
+            XCTAssertEqual(cleanupDisposition, .forceDisconnect, testCase.label)
+
+            let serverEnvelope = MCPTimeoutPolicy.promptExportExecutionDeadlineSeconds
+                + MCPTimeoutPolicy.boundedToolCancellationCleanupGraceSeconds
+                + MCPTimeoutPolicy.responseSendDeadlineSeconds
+            XCTAssertLessThan(TimeInterval(serverEnvelope), MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds, testCase.label)
+        }
+    }
+
+    func testPromptContextNonExportOperationsRetainOrdinaryContract() {
+        let cases: [(label: String, toolName: String, arguments: [String: Value])] = [
+            ("prompt default", MCPWindowToolName.prompt, [:]),
+            ("prompt malformed", MCPWindowToolName.prompt, ["op": .bool(true)]),
+            ("prompt unknown", MCPWindowToolName.prompt, ["op": .string("  Future_Op  ")]),
+            ("prompt set", MCPWindowToolName.prompt, ["op": .string("set")]),
+            ("workspace default", MCPWindowToolName.workspaceContext, [:]),
+            ("workspace malformed", MCPWindowToolName.workspaceContext, ["op": .bool(true)]),
+            ("workspace unknown", MCPWindowToolName.workspaceContext, ["op": .string("  Future_Op  ")]),
+            ("workspace snapshot", MCPWindowToolName.workspaceContext, ["op": .string("snapshot")])
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                MCPToolExecutionContractCatalog.contract(
+                    for: testCase.toolName,
+                    arguments: testCase.arguments
+                ),
+                MCPToolExecutionContractCatalog.contract(for: testCase.toolName),
+                testCase.label
+            )
+        }
     }
 
     func testFileActionsDeleteUsesFinderTrashDeadline() {

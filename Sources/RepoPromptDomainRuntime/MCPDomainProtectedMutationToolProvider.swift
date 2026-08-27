@@ -96,20 +96,17 @@ package struct MCPDomainProtectedMutationToolProvider: Sendable {
                 ? .init(toolName: toolName, action: action)
                 : nil
         case "prompt":
-            let action = arguments["op"]?.stringValue ?? "get"
-            if ["set", "append", "clear", "select_preset"].contains(action) {
-                return .init(toolName: toolName, action: action)
-            }
-            if action == "export" {
-                return .init(toolName: toolName, action: action)
-            }
-            return nil
+            return promptContextMutationOperation(
+                toolName: toolName,
+                arguments: arguments,
+                allowedOperations: [.set, .append, .clear, .export, .selectPreset]
+            )
         case "workspace_context":
-            let action = arguments["op"]?.stringValue ?? "snapshot"
-            if action == "select_preset" || action == "export" {
-                return .init(toolName: toolName, action: action)
-            }
-            return nil
+            return promptContextMutationOperation(
+                toolName: toolName,
+                arguments: arguments,
+                allowedOperations: [.export, .selectPreset]
+            )
         case "bind_context":
             let action = arguments["op"]?.stringValue ?? "list"
             return action == "bind" ? .init(toolName: toolName, action: action) : nil
@@ -140,6 +137,16 @@ package struct MCPDomainProtectedMutationToolProvider: Sendable {
         default:
             return nil
         }
+    }
+
+    private static func promptContextMutationOperation(
+        toolName: String,
+        arguments: [String: Value],
+        allowedOperations: [MCPPromptContextOperation]
+    ) -> DomainProtectedMutationOperation? {
+        let operation = MCPPromptContextOperation.parse(toolName: toolName, arguments: arguments)
+        guard allowedOperations.contains(operation) else { return nil }
+        return .init(toolName: toolName, action: operation.rawValue)
     }
 
     private static func executeDurableMutation(

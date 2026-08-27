@@ -6,6 +6,13 @@ public enum MCPTimeoutPolicy {
     public static let boundedToolExecutionDeadlineSeconds = 30
     public static let boundedToolExecutionDeadline: Duration = .seconds(boundedToolExecutionDeadlineSeconds)
 
+    /// The 240-second export bound plus five-second cleanup grace and 30-second response
+    /// delivery allowance stays within the ordinary 300-second CLI deadline.
+    public static let promptExportExecutionDeadlineSeconds = 240
+    public static let promptExportExecutionDeadline: Duration = .seconds(
+        promptExportExecutionDeadlineSeconds
+    )
+
     /// macOS Finder Trash can legitimately retain synchronous post-move work after the source
     /// path disappears. Keep destructive file_actions bounded, but allow that system tail to
     /// settle as an applied mutation instead of reporting a false cancellation.
