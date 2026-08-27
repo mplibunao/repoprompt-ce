@@ -120,18 +120,29 @@ final class MCPPromptContextToolProvider {
         } else {
             await dependencies.context.captureRequestMetadata()
         }
-        if operation == .export {
-            guard try await dependencies.files.drainReadFileAutoSelection(metadata, .mirroredSelectionAndMetrics) == .completed else {
-                throw CancellationError()
+        let resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot = if operation == .export {
+            try await withPromptExportPhase(.promptExportSelectionDrain) {
+                guard try await dependencies.files.drainReadFileAutoSelection(metadata, .mirroredSelectionAndMetrics) == .completed else {
+                    throw CancellationError()
+                }
+                return if let appContext {
+                    selectionRefreshedContext(appContext.resolvedTabContext)
+                } else {
+                    try await dependencies.context.resolveTabContextSnapshot(
+                        metadata,
+                        MCPWindowToolName.prompt
+                    )
+                }
             }
-        }
-        let resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot = if let appContext {
-            selectionRefreshedContext(appContext.resolvedTabContext)
         } else {
-            try await dependencies.context.resolveTabContextSnapshot(
-                metadata,
-                MCPWindowToolName.prompt
-            )
+            if let appContext {
+                selectionRefreshedContext(appContext.resolvedTabContext)
+            } else {
+                try await dependencies.context.resolveTabContextSnapshot(
+                    metadata,
+                    MCPWindowToolName.prompt
+                )
+            }
         }
         return try await executeTabScopedPrompt(
             operation: operation,
@@ -256,41 +267,119 @@ final class MCPPromptContextToolProvider {
         return try Value(envelope)
     }
 
-    private func exportPrompt(args: [String: Value], resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot, tabContext: MCPServerViewModel.TabContextSnapshot?) async throws -> Value {
+    private func exportPrompt(
+        args: [String: Value],
+        resolvedContext: MCPServerViewModel.ResolvedTabContextSnapshot,
+        tabContext: MCPServerViewModel.TabContextSnapshot?
+    ) async throws -> Value {
         guard let rawPath = args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPath.isEmpty else {
             throw MCPError.invalidParams("path required for export")
         }
-        let overridePreset = try await resolveCopyPresetOverride(args["copy_preset"])
-        let activePreset = await MainActor.run { dependencies.context.promptVM.currentCopyPreset() }
-        let effectivePreset = overridePreset ?? activePreset
-        let cfg = await MainActor.run { dependencies.context.promptVM.resolvePromptContext(effectivePreset, custom: dependencies.context.promptVM.workingCopyCustomizations) }
-        let text = if let tabContext {
-            await dependencies.prompt.buildTabClipboardContent(cfg, tabContext)
-        } else {
-            await dependencies.context.promptVM.buildClipboard(for: cfg)
+
+        let preset = try await withPromptExportPhase(.promptExportPresetResolution) {
+            let overridePreset = try await resolveCopyPresetOverride(args["copy_preset"])
+            let activePreset = await dependencies.context.promptVM.currentCopyPreset()
+            let effectivePreset = overridePreset ?? activePreset
+            let cfg = dependencies.context.promptVM.resolvePromptContext(
+                effectivePreset,
+                custom: dependencies.context.promptVM.workingCopyCustomizations
+            )
+            return (effectivePreset: effectivePreset, cfg: cfg)
         }
-        let pathDisplay = await MainActor.run { dependencies.context.promptVM.filePathDisplayOption }
-        let rootRefs = await dependencies.context.promptVM.workspaceFileContextStore.rootRefs(scope: .allLoaded)
-        let effectiveContext = tabContext.map { MCPServerViewModel.ResolvedTabContextSnapshot(snapshot: $0) } ?? resolvedContext
-        let files = try await dependencies.prompt.buildExportSelectedFileInfos(effectiveContext, cfg, tabContext?.selection, pathDisplay)
-        let metadata = await dependencies.context.captureRequestMetadata()
-        let lookupContext = await dependencies.selection.resolveFileToolLookupContext(metadata)
-        let mutationRootMappings = await lookupContext.domainMutationPhysicalRootMappings(
-            store: dependencies.context.promptVM.workspaceFileContextStore
-        )
-        let physicalPath = lookupContext.translateInputPath(rawPath)
-        let resolvedPath = try await dependencies.prompt.writePromptExportFile(
-            physicalPath,
-            text,
-            mutationRootMappings
-        )
-        _ = await dependencies.context.promptVM.workspaceFileContextStore.awaitAppliedIngressForExplicitRequest(
-            userPath: resolvedPath,
-            fallbackScope: .allLoaded
-        )
-        let exportPath = pathDisplay == .full ? resolvedPath : MCPWindowWorkspaceToolHelpers.prefixedRelativePath(forPath: resolvedPath, rootRefs: rootRefs)
-        let envelope = ToolResultDTOs.PromptToolEnvelope.forExport(ToolResultDTOs.PromptExportReply(path: exportPath, tokens: TokenCalculationService.estimateTokens(for: text), bytes: text.lengthOfBytes(using: .utf8), files: files, copyPreset: dependencies.prompt.copyPresetDescriptorDTO(effectivePreset)))
-        return try Value(envelope)
+
+        let text = try await withPromptExportPhase(.promptExportContentAssembly) {
+            if let tabContext {
+                await dependencies.prompt.buildTabClipboardContent(preset.cfg, tabContext)
+            } else {
+                await dependencies.context.promptVM.buildClipboard(for: preset.cfg)
+            }
+            // Clipboard assembly is nonthrowing and app-adapter loss can yield an empty
+            // compatibility result, so cancellation is revalidated before authorization.
+        }
+
+        let exportMetadata = try await withPromptExportPhase(.promptExportMetadataAssembly) {
+            let pathDisplay = dependencies.context.promptVM.filePathDisplayOption
+            let rootRefs = await dependencies.context.promptVM.workspaceFileContextStore.rootRefs(scope: .allLoaded)
+            let effectiveContext = tabContext.map { MCPServerViewModel.ResolvedTabContextSnapshot(snapshot: $0) } ?? resolvedContext
+            let files = try await dependencies.prompt.buildExportSelectedFileInfos(
+                effectiveContext,
+                preset.cfg,
+                tabContext?.selection,
+                pathDisplay
+            )
+            return (
+                pathDisplay: pathDisplay,
+                rootRefs: rootRefs,
+                files: files,
+                tokens: TokenCalculationService.estimateTokens(for: text),
+                bytes: text.lengthOfBytes(using: .utf8)
+            )
+        }
+
+        let destination = try await withPromptExportPhase(.promptExportDestinationAuthorization) {
+            let metadata = await dependencies.context.captureRequestMetadata()
+            let lookupContext = await dependencies.selection.resolveFileToolLookupContext(metadata)
+            let mutationRootMappings = await lookupContext.domainMutationPhysicalRootMappings(
+                store: dependencies.context.promptVM.workspaceFileContextStore
+            )
+            return (
+                physicalPath: lookupContext.translateInputPath(rawPath),
+                mutationRootMappings: mutationRootMappings
+            )
+        }
+
+        let resolvedPath = try await withPromptExportPhase(.promptExportDurableWrite) {
+            await dependencies.prompt.reachExportPhaseHook(.beforeDurableWrite)
+            try Task.checkCancellation()
+            let path = try await dependencies.prompt.writePromptExportFile(
+                destination.physicalPath,
+                text,
+                destination.mutationRootMappings
+            )
+            await dependencies.prompt.reachExportPhaseHook(.afterDurableWrite)
+            return path
+        }
+
+        try await withPromptExportPhase(.promptExportIngressWait) {
+            _ = await dependencies.context.promptVM.workspaceFileContextStore.awaitAppliedIngressForExplicitRequest(
+                userPath: resolvedPath,
+                fallbackScope: .allLoaded
+            )
+        }
+
+        return try await withPromptExportPhase(.promptExportReplyAssembly) {
+            let exportPath = exportMetadata.pathDisplay == .full
+                ? resolvedPath
+                : MCPWindowWorkspaceToolHelpers.prefixedRelativePath(
+                    forPath: resolvedPath,
+                    rootRefs: exportMetadata.rootRefs
+                )
+            let envelope = ToolResultDTOs.PromptToolEnvelope.forExport(ToolResultDTOs.PromptExportReply(
+                path: exportPath,
+                tokens: exportMetadata.tokens,
+                bytes: exportMetadata.bytes,
+                files: exportMetadata.files,
+                copyPreset: dependencies.prompt.copyPresetDescriptorDTO(preset.effectivePreset)
+            ))
+            return try Value(envelope)
+        }
+    }
+
+    private func withPromptExportPhase<T>(
+        _ phase: MCPToolExecutionHandlerPhase,
+        operation: () async throws -> T
+    ) async throws -> T {
+        try Task.checkCancellation()
+        await MCPToolExecutionHandlerPhaseContext.report(phase)
+        do {
+            let value = try await operation()
+            try Task.checkCancellation()
+            await MCPToolExecutionHandlerPhaseContext.report(phase, transition: .completed)
+            return value
+        } catch {
+            await MCPToolExecutionHandlerPhaseContext.report(phase, transition: .completed)
+            throw error
+        }
     }
 
     private func resolveCopyPresetOverride(_ value: Value?) async throws -> CopyPreset? {

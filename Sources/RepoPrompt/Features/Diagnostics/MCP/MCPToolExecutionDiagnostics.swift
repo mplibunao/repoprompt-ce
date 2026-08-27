@@ -19,6 +19,14 @@ enum MCPToolExecutionHandlerPhase: String, Equatable {
     case getFileTreeRequestResolution = "get_file_tree.request_resolution"
     case getFileTreeIngressWait = "get_file_tree.ingress_wait"
     case getFileTreeConstruction = "get_file_tree.construction"
+    case promptExportSelectionDrain = "prompt_export.selection_drain"
+    case promptExportPresetResolution = "prompt_export.preset_resolution"
+    case promptExportContentAssembly = "prompt_export.content_assembly"
+    case promptExportMetadataAssembly = "prompt_export.metadata_assembly"
+    case promptExportDestinationAuthorization = "prompt_export.destination_authorization"
+    case promptExportDurableWrite = "prompt_export.durable_write"
+    case promptExportIngressWait = "prompt_export.ingress_wait"
+    case promptExportReplyAssembly = "prompt_export.reply_assembly"
     // Graph-first get_code_structure execution stages.
     case getCodeStructureSeedResolution = "get_code_structure.seed_resolution"
     case getCodeStructureGraphSnapshot = "get_code_structure.graph_snapshot"
@@ -57,16 +65,19 @@ final class MCPToolExecutionHandlerPhaseRecorder: @unchecked Sendable {
         self.now = now
     }
 
+    @discardableResult
     func report(
         _ phase: MCPToolExecutionHandlerPhase,
         transition: MCPToolExecutionHandlerPhaseTransition
-    ) async {
+    ) async -> MCPToolExecutionHandlerPhaseSnapshot {
         let current = await now()
-        store(MCPToolExecutionHandlerPhaseSnapshot(
+        let snapshot = MCPToolExecutionHandlerPhaseSnapshot(
             phase: phase,
             transition: transition,
             elapsedMilliseconds: max(0, current.mcpMilliseconds - origin.mcpMilliseconds)
-        ))
+        )
+        store(snapshot)
+        return snapshot
     }
 
     func snapshot() -> MCPToolExecutionHandlerPhaseSnapshot? {
@@ -86,13 +97,36 @@ enum MCPToolExecutionHandlerPhaseContext {
     @TaskLocal
     static var recorder: MCPToolExecutionHandlerPhaseRecorder?
 
+    #if DEBUG
+        private final class DebugState: @unchecked Sendable {
+            let lock = NSLock()
+            var sink: (@Sendable (MCPToolExecutionHandlerPhaseSnapshot) -> Void)?
+        }
+
+        private static let debugState = DebugState()
+    #endif
+
     static func report(
         _ phase: MCPToolExecutionHandlerPhase,
         transition: MCPToolExecutionHandlerPhaseTransition = .started
     ) async {
         guard let recorder else { return }
-        await recorder.report(phase, transition: transition)
+        #if DEBUG
+            let snapshot = await recorder.report(phase, transition: transition)
+            let sink = debugState.lock.withLock { debugState.sink }
+            sink?(snapshot)
+        #else
+            _ = await recorder.report(phase, transition: transition)
+        #endif
     }
+
+    #if DEBUG
+        static func setTestSink(_ sink: (@Sendable (MCPToolExecutionHandlerPhaseSnapshot) -> Void)?) {
+            debugState.lock.lock()
+            debugState.sink = sink
+            debugState.lock.unlock()
+        }
+    #endif
 }
 
 struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {

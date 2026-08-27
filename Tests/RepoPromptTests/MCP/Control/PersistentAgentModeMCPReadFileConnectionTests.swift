@@ -154,6 +154,30 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
         #endif
     }
 
+    func testPromptExportsCancelledAtPreWriteHookDoNotReachWriter() async throws {
+        #if DEBUG
+            for scenario in [CheckpointScenario.promptExportPreWriteCancellation, .workspaceContextExportPreWriteCancellation] {
+                try await withFixture { fixture in
+                    try await runCheckpoint(fixture: fixture, scenario: scenario)
+                }
+            }
+        #else
+            throw XCTSkip("Persistent Agent Mode MCP socketpair integration requires DEBUG inspection helpers.")
+        #endif
+    }
+
+    func testLargePromptExportsRecordSharedPreAndPostCommitTiming() async throws {
+        #if DEBUG
+            for scenario in [CheckpointScenario.promptExportLargeTiming, .workspaceContextExportLargeTiming] {
+                try await withFixture { fixture in
+                    try await runCheckpoint(fixture: fixture, scenario: scenario)
+                }
+            }
+        #else
+            throw XCTSkip("Persistent Agent Mode MCP socketpair integration requires DEBUG inspection helpers.")
+        #endif
+    }
+
     func testRetainedManageSelectionClearDrainsPendingReadAdditionBeforeApplyingClear() async throws {
         #if DEBUG
             try await withFixture { fixture in
@@ -254,6 +278,10 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
             case serialReads
             case workspaceContextDrain
             case promptExportDrain
+            case promptExportPreWriteCancellation
+            case workspaceContextExportPreWriteCancellation
+            case promptExportLargeTiming
+            case workspaceContextExportLargeTiming
             case manageSelectionClear
             case endOfRun
             case searchWorkspaceContextDrain
@@ -286,6 +314,34 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                     false
                 default:
                     true
+                }
+            }
+
+            var exportTimingLabel: String {
+                switch self {
+                case .promptExportPreWriteCancellation, .promptExportLargeTiming:
+                    "prompt"
+                case .workspaceContextExportPreWriteCancellation, .workspaceContextExportLargeTiming:
+                    "workspace_context"
+                default:
+                    preconditionFailure("Export invocation requested for non-export scenario")
+                }
+            }
+
+            func exportInvocation(path: String) -> (toolName: String, arguments: [String: Any]) {
+                switch self {
+                case .promptExportPreWriteCancellation, .promptExportLargeTiming:
+                    (
+                        toolName: MCPWindowToolName.prompt,
+                        arguments: ["op": "export", "path": path]
+                    )
+                case .workspaceContextExportPreWriteCancellation, .workspaceContextExportLargeTiming:
+                    (
+                        toolName: MCPWindowToolName.workspaceContext,
+                        arguments: ["op": "export", "path": path]
+                    )
+                default:
+                    preconditionFailure("Export invocation requested for non-export scenario")
                 }
             }
         }
@@ -456,6 +512,10 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 try await assertWorkspaceContextDrain(fixture: fixture)
             case .promptExportDrain:
                 try await assertPromptExportDrain(fixture: fixture)
+            case .promptExportPreWriteCancellation, .workspaceContextExportPreWriteCancellation:
+                try await assertPromptExportPreWriteCancellation(fixture: fixture, scenario: scenario)
+            case .promptExportLargeTiming, .workspaceContextExportLargeTiming:
+                try await assertLargePromptExportTiming(fixture: fixture, scenario: scenario)
             case .manageSelectionClear:
                 try await assertManageSelectionClearOrdering(fixture: fixture)
             case .endOfRun:
@@ -2418,6 +2478,163 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
             Self.assertStableAgentModeSnapshot(current, fixture: fixture)
         }
 
+        func assertPromptExportPreWriteCancellation(
+            fixture: Fixture,
+            scenario: CheckpointScenario
+        ) async throws {
+            let exportURL = fixture.rootURL.appendingPathComponent("\(scenario.exportTimingLabel)-prewrite-cancelled.txt")
+            let afterWriteReached = PersistentAsyncSignal()
+            let phaseRecords = PromptExportPhaseRecordCollector()
+            MCPToolExecutionHandlerPhaseContext.setTestSink { phaseRecords.append($0) }
+            MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                switch phase {
+                case .beforeDurableWrite:
+                    withUnsafeCurrentTask { task in
+                        task?.cancel()
+                    }
+                case .afterDurableWrite:
+                    await afterWriteReached.mark()
+                }
+            }
+            defer {
+                MCPToolExecutionHandlerPhaseContext.setTestSink(nil)
+                MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+            }
+
+            let invocation = scenario.exportInvocation(path: exportURL.path)
+            let response = try await fixture.socketClient.request(
+                id: 6,
+                method: "tools/call",
+                params: [
+                    "name": invocation.toolName,
+                    "arguments": invocation.arguments
+                ]
+            )
+            let object = try Self.responseObject(from: response, id: 6)
+            let result = try XCTUnwrap(object["result"] as? [String: Any])
+            XCTAssertEqual(result["isError"] as? Bool, true, response)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+            let didReachAfterWrite = await afterWriteReached.isMarked()
+            XCTAssertFalse(didReachAfterWrite)
+            let matchingEntries = try FileManager.default.contentsOfDirectory(atPath: fixture.rootURL.path)
+                .filter { $0.contains(exportURL.lastPathComponent) }
+            XCTAssertTrue(matchingEntries.isEmpty, "Pre-write cancellation left output artifacts: \(matchingEntries)")
+
+            let trace = phaseRecords.snapshot().map { "\($0.phase.rawValue):\($0.transition.rawValue)" }
+            XCTAssertTrue(trace.contains("prompt_export.content_assembly:completed"), trace.joined(separator: ", "))
+            XCTAssertTrue(trace.contains("prompt_export.durable_write:started"), trace.joined(separator: ", "))
+            XCTAssertFalse(trace.contains("prompt_export.ingress_wait:started"), trace.joined(separator: ", "))
+
+            let toolsResponse = try await fixture.socketClient.request(
+                id: 7,
+                method: "tools/list",
+                params: [:]
+            )
+            XCTAssertTrue(try Self.toolNames(from: toolsResponse, id: 7).contains(invocation.toolName))
+            await Self.assertStableAgentModeSnapshot(fixture.retainedConnectionSnapshot(), fixture: fixture)
+        }
+
+        func assertLargePromptExportTiming(
+            fixture: Fixture,
+            scenario: CheckpointScenario
+        ) async throws {
+            let marker = "RPCE_LARGE_EXPORT_TIMING_\(scenario.exportTimingLabel)"
+            let largePrompt = marker + "\n" + String(repeating: "0123456789abcdef\n", count: 32000)
+            XCTAssertGreaterThanOrEqual(largePrompt.lengthOfBytes(using: .utf8), 500_000)
+
+            let setResponse = try await fixture.socketClient.request(
+                id: 6,
+                method: "tools/call",
+                params: [
+                    "name": MCPWindowToolName.prompt,
+                    "arguments": [
+                        "op": "set",
+                        "text": largePrompt
+                    ]
+                ]
+            )
+            let setObject = try Self.responseObject(from: setResponse, id: 6)
+            let setResult = try XCTUnwrap(setObject["result"] as? [String: Any])
+            XCTAssertNotEqual(setResult["isError"] as? Bool, true, setResponse)
+
+            let timing = PromptExportTimingProbe()
+            let phaseRecords = PromptExportPhaseRecordCollector()
+            MCPToolExecutionHandlerPhaseContext.setTestSink { phaseRecords.append($0) }
+            MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                await timing.record(phase)
+            }
+            defer {
+                MCPToolExecutionHandlerPhaseContext.setTestSink(nil)
+                MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+            }
+
+            let exportURL = fixture.rootURL.appendingPathComponent("\(scenario.exportTimingLabel)-large-export.txt")
+            let invocation = scenario.exportInvocation(path: exportURL.path)
+            let requestStarted = ContinuousClock.now
+            let response = try await fixture.socketClient.request(
+                id: 7,
+                method: "tools/call",
+                params: [
+                    "name": invocation.toolName,
+                    "arguments": invocation.arguments
+                ]
+            )
+            let responseCompleted = ContinuousClock.now
+            let object = try Self.responseObject(from: response, id: 7)
+            let result = try XCTUnwrap(object["result"] as? [String: Any])
+            XCTAssertNotEqual(result["isError"] as? Bool, true, response)
+
+            let exported = try String(contentsOf: exportURL, encoding: .utf8)
+            XCTAssertTrue(exported.contains(marker))
+            XCTAssertGreaterThanOrEqual(exported.lengthOfBytes(using: .utf8), 500_000)
+
+            let milestones = await timing.snapshot()
+            let beforeWrite = try XCTUnwrap(milestones[.beforeDurableWrite])
+            let afterWrite = try XCTUnwrap(milestones[.afterDurableWrite])
+            let preCommitMilliseconds = requestStarted.duration(to: beforeWrite).mcpMilliseconds
+            let durableWriteMilliseconds = beforeWrite.duration(to: afterWrite).mcpMilliseconds
+            let postCommitMilliseconds = afterWrite.duration(to: responseCompleted).mcpMilliseconds
+            let totalMilliseconds = requestStarted.duration(to: responseCompleted).mcpMilliseconds
+            let longTail = preCommitMilliseconds >= postCommitMilliseconds ? "pre_commit" : "post_commit"
+            print(
+                "[PromptExportTiming] entry=\(scenario.exportTimingLabel) bytes=\(exported.lengthOfBytes(using: .utf8)) "
+                    + "pre_commit_ms=\(String(format: "%.3f", preCommitMilliseconds)) "
+                    + "durable_write_ms=\(String(format: "%.3f", durableWriteMilliseconds)) "
+                    + "post_commit_ms=\(String(format: "%.3f", postCommitMilliseconds)) "
+                    + "total_ms=\(String(format: "%.3f", totalMilliseconds)) long_tail=\(longTail)"
+            )
+
+            let trace = phaseRecords.snapshot().map { "\($0.phase.rawValue):\($0.transition.rawValue)" }
+            XCTAssertEqual(trace, Self.expectedPromptExportPhaseTrace)
+
+            let toolsResponse = try await fixture.socketClient.request(
+                id: 8,
+                method: "tools/list",
+                params: [:]
+            )
+            XCTAssertTrue(try Self.toolNames(from: toolsResponse, id: 8).contains(invocation.toolName))
+            await Self.assertStableAgentModeSnapshot(fixture.retainedConnectionSnapshot(), fixture: fixture)
+        }
+
+        static let expectedPromptExportPhaseTrace: [String] = [
+            "prompt_export.selection_drain:started",
+            "prompt_export.selection_drain:completed",
+            "prompt_export.preset_resolution:started",
+            "prompt_export.preset_resolution:completed",
+            "prompt_export.content_assembly:started",
+            "prompt_export.content_assembly:completed",
+            "prompt_export.metadata_assembly:started",
+            "prompt_export.metadata_assembly:completed",
+            "prompt_export.destination_authorization:started",
+            "prompt_export.destination_authorization:completed",
+            "prompt_export.durable_write:started",
+            "prompt_export.durable_write:completed",
+            "prompt_export.ingress_wait:started",
+            "prompt_export.ingress_wait:completed",
+            "prompt_export.reply_assembly:started",
+            "prompt_export.reply_assembly:completed"
+        ]
+
         func assertManageSelectionClearOrdering(fixture: Fixture) async throws {
             let initialClear = try await fixture.socketClient.request(
                 id: 6,
@@ -2900,8 +3117,8 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
             XCTAssertNil(object["error"])
         }
 
-        static func toolNames(from rawJSON: String) throws -> [String] {
-            let object = try responseObject(from: rawJSON, id: 2)
+        static func toolNames(from rawJSON: String, id: Int = 2) throws -> [String] {
+            let object = try responseObject(from: rawJSON, id: id)
             let result = try XCTUnwrap(object["result"] as? [String: Any])
             let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
             return tools.compactMap { $0["name"] as? String }
@@ -4383,6 +4600,35 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 policyApplicationCount: policyApplicationCount,
                 appliedPolicy: appliedPolicy
             )
+        }
+    }
+
+    private final class PromptExportPhaseRecordCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var records: [MCPToolExecutionHandlerPhaseSnapshot] = []
+
+        func append(_ record: MCPToolExecutionHandlerPhaseSnapshot) {
+            lock.lock()
+            records.append(record)
+            lock.unlock()
+        }
+
+        func snapshot() -> [MCPToolExecutionHandlerPhaseSnapshot] {
+            lock.lock()
+            defer { lock.unlock() }
+            return records
+        }
+    }
+
+    private actor PromptExportTimingProbe {
+        private var milestones: [MCPAppPhysicalCapabilityAdapters.PromptExportPhaseHookPoint: ContinuousClock.Instant] = [:]
+
+        func record(_ phase: MCPAppPhysicalCapabilityAdapters.PromptExportPhaseHookPoint) {
+            milestones[phase] = ContinuousClock.now
+        }
+
+        func snapshot() -> [MCPAppPhysicalCapabilityAdapters.PromptExportPhaseHookPoint: ContinuousClock.Instant] {
+            milestones
         }
     }
 
