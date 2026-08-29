@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
 import XCTest
@@ -6,6 +7,282 @@ import XCTest
 #if DEBUG
     @MainActor
     final class MCPProtectedMutationInvocationIntegrationTests: XCTestCase {
+        func testEarlyProtectedExportFailuresRetainDerivedOperationIDAsNotApplied() async throws {
+            let runtime = AppDomainRuntimeComposition.shared.runtime
+            let bindingInvoked = ProtectedMutationBindingInvocationProbe()
+            let binding = MCPDomainToolBinding(
+                definition: MCPDomainToolDefinition(
+                    name: "prompt",
+                    description: "test",
+                    inputSchema: .object([:])
+                )
+            ) { _ in
+                bindingInvoked.recordInvocation()
+                return .object(["ok": .bool(true)])
+            }
+            let protectedBinding = runtime.protectedMutationProvider.protectedBinding(binding)
+            let principal = DomainClientPrincipal(
+                principalID: UUID(),
+                stableKey: "test:early-export",
+                displayName: "Early export test",
+                kind: .appProxy,
+                assurance: .verifiedProcess,
+                processID: Int32(getpid()),
+                runID: nil,
+                provider: nil,
+                verifiedIdentityFingerprint: "test:early-export"
+            )
+
+            for failure in ["authorization", "cancellation"] {
+                let operationID = "early-\(failure)-\(UUID().uuidString)"
+                let settlementProbe = ProtectedMutationSettlementProbe()
+                let context = DomainToolInvocationSecurityContext(
+                    principal: principal,
+                    connectionID: UUID(),
+                    connectionGeneration: 1,
+                    invocationID: UUID(),
+                    runtimeID: failure == "authorization" ? UUID() : runtime.identity.runtimeID,
+                    runtimeGeneration: runtime.identity.lifecycleGeneration,
+                    ephemeralGrantedToolNames: ["prompt"]
+                )
+                let task = Task {
+                    try await MCPDomainProtectedMutationSettlementContext.$observer.withValue(
+                        { settlementProbe.record($0) }
+                    ) {
+                        try await MCPDomainInvocationSecurityContext.$current.withValue(context) {
+                            try await protectedBinding([
+                                "op": .string("export"),
+                                "operation_id": .string(operationID)
+                            ])
+                        }
+                    }
+                }
+                if failure == "cancellation" {
+                    task.cancel()
+                }
+                do {
+                    _ = try await task.value
+                    XCTFail("Expected early \(failure) failure")
+                } catch is DomainMutationPolicyError where failure == "authorization" {
+                    // Expected.
+                } catch is CancellationError where failure == "cancellation" {
+                    // Expected.
+                }
+
+                let settlement = try XCTUnwrap(settlementProbe.snapshot().last)
+                XCTAssertEqual(settlement.operationID, operationID)
+                XCTAssertEqual(settlement.state, .notApplied)
+                let journal = try await runtime.mutationJournal.snapshot()
+                XCTAssertFalse(journal.recordSnapshots.contains { $0.operationID == operationID })
+            }
+            XCTAssertFalse(bindingInvoked.wasInvoked)
+        }
+
+        func testAppliedPromptExportSuppressesLatePublicationAfterLiveCatalogAuthorityLoss() async throws {
+            for (toolName, lossBoundary) in ["prompt", "workspace_context"].flatMap({ toolName in
+                ["observer", "final"].map { (toolName, $0) }
+            }) {
+                try await MCPSharedServerTestLease.shared.withLease { lease in
+                    let fixture = try await makeFixture(lease: lease)
+                    let endpoint = try fixture.endpointA()
+                    let manager = fixture.networkManager
+                    let operationID = "publication-loss-\(toolName)-\(lossBoundary)-\(UUID().uuidString)"
+                    let exportURL = fixture.contextA.rootURL.appendingPathComponent("\(operationID).md")
+                    let observerProbe = ProtectedMutationPublicationProbe()
+                    let afterWriteGate = MCPExecutionIgnoringCancellationGate()
+                    let runID = UUID()
+                    var observerToken: UUID?
+                    var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                    do {
+                        try await registerDomainWorkspace(fixture.contextA)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: .verified(
+                                processID: Int(getpid()),
+                                fingerprint: "test:verified:publication-loss"
+                            )
+                        )
+                        try await bind(endpoint, to: fixture.contextA)
+                        let runtime = AppDomainRuntimeComposition.shared.runtime
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                            guard lossBoundary == "observer", phase == .afterDurableWrite else { return }
+                            await afterWriteGate.enterAndWait()
+                        }
+                        await manager.debugSetBeforePromptExportPublicationClaimForTesting { connectionID, observedToolName in
+                            guard lossBoundary == "final",
+                                  connectionID == endpoint.connectionID,
+                                  observedToolName == toolName
+                            else { return }
+                            let connectionIsLive = await manager.debugContainsConnection(connectionID)
+                            await observerProbe.recordAuthorityInvalidatedWhileConnectionLive(
+                                connectionIsLive
+                            )
+                            await observerProbe.recordFinalBoundaryReached()
+                            await AppDomainRuntimeComposition.shared.unregister(fixture.contextA.catalogService)
+                        }
+                        if lossBoundary == "observer" {
+                            await manager.debugSeedConnectionRunRouting(
+                                connectionID: endpoint.connectionID,
+                                runID: runID,
+                                windowID: fixture.contextA.window.windowID
+                            )
+                        }
+
+                        let activeResponseTask = Task {
+                            try await endpoint.callTool(
+                                name: toolName,
+                                arguments: [
+                                    "op": "export",
+                                    "path": exportURL.path,
+                                    "operation_id": operationID,
+                                    "_rawJSON": true
+                                ]
+                            )
+                        }
+                        responseTask = activeResponseTask
+                        if lossBoundary == "observer" {
+                            try await afterWriteGate.waitUntilEntered(count: 1)
+                            observerToken = await manager.registerToolEventObserver(
+                                for: runID,
+                                observer: ServerNetworkManager.ToolEventObserver(
+                                    onCalled: { _, _, _ in },
+                                    onCompleted: { _, _, _, _, _ in
+                                        await observerProbe.recordObserverCallback()
+                                    }
+                                )
+                            )
+                            await manager.debugSetBeforeToolEventObserverDeliveryForTesting {
+                                let connectionIsLive = await manager.debugContainsConnection(endpoint.connectionID)
+                                await observerProbe.recordAuthorityInvalidatedWhileConnectionLive(
+                                    connectionIsLive
+                                )
+                                await observerProbe.recordObserverDeliveryReached()
+                                await AppDomainRuntimeComposition.shared.unregister(fixture.contextA.catalogService)
+                            }
+                            await afterWriteGate.release()
+                        }
+                        await Self.assertSocketClosed(activeResponseTask)
+                        responseTask = nil
+
+                        let publicationSnapshot = await observerProbe.snapshot()
+                        XCTAssertEqual(publicationSnapshot.observerDeliveryReached, lossBoundary == "observer")
+                        XCTAssertEqual(publicationSnapshot.finalBoundaryReached, lossBoundary == "final")
+                        XCTAssertFalse(publicationSnapshot.observerCallbackReached)
+                        XCTAssertTrue(publicationSnapshot.authorityInvalidatedWhileConnectionLive)
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+                        let record = try await Self.journalRecord(
+                            runtime: runtime,
+                            operationID: operationID
+                        )
+                        XCTAssertEqual(record.toolName, toolName)
+                        XCTAssertEqual(record.status.rawValue, DomainMutationJournalStatus.applied.rawValue)
+
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetBeforeToolEventObserverDeliveryForTesting(nil)
+                        await manager.debugSetBeforePromptExportPublicationClaimForTesting(nil)
+                        if let observerToken {
+                            await manager.unregisterToolEventObserver(for: runID, token: observerToken)
+                        }
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await fixture.cleanup()
+                    } catch {
+                        await afterWriteGate.release()
+                        responseTask?.cancel()
+                        if let responseTask { _ = try? await responseTask.value }
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetBeforeToolEventObserverDeliveryForTesting(nil)
+                        await manager.debugSetBeforePromptExportPublicationClaimForTesting(nil)
+                        if let observerToken {
+                            await manager.unregisterToolEventObserver(for: runID, token: observerToken)
+                        }
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await fixture.cleanup()
+                        throw error
+                    }
+                }
+            }
+        }
+
+        func testPostCommitCancellationReturnsIndeterminateProtectedMutationMetadata() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await makeFixture(lease: lease)
+                let endpoint = try fixture.endpointA()
+                let manager = fixture.networkManager
+                let operationID = "post-commit-cancellation-\(UUID().uuidString)"
+                let exportURL = fixture.contextA.rootURL.appendingPathComponent("\(operationID).md")
+                do {
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                        guard phase == .afterDurableWrite else { return }
+                        withUnsafeCurrentTask { task in
+                            task?.cancel()
+                        }
+                    }
+                    try await registerDomainWorkspace(fixture.contextA)
+                    await manager.debugSetDomainPeerIdentityForTesting(
+                        connectionID: endpoint.connectionID,
+                        identity: .verified(
+                            processID: Int(getpid()),
+                            fingerprint: "test:verified:post-commit-cancellation"
+                        )
+                    )
+                    try await bind(endpoint, to: fixture.contextA)
+                    let runtime = AppDomainRuntimeComposition.shared.runtime
+
+                    let response = try await endpoint.callTool(
+                        name: "workspace_context",
+                        arguments: [
+                            "op": "export",
+                            "path": exportURL.path,
+                            "operation_id": operationID,
+                            "_rawJSON": true
+                        ]
+                    )
+                    let payload = try Self.toolResultObject(response)
+                    XCTAssertEqual(
+                        payload["code"] as? String,
+                        "protected_mutation_indeterminate_after_commit"
+                    )
+                    XCTAssertEqual(payload["settlement"] as? String, "error")
+                    XCTAssertEqual(payload["mutation_state"] as? String, "indeterminate_after_commit")
+                    XCTAssertEqual(payload["retryable"] as? Bool, false)
+                    XCTAssertEqual(payload["operation_id"] as? String, operationID)
+                    XCTAssertEqual(payload["tool"] as? String, "workspace_context")
+                    XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+                    let record = try await Self.journalRecord(
+                        runtime: runtime,
+                        operationID: operationID
+                    )
+                    XCTAssertEqual(
+                        record.status.rawValue,
+                        DomainMutationJournalStatus.indeterminateAfterCommit.rawValue
+                    )
+
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                    await manager.debugSetDomainPeerIdentityForTesting(
+                        connectionID: endpoint.connectionID,
+                        identity: nil
+                    )
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                    await manager.debugSetDomainPeerIdentityForTesting(
+                        connectionID: endpoint.connectionID,
+                        identity: nil
+                    )
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testPromptStateMutationsCommitWithoutPhysicalPathAdmission() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await makeFixture(lease: lease)
@@ -576,6 +853,42 @@ import XCTest
             )
         }
 
+        private static func toolResultObject(
+            _ response: PersistentMCPTestRPCResponse
+        ) throws -> [String: Any] {
+            let data = try XCTUnwrap(response.rawJSON.data(using: .utf8))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let result = try XCTUnwrap(object["result"] as? [String: Any])
+            let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+            let text = content.compactMap { $0["text"] as? String }.joined()
+            let textData = try XCTUnwrap(text.data(using: .utf8))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: textData) as? [String: Any])
+        }
+
+        private static func journalRecord(
+            runtime: MCPDomainRuntime,
+            operationID: String
+        ) async throws -> DomainMutationJournalRecord {
+            let document = try await runtime.mutationJournal.snapshot()
+            return try XCTUnwrap(
+                document.recordSnapshots.last { $0.operationID == operationID },
+                "Missing mutation journal record for \(operationID)"
+            )
+        }
+
+        private static func assertSocketClosed(
+            _ task: Task<PersistentMCPTestRPCResponse, Error>
+        ) async {
+            do {
+                _ = try await task.value
+                XCTFail("Expected socket closure after publication authority loss")
+            } catch PersistentMCPTestSocketClient.ClientError.closed {
+                // Expected.
+            } catch {
+                XCTFail("Expected socket closure after publication authority loss, got \(error)")
+            }
+        }
+
         private func captureJournalRecord(
             runtime: MCPDomainRuntime,
             excluding priorKeys: Set<String>,
@@ -726,6 +1039,77 @@ import XCTest
                     userInfo: [NSLocalizedDescriptionKey: result.outputText]
                 )
             }
+        }
+    }
+
+    private actor ProtectedMutationPublicationProbe {
+        private(set) var observerDeliveryReached = false
+        private(set) var observerCallbackReached = false
+        private(set) var finalBoundaryReached = false
+        private(set) var authorityInvalidatedWhileConnectionLive = false
+
+        func recordObserverDeliveryReached() {
+            observerDeliveryReached = true
+        }
+
+        func recordObserverCallback() {
+            observerCallbackReached = true
+        }
+
+        func recordFinalBoundaryReached() {
+            finalBoundaryReached = true
+        }
+
+        func recordAuthorityInvalidatedWhileConnectionLive(_ value: Bool) {
+            authorityInvalidatedWhileConnectionLive = value
+        }
+
+        func snapshot() -> (
+            observerDeliveryReached: Bool,
+            observerCallbackReached: Bool,
+            finalBoundaryReached: Bool,
+            authorityInvalidatedWhileConnectionLive: Bool
+        ) {
+            (
+                observerDeliveryReached,
+                observerCallbackReached,
+                finalBoundaryReached,
+                authorityInvalidatedWhileConnectionLive
+            )
+        }
+    }
+
+    private final class ProtectedMutationSettlementProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var settlements: [DomainProtectedMutationSettlement] = []
+
+        func record(_ settlement: DomainProtectedMutationSettlement) {
+            lock.lock()
+            settlements.append(settlement)
+            lock.unlock()
+        }
+
+        func snapshot() -> [DomainProtectedMutationSettlement] {
+            lock.lock()
+            defer { lock.unlock() }
+            return settlements
+        }
+    }
+
+    private final class ProtectedMutationBindingInvocationProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var invoked = false
+
+        var wasInvoked: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return invoked
+        }
+
+        func recordInvocation() {
+            lock.lock()
+            invoked = true
+            lock.unlock()
         }
     }
 
