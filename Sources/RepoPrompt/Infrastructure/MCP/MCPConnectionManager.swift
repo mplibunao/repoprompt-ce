@@ -1005,6 +1005,57 @@ actor ServerNetworkManager {
         return CallTool.Result(content: [.text(text: ToolOutputFormatter.rawJSONString(value), annotations: nil, _meta: nil)], isError: true)
     }
 
+    private final class PromptExportMutationSettlementObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var settlement: DomainProtectedMutationSettlement?
+
+        func record(_ settlement: DomainProtectedMutationSettlement) {
+            lock.lock()
+            if self.settlement == nil || self.settlement?.state == .unknown {
+                self.settlement = settlement
+            }
+            lock.unlock()
+        }
+
+        func snapshot() -> DomainProtectedMutationSettlement? {
+            lock.lock()
+            defer { lock.unlock() }
+            return settlement
+        }
+
+        func errorMetadata(toolName: String) -> [String: Value] {
+            let settlement = snapshot()
+            var metadata: [String: Value] = [
+                "mutation_state": .string(settlement?.state.rawValue ?? "unknown"),
+                "retryable": .bool(settlement?.state == .notApplied),
+                "tool": .string(toolName)
+            ]
+            if let settlement {
+                metadata["operation_id"] = .string(settlement.operationID)
+            }
+            return metadata
+        }
+    }
+
+    private final class PromptExportPublicationAuthorityObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var authorization: ToolDispatchAuthorization?
+
+        func bind(_ authorization: ToolDispatchAuthorization) {
+            lock.lock()
+            self.authorization = authorization
+            lock.unlock()
+        }
+
+        func snapshot() -> ToolDispatchAuthorization? {
+            lock.lock()
+            defer { lock.unlock() }
+            return authorization
+        }
+    }
+
+    private struct PromptExportPublicationAuthorityLost: Error {}
+
     static func executionContractToolErrorResult(
         rawJSON: Bool,
         code: String,
@@ -1231,6 +1282,7 @@ actor ServerNetworkManager {
         private var debugAfterConnectionCallLimiterRejectionForTesting: (@Sendable (UUID) async -> Void)?
         private var debugBeforeToolResultFormattingForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforeToolCompletionObserversForTesting: (@Sendable (UUID, String) async -> Void)?
+        private var debugBeforePromptExportPublicationClaimForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforeAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugBeforeActiveToolCancellationScanForTesting: (@Sendable (UUID, [UUID]) async -> Void)?
         private var debugAllocatedActiveToolScopeIDsForTesting: Set<UUID> = []
@@ -3541,7 +3593,15 @@ actor ServerNetworkManager {
     /// Notify observers when a tool completes (with result).
     /// Deliver synchronously so tool cards can finalize before run-end fallback logic executes.
     @discardableResult
-    func fireToolCompletedObservers(runID: UUID, invocationID: UUID, toolName: String, args: [String: Value]?, resultJSON: String, isError: Bool) async -> Int {
+    func fireToolCompletedObservers(
+        runID: UUID,
+        invocationID: UUID,
+        toolName: String,
+        args: [String: Value]?,
+        resultJSON: String,
+        isError: Bool,
+        shouldDeliver: (@Sendable () async -> Bool)? = nil
+    ) async -> Int {
         guard let observers = toolEventObservers[runID], !observers.isEmpty else {
             if MCPIntegrationHelper.isRepoPromptToolNameAfterNormalization(toolName) {
                 mcpToolTrackingDiagnostic(
@@ -3562,6 +3622,9 @@ actor ServerNetworkManager {
         for (position, entry) in observerEntries.enumerated() {
             let (token, observer) = entry
             guard let onCompleted = observer.onCompleted else { continue }
+            if let shouldDeliver, await !shouldDeliver() {
+                break
+            }
             firedCount += 1
             #if DEBUG
                 let scheduledAt = DispatchTime.now().uptimeNanoseconds
@@ -9292,6 +9355,12 @@ actor ServerNetworkManager {
                 debugBeforeToolCompletionObserversForTesting = handler
             }
 
+            func debugSetBeforePromptExportPublicationClaimForTesting(
+                _ handler: (@Sendable (UUID, String) async -> Void)?
+            ) {
+                debugBeforePromptExportPublicationClaimForTesting = handler
+            }
+
             func debugIsExecutionWatchdogTerminal(connectionID: UUID) -> Bool {
                 executionWatchdogTerminalConnections.contains(connectionID)
             }
@@ -11216,6 +11285,18 @@ actor ServerNetworkManager {
             let capturedPreResolvedWindowID = preResolvedWindowID
             let capturedArguments = dispatchArguments
             let capturedArgsForFormatter = argsForFormatter
+            let isPromptExport = (toolName == "prompt" || toolName == "workspace_context")
+                && MCPPromptContextOperation.parse(toolName: toolName, arguments: capturedArguments) == .export
+            let promptExportMutationObservation: PromptExportMutationSettlementObservation? = if isPromptExport {
+                PromptExportMutationSettlementObservation()
+            } else {
+                nil
+            }
+            let promptExportPublicationAuthorityObservation: PromptExportPublicationAuthorityObservation? = if isPromptExport {
+                PromptExportPublicationAuthorityObservation()
+            } else {
+                nil
+            }
             let capturedConnectionGeneration = await requestTimelineConnectionGeneration(for: connectionID)
             let capturedProgressState: MCPDomainRequestProgressHandle? = if let progressToken = params._meta?.progressToken,
                                                                             let connectionGeneration = capturedConnectionGeneration
@@ -11229,7 +11310,7 @@ actor ServerNetworkManager {
             } else {
                 nil
             }
-            func finalizeToolResult(_ result: CallTool.Result) async -> CallTool.Result {
+            func finishRequestProgress(_ result: CallTool.Result) async -> CallTool.Result {
                 if let capturedProgressState {
                     await domainHost.finishRequestProgress(capturedProgressState)
                 }
@@ -11275,13 +11356,73 @@ actor ServerNetworkManager {
             endPreLimiterEnvelopeIfNeeded()
             guard let limiterResolution else {
                 connectionLog("tools/call \(toolName): rejected because connection limiter is unavailable")
-                return await finalizeToolResult(
+                return await finishRequestProgress(
                     Self.executionContractToolErrorResult(
                         rawJSON: capturedRawJSON,
                         code: "tool_execution_connection_terminal",
                         message: "The MCP connection is closing."
                     )
                 )
+            }
+            func finalizeToolResult(_ result: CallTool.Result) async -> CallTool.Result {
+                guard promptExportMutationObservation?.snapshot()?.state == .applied else {
+                    return await finishRequestProgress(result)
+                }
+                #if DEBUG
+                    await debugBeforePromptExportPublicationClaimForTesting?(connectionID, toolName)
+                #endif
+                let authorization = promptExportPublicationAuthorityObservation?.snapshot()
+                let windowAuthorityIsCurrent: Bool = if let windowIdentity = authorization?.windowIdentity {
+                    await self.isCurrentWindowToolDispatchIdentity(windowIdentity)
+                } else {
+                    true
+                }
+                let limiterIsCurrent = await self.isCurrentConnectionCallLimiterResolution(
+                    limiterResolution,
+                    connectionID: connectionID
+                )
+                let dispatchAuthorizationIsCurrent: Bool = if let authorization {
+                    await self.isCurrentToolDispatchAuthorization(authorization)
+                } else {
+                    false
+                }
+                let authorityIsCurrent = !Task.isCancelled
+                    && limiterIsCurrent
+                    && dispatchAuthorizationIsCurrent
+                    && windowAuthorityIsCurrent
+                guard authorityIsCurrent else {
+                    MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(
+                        layer: "app_tool_handler",
+                        phase: "publication_suppressed_after_applied_mutation",
+                        connectionID: resolvedRequestIdentity?.connectionID ?? connectionID.uuidString,
+                        connectionGeneration: resolvedRequestIdentity?.connectionGeneration,
+                        method: "tools/call",
+                        tool: toolName,
+                        invocationID: invocationID.uuidString,
+                        lifecycleState: "applied",
+                        requestOrdinal: resolvedRequestIdentity?.requestOrdinal,
+                        requestIdentity: resolvedRequestIdentity,
+                        providerActive: false,
+                        networkScopeActive: false,
+                        permitActive: false,
+                        publicationPending: false,
+                        terminalBarrier: true
+                    ))
+                    await removeConnection(
+                        connectionID,
+                        context: MCPConnectionCloseContext(
+                            reason: "prompt_export_publication_authority_lost",
+                            initiator: .app
+                        )
+                    )
+                    return await finishRequestProgress(
+                        Self.toolErrorResult(
+                            rawJSON: capturedRawJSON,
+                            message: "Publication authority was lost after '\(toolName)' completed."
+                        )
+                    )
+                }
+                return await finishRequestProgress(result)
             }
             connectionLog("tools/call \(toolName): entering limiter lane=\(callLane.rawValue)")
             let evidenceLaneWaitStart = evidenceClock.now
@@ -11796,6 +11937,48 @@ actor ServerNetworkManager {
                                     now: { executionWatchdogEnvironment.now() }
                                 )
 
+                                @Sendable func reportPromptExportPostProviderPhase(
+                                    _ phase: MCPToolExecutionHandlerPhase,
+                                    transition: MCPToolExecutionHandlerPhaseTransition = .started
+                                ) async {
+                                    guard isPromptExport, let contract = selectedExecutionContract else { return }
+                                    let snapshot = await MCPToolExecutionHandlerPhaseContext.report(
+                                        phase,
+                                        transition: transition,
+                                        using: handlerPhaseRecorder
+                                    )
+                                    let now = executionWatchdogEnvironment.now()
+                                    MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                        toolName: toolName,
+                                        operationIdentity: evidenceOperationIdentity,
+                                        connectionID: connectionID,
+                                        invocationID: invocationID,
+                                        runID: observerRunIDForCallbacksFinal,
+                                        requestIdentity: resolvedRequestIdentity,
+                                        contractKind: contract.kind,
+                                        executionDeadlineSeconds: contract.deadline?.mcpSeconds,
+                                        cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
+                                        cleanupDisposition: contract.cleanupDisposition,
+                                        phase: .handlerPhaseTransition,
+                                        elapsedMilliseconds: max(
+                                            0,
+                                            now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds
+                                        ),
+                                        cancellationRequested: nil,
+                                        cancellationOutcome: nil,
+                                        cancellationOrigin: nil,
+                                        settlement: nil,
+                                        graceOutcome: nil,
+                                        escalationReason: nil,
+                                        handlerPhase: snapshot,
+                                        handlerPhaseAgeMilliseconds: max(
+                                            0,
+                                            now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds
+                                                - snapshot.elapsedMilliseconds
+                                        )
+                                    ))
+                                }
+
                                 @Sendable func dispatchResolvedProvider(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
                                     guard await self.isCurrentConnectionCallLimiterResolution(
                                         limiterResolution,
@@ -11874,6 +12057,7 @@ actor ServerNetworkManager {
                                             connectionID: connectionID,
                                             invocationID: invocationID,
                                             runID: observerRunIDForCallbacksFinal,
+                                            requestIdentity: resolvedRequestIdentity,
                                             contractKind: contract.kind,
                                             executionDeadlineSeconds: contract.deadline?.mcpSeconds,
                                             cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
@@ -11931,10 +12115,19 @@ actor ServerNetworkManager {
                                             }
                                         }
                                         return try await MCPToolExecutionHandlerPhaseContext.$recorder.withValue(handlerPhaseRecorder) {
-                                            try await EditFlowPerf.measure(
-                                                EditFlowPerf.Stage.MCPToolCall.resolvedProviderDispatch,
-                                                EditFlowPerf.Dimensions(toolName: toolName),
-                                                operation: operation
+                                            let executeOperation = {
+                                                try await EditFlowPerf.measure(
+                                                    EditFlowPerf.Stage.MCPToolCall.resolvedProviderDispatch,
+                                                    EditFlowPerf.Dimensions(toolName: toolName),
+                                                    operation: operation
+                                                )
+                                            }
+                                            guard let promptExportMutationObservation else {
+                                                return try await executeOperation()
+                                            }
+                                            return try await MCPDomainProtectedMutationSettlementContext.$observer.withValue(
+                                                { promptExportMutationObservation.record($0) },
+                                                operation: executeOperation
                                             )
                                         }
                                     }
@@ -12117,6 +12310,43 @@ actor ServerNetworkManager {
                                     }
                                 }
 
+                                @Sendable func validatePromptExportPublicationAuthority() async throws {
+                                    guard promptExportMutationObservation != nil else { return }
+                                    guard !Task.isCancelled,
+                                          await self.isCurrentConnectionCallLimiterResolution(
+                                              limiterResolution,
+                                              connectionID: connectionID
+                                          ),
+                                          let authorization = Self.currentToolDispatchAuthorization,
+                                          await self.isCurrentToolDispatchAuthorization(authorization)
+                                    else {
+                                        throw PromptExportPublicationAuthorityLost()
+                                    }
+                                    if let windowIdentity = authorization.windowIdentity,
+                                       await !(self.isCurrentWindowToolDispatchIdentity(windowIdentity))
+                                    {
+                                        throw PromptExportPublicationAuthorityLost()
+                                    }
+                                }
+
+                                @Sendable func isPromptExportPublicationAuthorityCurrent() async -> Bool {
+                                    do {
+                                        try await validatePromptExportPublicationAuthority()
+                                        return true
+                                    } catch {
+                                        return false
+                                    }
+                                }
+
+                                @Sendable func droppedPromptExportPublicationPlaceholder() -> CallTool.Result {
+                                    // The outer final publication claim closes the transport before this
+                                    // placeholder can cross the SDK handler boundary.
+                                    Self.toolErrorResult(
+                                        rawJSON: capturedRawJSON,
+                                        message: "Publication authority was lost after '\(toolName)' completed."
+                                    )
+                                }
+
                                 @Sendable func handlerResult(_ result: CallTool.Result, outcome: String) -> CallTool.Result {
                                     EditFlowPerf.lifecycleEvent(
                                         EditFlowPerf.Lifecycle.MCPToolCall.handlerResultReady,
@@ -12239,7 +12469,10 @@ actor ServerNetworkManager {
                                         errorMetadata = [
                                             "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
                                             "settlement": .string(settlement.rawValue)
-                                        ]
+                                        ].merging(
+                                            promptExportMutationObservation?.errorMetadata(toolName: toolName) ?? [:],
+                                            uniquingKeysWith: { _, authorityValue in authorityValue }
+                                        )
                                     case MCPToolExecutionWatchdogError.executionDetached:
                                         let mutationOutcomeMayStillReconcile = toolName == MCPWindowToolName.fileActions
                                         code = "tool_execution_timeout"
@@ -12262,6 +12495,23 @@ actor ServerNetworkManager {
                                             "retryable": .bool(false),
                                             "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
                                             "settlement": .string("force_disconnect")
+                                        ].merging(
+                                            promptExportMutationObservation?.errorMetadata(toolName: toolName) ?? [:],
+                                            uniquingKeysWith: { _, authorityValue in authorityValue }
+                                        )
+                                    case let protectedError as DomainProtectedMutationError
+                                        where promptExportMutationObservation != nil:
+                                        let settlement = protectedError.settlement
+                                        code = "protected_mutation_indeterminate_after_commit"
+                                        message = protectedError.localizedDescription
+                                        outcome = "protectedMutationIndeterminateAfterCommit"
+                                        shouldForceDisconnect = false
+                                        errorMetadata = [
+                                            "mutation_state": .string(settlement.state.rawValue),
+                                            "retryable": .bool(false),
+                                            "operation_id": .string(settlement.operationID),
+                                            "tool": .string(toolName),
+                                            "settlement": .string("error")
                                         ]
                                     default:
                                         return nil
@@ -12443,6 +12693,7 @@ actor ServerNetworkManager {
                                             resolution: limiterResolution,
                                             windowIdentity: windowDispatchIdentity
                                         )
+                                        promptExportPublicationAuthorityObservation?.bind(dispatchAuthorization)
                                         let explicitWindowRoutingHint = Self.explicitWindowRoutingHint(
                                             connectionID: connectionID,
                                             toolName: toolName,
@@ -12474,9 +12725,11 @@ actor ServerNetworkManager {
                                                     )
                                                     defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.permitPostDispatchEnvelope, permitPostDispatchEnvelopeState) }
 
+                                                    await reportPromptExportPostProviderPhase(.promptExportFormatting)
                                                     #if DEBUG
                                                         await self.debugBeforeToolResultFormattingForTesting?(connectionID, toolName)
                                                     #endif
+                                                    try await validatePromptExportPublicationAuthority()
                                                     // Build well‑structured, human‑readable content blocks for the result
                                                     let contentBlocks = EditFlowPerf.measure(
                                                         EditFlowPerf.Stage.MCPToolCall.formatResult,
@@ -12492,11 +12745,17 @@ actor ServerNetworkManager {
                                                         EditFlowPerf.Lifecycle.MCPToolCall.formatResultReturned,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
                                                     )
+                                                    await reportPromptExportPostProviderPhase(
+                                                        .promptExportFormatting,
+                                                        transition: .completed
+                                                    )
+                                                    await reportPromptExportPostProviderPhase(.promptExportPublication)
 
                                                     // Fire completion observer with result for detailed UI rendering
                                                     #if DEBUG
                                                         await self.debugBeforeToolCompletionObserversForTesting?(connectionID, toolName)
                                                     #endif
+                                                    try await validatePromptExportPublicationAuthority()
                                                     await EditFlowPerf.measure(
                                                         EditFlowPerf.Stage.MCPToolCall.completionObservers,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
@@ -12512,7 +12771,15 @@ actor ServerNetworkManager {
                                                                 EditFlowPerf.Stage.MCPToolCall.completionObserverCallbacks,
                                                                 EditFlowPerf.Dimensions(toolName: toolName)
                                                             ) {
-                                                                await self.fireToolCompletedObservers(runID: runID, invocationID: invocationID, toolName: toolName, args: capturedArguments, resultJSON: resultJSON, isError: false)
+                                                                await self.fireToolCompletedObservers(
+                                                                    runID: runID,
+                                                                    invocationID: invocationID,
+                                                                    toolName: toolName,
+                                                                    args: capturedArguments,
+                                                                    resultJSON: resultJSON,
+                                                                    isError: false,
+                                                                    shouldDeliver: isPromptExportPublicationAuthorityCurrent
+                                                                )
                                                             }
                                                             #if DEBUG
                                                                 if toolName == "agent_run" {
@@ -12531,12 +12798,20 @@ actor ServerNetworkManager {
                                                     // when the run completes. This prevents killing the host MCP client
                                                     // (e.g., Claude Desktop) that invoked context_builder.
 
+                                                    try await validatePromptExportPublicationAuthority()
+                                                    await reportPromptExportPostProviderPhase(
+                                                        .promptExportPublication,
+                                                        transition: .completed
+                                                    )
                                                     return handlerResult(
                                                         CallTool.Result(content: contentBlocks, isError: false),
                                                         outcome: "success"
                                                     )
                                                 }
                                             }
+                                        } catch is PromptExportPublicationAuthorityLost {
+                                            releaseResourceAdmissionLeases(outcome: "publication_authority_lost")
+                                            return droppedPromptExportPublicationPlaceholder()
                                         } catch {
                                             releaseResourceAdmissionLeasesAfterProviderError(error)
                                             if let failure = await executionContractFailureResult(

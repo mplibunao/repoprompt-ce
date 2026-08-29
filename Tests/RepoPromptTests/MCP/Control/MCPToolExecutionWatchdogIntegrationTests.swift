@@ -9,6 +9,268 @@ import XCTest
 #if DEBUG
     @MainActor
     final class MCPToolExecutionWatchdogIntegrationTests: XCTestCase {
+        func testPromptExportDeadlineEqualityPreservesAppliedAuthorityForBothPublicTools() async throws {
+            for toolName in ["prompt", "workspace_context"] {
+                let operationID = "applied-equality-\(toolName)-\(UUID().uuidString)"
+                try await MCPSharedServerTestLease.shared.withLease { lease in
+                    let fixture = try await PersistentMCPTestFixture.make(
+                        lease: lease,
+                        domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                    )
+                    let manager = fixture.networkManager
+                    let endpoint = try fixture.endpointA()
+                    let clock = ExecutionWatchdogManualClock()
+                    let preWriteGate = MCPExecutionIgnoringCancellationGate()
+                    let schedulingGate = ExecutionWatchdogSchedulingGate(blocking: .operationCompleted)
+                    let exportURL = fixture.contextA.rootURL.appendingPathComponent("\(toolName)-\(operationID).md")
+                    var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment(
+                        eventDidProduce: { await schedulingGate.eventDidProduce($0) },
+                        beforeEventConsumption: { await schedulingGate.beforeEventConsumption($0) }
+                    ))
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                        guard phase == .beforeDurableWrite else { return }
+                        await preWriteGate.enterAndWait()
+                    }
+                    do {
+                        try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                        let activeResponseTask = Task {
+                            try await endpoint.callTool(
+                                name: toolName,
+                                arguments: [
+                                    "op": "export",
+                                    "path": exportURL.path,
+                                    "operation_id": operationID,
+                                    "_rawJSON": true
+                                ]
+                            )
+                        }
+                        responseTask = activeResponseTask
+                        try await clock.waitForSleeperCount(1)
+                        try await preWriteGate.waitUntilEntered(count: 1)
+                        try await clock.advanceWithoutWakingSleepers(
+                            by: MCPTimeoutPolicy.promptExportExecutionDeadline
+                        )
+                        await preWriteGate.release()
+                        await schedulingGate.waitUntilConsumptionPaused()
+                        try await clock.advanceNext(expected: MCPTimeoutPolicy.promptExportExecutionDeadline)
+                        await schedulingGate.waitUntilProduced(.deadlineExpired)
+                        await schedulingGate.open()
+
+                        let response = try await activeResponseTask.value
+                        let payload = try Self.toolResultObject(response)
+                        responseTask = nil
+                        XCTAssertEqual(payload["code"] as? String, "tool_execution_timeout")
+                        XCTAssertEqual(payload["settlement"] as? String, "success")
+                        XCTAssertEqual(payload["mutation_state"] as? String, "applied")
+                        XCTAssertEqual(payload["retryable"] as? Bool, false)
+                        XCTAssertEqual(payload["operation_id"] as? String, operationID)
+                        XCTAssertEqual(payload["tool"] as? String, toolName)
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+                        let record = try await Self.journalRecord(operationID: operationID)
+                        XCTAssertEqual(record.toolName, toolName)
+                        XCTAssertEqual(record.status.rawValue, DomainMutationJournalStatus.applied.rawValue)
+
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                        try await fixture.assertCleanedUp()
+                    } catch {
+                        await preWriteGate.release()
+                        await schedulingGate.open()
+                        responseTask?.cancel()
+                        if let responseTask { _ = try? await responseTask.value }
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                        throw error
+                    }
+                }
+            }
+        }
+
+        func testPromptExportWatchdogPreservesPreAndPostCommitTruth() async throws {
+            for (toolName, postCommit) in ["prompt", "workspace_context"].flatMap({ toolName in
+                [false, true].map { (toolName, $0) }
+            }) {
+                try await MCPSharedServerTestLease.shared.withLease { lease in
+                    let fixture = try await PersistentMCPTestFixture.make(
+                        lease: lease,
+                        domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                    )
+                    let manager = fixture.networkManager
+                    let endpoint = try fixture.endpointA()
+                    let clock = ExecutionWatchdogManualClock()
+                    let phaseGate = MCPExecutionIgnoringCancellationGate()
+                    let label = "\(toolName)-\(postCommit ? "post-commit" : "pre-commit")"
+                    let operationID = "\(label)-\(UUID().uuidString)"
+                    let exportURL = fixture.contextA.rootURL.appendingPathComponent("\(operationID).md")
+                    var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                        guard phase == (postCommit ? .afterDurableWrite : .beforeDurableWrite) else { return }
+                        await phaseGate.enterAndWait()
+                    }
+                    do {
+                        try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                        let activeResponseTask = Task {
+                            try await endpoint.callTool(
+                                name: toolName,
+                                arguments: [
+                                    "op": "export",
+                                    "path": exportURL.path,
+                                    "operation_id": operationID,
+                                    "_rawJSON": true
+                                ]
+                            )
+                        }
+                        responseTask = activeResponseTask
+                        try await clock.waitForSleeperCount(1)
+                        try await phaseGate.waitUntilEntered(count: 1)
+                        XCTAssertEqual(FileManager.default.fileExists(atPath: exportURL.path), postCommit)
+                        try await clock.advanceNext(expected: MCPTimeoutPolicy.promptExportExecutionDeadline)
+                        await phaseGate.release()
+
+                        let response = try await activeResponseTask.value
+                        let payload = try Self.toolResultObject(response)
+                        responseTask = nil
+                        XCTAssertEqual(payload["code"] as? String, "tool_execution_timeout")
+                        XCTAssertEqual(payload["settlement"] as? String, postCommit ? "error" : "cancellation")
+                        XCTAssertEqual(
+                            payload["mutation_state"] as? String,
+                            postCommit ? "indeterminate_after_commit" : "not_applied"
+                        )
+                        XCTAssertEqual(payload["retryable"] as? Bool, !postCommit)
+                        XCTAssertEqual(payload["operation_id"] as? String, operationID)
+                        XCTAssertEqual(payload["tool"] as? String, toolName)
+                        XCTAssertEqual(FileManager.default.fileExists(atPath: exportURL.path), postCommit)
+                        let record = try await Self.journalRecord(operationID: operationID)
+                        XCTAssertEqual(
+                            record.status.rawValue,
+                            postCommit
+                                ? DomainMutationJournalStatus.indeterminateAfterCommit.rawValue
+                                : DomainMutationJournalStatus.cancelledBeforeCommit.rawValue
+                        )
+
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                        try await fixture.assertCleanedUp()
+                    } catch {
+                        await phaseGate.release()
+                        responseTask?.cancel()
+                        if let responseTask { _ = try? await responseTask.value }
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                        throw error
+                    }
+                }
+            }
+        }
+
+        func testPromptExportCleanupUnresponsiveRetainsEventualJournalTruth() async throws {
+            for toolName in ["prompt", "workspace_context"] {
+                try await MCPSharedServerTestLease.shared.withLease { lease in
+                    let fixture = try await PersistentMCPTestFixture.make(
+                        lease: lease,
+                        domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                    )
+                    let manager = fixture.networkManager
+                    let endpoint = try fixture.endpointA()
+                    let clock = ExecutionWatchdogManualClock()
+                    let afterWriteGate = MCPExecutionIgnoringCancellationGate()
+                    let operationID = "cleanup-unresponsive-\(toolName)-\(UUID().uuidString)"
+                    let exportURL = fixture.contextA.rootURL.appendingPathComponent("\(operationID).md")
+                    var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                    MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
+                        guard phase == .afterDurableWrite else { return }
+                        await afterWriteGate.enterAndWait()
+                    }
+                    do {
+                        try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                        let activeResponseTask = Task {
+                            try await endpoint.callTool(
+                                name: toolName,
+                                arguments: [
+                                    "op": "export",
+                                    "path": exportURL.path,
+                                    "operation_id": operationID,
+                                    "_rawJSON": true
+                                ]
+                            )
+                        }
+                        responseTask = activeResponseTask
+                        try await clock.waitForSleeperCount(1)
+                        try await afterWriteGate.waitUntilEntered(count: 1)
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+                        try await clock.advanceNext(expected: MCPTimeoutPolicy.promptExportExecutionDeadline)
+                        try await clock.waitForSleeperCount(1)
+                        try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace)
+                        await Self.assertSocketClosed(activeResponseTask)
+                        responseTask = nil
+                        let isTerminal = await manager.debugIsExecutionWatchdogTerminal(
+                            connectionID: endpoint.connectionID
+                        )
+                        XCTAssertTrue(isTerminal)
+
+                        await afterWriteGate.release()
+                        let settled = await Self.waitUntil {
+                            guard let record = try? await Self.journalRecord(operationID: operationID) else { return false }
+                            return record.status.rawValue == DomainMutationJournalStatus.indeterminateAfterCommit.rawValue
+                        }
+                        XCTAssertTrue(settled)
+                        let record = try await Self.journalRecord(operationID: operationID)
+                        XCTAssertEqual(
+                            record.status.rawValue,
+                            DomainMutationJournalStatus.indeterminateAfterCommit.rawValue
+                        )
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                    } catch {
+                        await afterWriteGate.release()
+                        responseTask?.cancel()
+                        if let responseTask { _ = try? await responseTask.value }
+                        MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
+                        await manager.debugSetDomainPeerIdentityForTesting(
+                            connectionID: endpoint.connectionID,
+                            identity: nil
+                        )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
+                        await fixture.cleanup()
+                        throw error
+                    }
+                }
+            }
+        }
+
         func testLateCompletionTraceDoesNotClaimCancellationWasRequested() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -3014,6 +3276,47 @@ import XCTest
                     throw error
                 }
             }
+        }
+
+        private static func prepareProtectedExportFixture(
+            _ fixture: PersistentMCPTestFixture,
+            endpoint: PersistentMCPTestEndpoint
+        ) async throws {
+            let context = fixture.contextA
+            let workspace = try XCTUnwrap(
+                context.window.workspaceManager.workspaces.first { $0.id == context.workspaceID }
+            )
+            let client = DomainWorkspaceAuthorityClient(
+                store: AppDomainRuntimeComposition.shared.runtime.workspaceStore,
+                windowID: context.window.windowID
+            )
+            _ = try await client.registerForRead(
+                workspace,
+                fileURL: context.rootURL.appendingPathComponent("fixture.repoprompt-workspace")
+            )
+            await fixture.networkManager.debugSetDomainPeerIdentityForTesting(
+                connectionID: endpoint.connectionID,
+                identity: .verified(
+                    processID: Int(getpid()),
+                    fingerprint: "test:verified:prompt-export-watchdog"
+                )
+            )
+            try await activateWorkspace(for: context)
+            let bindResponse = try await endpoint.callTool(
+                name: "bind_context",
+                arguments: ["op": "bind", "context_id": context.tabID.uuidString]
+            )
+            let bindText = try toolResultText(bindResponse)
+            XCTAssertFalse(bindText.contains("Error:"), bindText)
+            await context.window.mcpServer.domainRoutingPublishTask?.value
+        }
+
+        private static func journalRecord(operationID: String) async throws -> DomainMutationJournalRecord {
+            let snapshot = try await AppDomainRuntimeComposition.shared.runtime.mutationJournal.snapshot()
+            return try XCTUnwrap(
+                snapshot.recordSnapshots.last { $0.operationID == operationID },
+                "Missing mutation journal record for \(operationID)"
+            )
         }
 
         private static func activateWorkspace(for context: PersistentMCPTestContext) async throws {

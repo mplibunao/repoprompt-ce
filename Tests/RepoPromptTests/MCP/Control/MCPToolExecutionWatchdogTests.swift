@@ -4,6 +4,83 @@ import RepoPromptShared
 import XCTest
 
 final class MCPToolExecutionWatchdogTests: XCTestCase {
+    func testPromptContextExportsCompleteJustBeforeExtendedDeadlineWithoutTimeoutOrDetach() async throws {
+        for scenario in promptContextExportWatchdogScenarios() {
+            let operationGate = ExecutionWatchdogUncooperativeGate()
+            let task = scenario.start {
+                await operationGate.wait()
+                return 42
+            }
+
+            try await scenario.clock.waitForSleeperCount(1)
+            try await scenario.clock.advanceWithoutWakingSleepers(
+                by: scenario.deadline - .nanoseconds(1)
+            )
+            await operationGate.release()
+
+            let value = try await task.value
+            let recordedEvents = await scenario.events.snapshot()
+            XCTAssertEqual(value, 42, scenario.toolName)
+            XCTAssertEqual(recordedEvents, [], scenario.toolName)
+        }
+    }
+
+    func testPromptContextExportsAtExtendedDeadlineCancelCooperativelyWithoutDetach() async throws {
+        for scenario in promptContextExportWatchdogScenarios() {
+            let operationGate = ExecutionWatchdogCancellationGate()
+            let task = scenario.start {
+                try await operationGate.waitUntilCancelled()
+                return 42
+            }
+
+            try await scenario.clock.waitForSleeperCount(1)
+            try await scenario.clock.advanceNext(expected: scenario.deadline)
+
+            do {
+                _ = try await task.value
+                XCTFail("Expected execution timeout for \(scenario.toolName)")
+            } catch let error as MCPToolExecutionWatchdogError {
+                XCTAssertEqual(error, .executionTimedOut(settlement: .cancellation), scenario.toolName)
+            }
+            let recordedEvents = await scenario.events.snapshot()
+            XCTAssertEqual(recordedEvents, [
+                .deadlineExpired,
+                .cancellationRequested(origin: .watchdogDeadline),
+                .settledDuringGrace(.cancellation, cancellationRequested: true)
+            ], scenario.toolName)
+        }
+    }
+
+    func testPromptContextExportsAfterCleanupGraceForceDisconnectWithoutDetach() async throws {
+        for scenario in promptContextExportWatchdogScenarios() {
+            let operationGate = ExecutionWatchdogUncooperativeGate()
+            let task = scenario.start {
+                await operationGate.wait()
+                return 42
+            }
+
+            try await scenario.clock.waitForSleeperCount(1)
+            try await scenario.clock.advanceNext(expected: scenario.deadline)
+            try await scenario.clock.waitForSleeperCount(1)
+            try await scenario.clock.advanceNext(expected: scenario.cancellationGrace)
+
+            do {
+                _ = try await task.value
+                XCTFail("Expected cleanup escalation for \(scenario.toolName)")
+            } catch let error as MCPToolExecutionWatchdogError {
+                XCTAssertEqual(error, .cleanupUnresponsive, scenario.toolName)
+            }
+            let recordedEvents = await scenario.events.snapshot()
+            XCTAssertEqual(recordedEvents, [
+                .deadlineExpired,
+                .cancellationRequested(origin: .watchdogDeadline),
+                .cleanupGraceExpired(resolvedDisposition: .forceDisconnect)
+            ], scenario.toolName)
+
+            await operationGate.release()
+        }
+    }
+
     func testCompletionJustBeforeDeadlineReturnsValueWithoutTimeoutEvents() async throws {
         let clock = ExecutionWatchdogManualClock()
         let events = ExecutionWatchdogEventRecorder()
@@ -32,6 +109,59 @@ final class MCPToolExecutionWatchdogTests: XCTestCase {
         let sleeperCount = await clock.sleeperCount()
         XCTAssertEqual(recordedEvents, [])
         XCTAssertEqual(sleeperCount, 0)
+    }
+
+    private func exportContract(for toolName: String) -> (
+        deadline: Duration,
+        cancellationGrace: Duration,
+        cleanupDisposition: MCPToolExecutionCleanupDisposition
+    )? {
+        guard case let .bounded(deadline, cancellationGrace, cleanupDisposition) = MCPToolExecutionContractCatalog.contract(
+            for: toolName,
+            arguments: ["op": .string("export")]
+        ) else {
+            XCTFail("Expected bounded export contract for \(toolName)")
+            return nil
+        }
+        XCTAssertEqual(deadline, MCPTimeoutPolicy.promptExportExecutionDeadline, toolName)
+        XCTAssertEqual(cleanupDisposition, .forceDisconnect, toolName)
+        return (deadline, cancellationGrace, cleanupDisposition)
+    }
+
+    private func promptContextExportWatchdogScenarios() -> [PromptContextExportWatchdogScenario] {
+        [MCPWindowToolName.prompt, MCPWindowToolName.workspaceContext].compactMap { toolName in
+            guard let contract = exportContract(for: toolName) else { return nil }
+            return PromptContextExportWatchdogScenario(
+                toolName: toolName,
+                deadline: contract.deadline,
+                cancellationGrace: contract.cancellationGrace,
+                cleanupDisposition: contract.cleanupDisposition
+            )
+        }
+    }
+
+    private struct PromptContextExportWatchdogScenario {
+        let toolName: String
+        let deadline: Duration
+        let cancellationGrace: Duration
+        let cleanupDisposition: MCPToolExecutionCleanupDisposition
+        let clock = ExecutionWatchdogManualClock()
+        let events = ExecutionWatchdogEventRecorder()
+
+        func start(
+            operation: @escaping @Sendable () async throws -> Int
+        ) -> Task<Int, Error> {
+            Task {
+                try await MCPToolExecutionWatchdog.execute(
+                    deadline: deadline,
+                    cancellationGrace: cancellationGrace,
+                    cleanupDisposition: cleanupDisposition,
+                    environment: clock.environment,
+                    onEvent: { await events.append($0) },
+                    operation: operation
+                )
+            }
+        }
     }
 
     func testCompletionAtDeadlineTimesOutWithoutRequestingCancellation() async throws {

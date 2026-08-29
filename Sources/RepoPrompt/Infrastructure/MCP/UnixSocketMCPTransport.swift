@@ -473,97 +473,77 @@ public actor UnixSocketMCPTransport: Transport {
             } else {
                 []
             }
-            if recordedResponses.isEmpty {
+        #endif
+        func emitResponseWriteTrace(
+            phase: String,
+            terminalReason: String? = nil
+        ) {
+            #if DEBUG
+                if recordedResponses.isEmpty {
+                    MCPResponseDeliveryTracer.emitFrame(
+                        layer: "app_uds_transport",
+                        phase: phase,
+                        frame: framed,
+                        direction: .serverToClient,
+                        connectionID: timelineCorrelationConnectionID,
+                        connectionGeneration: timelineConnectionGeneration,
+                        terminalReason: terminalReason
+                    )
+                } else {
+                    for response in recordedResponses {
+                        MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(
+                            layer: "app_uds_transport",
+                            phase: phase,
+                            connectionID: response.identity.connectionID ?? timelineCorrelationConnectionID,
+                            connectionGeneration: timelineConnectionGeneration,
+                            direction: .serverToClient,
+                            id: response.metadata.id,
+                            method: response.metadata.method,
+                            tool: response.metadata.tool,
+                            requestOrdinal: response.metadata.requestOrdinal,
+                            framedByteCount: framed.count,
+                            framedSHA256: MCPResponseDeliveryTracer.sha256Hex(framed),
+                            terminalReason: terminalReason,
+                            requestIdentity: response.identity,
+                            providerActive: false,
+                            networkScopeActive: false,
+                            permitActive: false,
+                            publicationPending: phase != "transport_write_completed",
+                            terminalBarrier: terminalReason != nil
+                        ))
+                    }
+                }
+            #else
                 MCPResponseDeliveryTracer.emitFrame(
                     layer: "app_uds_transport",
-                    phase: "sdk_encode_completed",
+                    phase: phase,
                     frame: framed,
                     direction: .serverToClient,
-                    connectionID: timelineCorrelationConnectionID,
-                    connectionGeneration: timelineConnectionGeneration
+                    connectionGeneration: fdGeneration,
+                    terminalReason: terminalReason
                 )
-            } else {
-                for response in recordedResponses {
-                    MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(
-                        layer: "app_uds_transport",
-                        phase: "sdk_encode_completed",
-                        connectionID: response.identity.connectionID ?? timelineCorrelationConnectionID,
-                        connectionGeneration: timelineConnectionGeneration,
-                        direction: .serverToClient,
-                        id: response.metadata.id,
-                        method: response.metadata.method,
-                        tool: response.metadata.tool,
-                        requestOrdinal: response.metadata.requestOrdinal,
-                        framedByteCount: framed.count,
-                        framedSHA256: MCPResponseDeliveryTracer.sha256Hex(framed),
-                        requestIdentity: response.identity,
-                        providerActive: false,
-                        networkScopeActive: false,
-                        permitActive: false,
-                        publicationPending: true,
-                        terminalBarrier: false
-                    ))
-                }
-            }
-        #else
-            MCPResponseDeliveryTracer.emitFrame(
-                layer: "app_uds_transport",
-                phase: "sdk_encode_completed",
-                frame: framed,
-                direction: .serverToClient,
-                connectionGeneration: fdGeneration
-            )
-        #endif
+            #endif
+        }
 
+        emitResponseWriteTrace(phase: "sdk_encode_completed")
+        // Encoding proves the SDK produced a response frame; this boundary proves the
+        // transport began attempting the write, which distinguishes a later stall or close.
+        emitResponseWriteTrace(phase: "transport_write_started")
         do {
             try await writeAll(framed)
         } catch {
-            MCPResponseDeliveryTracer.emitFrame(
-                layer: "app_uds_transport",
+            // writeAll may close the transport before returning. Keep the response identities
+            // captured before the write so terminal failure still joins to its invocation.
+            emitResponseWriteTrace(
                 phase: "transport_write_failed",
-                frame: framed,
-                direction: .serverToClient,
-                connectionID: timelineCorrelationConnectionID,
-                connectionGeneration: timelineConnectionGeneration,
-                terminalReason: "app_uds_send_failed"
+                terminalReason: firstCloseSnapshot?.cause.rawValue ?? "app_uds_send_failed"
             )
             throw error
         }
         responseDeliveryGate.recordDeliveredServerFrame(framed)
         lastActivityTime = Date()
+        emitResponseWriteTrace(phase: "transport_write_completed")
         #if DEBUG
-            if recordedResponses.isEmpty {
-                MCPResponseDeliveryTracer.emitFrame(
-                    layer: "app_uds_transport",
-                    phase: "transport_write_completed",
-                    frame: framed,
-                    direction: .serverToClient,
-                    connectionID: timelineCorrelationConnectionID,
-                    connectionGeneration: timelineConnectionGeneration
-                )
-            } else {
-                for response in recordedResponses {
-                    MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(
-                        layer: "app_uds_transport",
-                        phase: "transport_write_completed",
-                        connectionID: response.identity.connectionID ?? timelineCorrelationConnectionID,
-                        connectionGeneration: timelineConnectionGeneration,
-                        direction: .serverToClient,
-                        id: response.metadata.id,
-                        method: response.metadata.method,
-                        tool: response.metadata.tool,
-                        requestOrdinal: response.metadata.requestOrdinal,
-                        framedByteCount: framed.count,
-                        framedSHA256: MCPResponseDeliveryTracer.sha256Hex(framed),
-                        requestIdentity: response.identity,
-                        providerActive: false,
-                        networkScopeActive: false,
-                        permitActive: false,
-                        publicationPending: false,
-                        terminalBarrier: false
-                    ))
-                }
-            }
             if let timelineConnectionID {
                 MCPRequestTimelineRegistry.shared.completeResponses(
                     recordedResponses,
@@ -571,14 +551,6 @@ public actor UnixSocketMCPTransport: Transport {
                     connectionGeneration: timelineConnectionGeneration
                 )
             }
-        #else
-            MCPResponseDeliveryTracer.emitFrame(
-                layer: "app_uds_transport",
-                phase: "transport_write_completed",
-                frame: framed,
-                direction: .serverToClient,
-                connectionGeneration: fdGeneration
-            )
         #endif
         mcpTransportLog("UnixSocketMCPTransport sent \(framed.count) bytes successfully")
     }
