@@ -339,10 +339,29 @@ enum WorkspaceOpenError: LocalizedError {
     }
 }
 
+struct WorkspacePersistenceRejection: Equatable {
+    let reason: String
+    let category: WorkspacePersistenceFailureCategory
+}
+
 enum WorkspacePersistenceOutcome: Equatable {
     case persisted(workspaceID: UUID, stateVersion: Int)
     case notRequired(workspaceID: UUID)
-    case rejected(reason: String)
+    case rejected(WorkspacePersistenceRejection)
+
+    static func rejected(reason: String) -> Self {
+        .rejected(WorkspacePersistenceRejection(
+            reason: reason,
+            category: WorkspacePersistenceFailureCategory.classify(reason: reason)
+        ))
+    }
+
+    static func rejected(
+        reason: String,
+        category: WorkspacePersistenceFailureCategory
+    ) -> Self {
+        .rejected(WorkspacePersistenceRejection(reason: reason, category: category))
+    }
 
     var workspaceID: UUID? {
         switch self {
@@ -368,10 +387,118 @@ enum WorkspacePersistenceOutcome: Equatable {
             "persisted"
         case .notRequired:
             "not_required"
-        case let .rejected(reason):
-            reason
+        case let .rejected(rejection):
+            rejection.reason
         }
     }
+
+    var normalizedFailureCategory: WorkspacePersistenceFailureCategory? {
+        guard case let .rejected(rejection) = self else { return nil }
+        return rejection.category
+    }
+}
+
+enum WorkspacePersistenceFailureCategory: String, CaseIterable, Equatable {
+    case localSavePreparationRetryExhausted = "local_save_retry_exhausted"
+    case authorityRevisionConflict = "authority_revision_conflict"
+    case authorityExternalConflict = "authority_external_conflict"
+    case authorityReadOnly = "workspace_not_writable"
+    case lockTimedOut = "lock_timed_out"
+    case cancelled
+    case persistenceFailure = "persistence_failure"
+    case workspaceChanged = "workspace_changed"
+    case durabilityUncertain = "durability_uncertain"
+
+    static func classify(reason: String) -> Self {
+        if let exact = Self(rawValue: reason) {
+            return exact
+        }
+        return switch reason {
+        case "active_workspace_unavailable",
+             "workspace_changed_before_capture",
+             "workspace_changed_after_capture",
+             "workspace_changed_after_save",
+             "workspace_unavailable":
+            .workspaceChanged
+        case "workspace_save_failed":
+            .persistenceFailure
+        default:
+            .persistenceFailure
+        }
+    }
+
+    static func classify(domainErrorCode: DomainCommandErrorCode?) -> Self {
+        switch domainErrorCode {
+        case .stateConflict:
+            .authorityRevisionConflict
+        case .workspaceExternalConflict:
+            .authorityExternalConflict
+        case .runtimeReadOnlyDegraded, .workspaceReadOnlyDegraded:
+            .authorityReadOnly
+        case .lockTimedOut:
+            .lockTimedOut
+        case .cancelled:
+            .cancelled
+        case .workspaceUnavailable:
+            .workspaceChanged
+        case .invalidDocument, .operationIDCollision, .persistenceFailure,
+             .protectedAgentIdentityConflict, nil:
+            .persistenceFailure
+        }
+    }
+}
+
+private struct WorkspacePersistenceFailure: Error, Equatable {
+    let category: WorkspacePersistenceFailureCategory
+    let domainErrorCode: DomainCommandErrorCode?
+    let authorityStarted: Bool
+    let acceptedOutcomeApplied: Bool
+
+    init(
+        category: WorkspacePersistenceFailureCategory,
+        domainErrorCode: DomainCommandErrorCode? = nil,
+        authorityStarted: Bool = false,
+        acceptedOutcomeApplied: Bool = false
+    ) {
+        self.category = category
+        self.domainErrorCode = domainErrorCode
+        self.authorityStarted = authorityStarted
+        self.acceptedOutcomeApplied = acceptedOutcomeApplied
+    }
+
+    init(outcome: DomainCommandOutcome) {
+        category = WorkspacePersistenceFailureCategory.classify(
+            domainErrorCode: outcome.errorCode
+        )
+        domainErrorCode = outcome.errorCode
+        authorityStarted = true
+        acceptedOutcomeApplied = false
+    }
+
+    var publicReason: String {
+        switch category {
+        case .authorityReadOnly:
+            WorkspacePersistenceFailureCategory.authorityReadOnly.rawValue
+        default:
+            "workspace_save_failed"
+        }
+    }
+}
+
+private enum WorkspaceSavePreparationDecision: Equatable {
+    case current
+    case retry(nextRemainingCount: Int)
+    case exhausted
+}
+
+private func workspaceSavePreparationDecision(
+    capturedStateVersion: Int,
+    latestStateVersion: Int,
+    remainingRetryCount: Int
+) -> WorkspaceSavePreparationDecision {
+    guard latestStateVersion != capturedStateVersion else { return .current }
+    guard remainingRetryCount > 0 else { return .exhausted }
+    return .retry(nextRemainingCount: remainingRetryCount - 1)
 }
 
 /// The main WorkspaceManager, refactored to store each WorkspaceModel
@@ -379,6 +506,10 @@ enum WorkspacePersistenceOutcome: Equatable {
 @MainActor
 class WorkspaceManagerViewModel: ObservableObject {
     private static let logger = Logger(subsystem: "com.repoprompt.workspace", category: "WorkspaceSwitch")
+    private static let agentAdmissionLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "RepoPrompt",
+        category: "AgentAdmissionPersistence"
+    )
 
     @Published var workspaces: [WorkspaceModel] = [] {
         didSet {
@@ -439,6 +570,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         private var workspaceDeleteWillExecuteHandlerForTesting:
             (@MainActor (UUID) async -> Void)?
         private var workspaceActivationLeaseDidAcquireHandlerForTesting:
+            (@MainActor (UUID) async -> Void)?
+        private var composeTabFastStateDidApplyHandlerForTesting:
             (@MainActor (UUID) async -> Void)?
     #endif
 
@@ -707,6 +840,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspaceSavePreparationDidFinishHandlerForTesting = handler
         }
 
+        func setComposeTabFastStateDidApplyHandlerForTesting(
+            _ handler: (@MainActor (UUID) async -> Void)?
+        ) {
+            composeTabFastStateDidApplyHandlerForTesting = handler
+        }
+
         func resetWorkspaceSaveDiagnosticsForTesting() {
             workspaceSaveAttemptCountByWorkspaceIDForTesting.removeAll()
             workspaceSaveCapturePublicationCountByWorkspaceIDForTesting.removeAll()
@@ -797,6 +936,10 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     func markWorkspaceDirty() {
         bumpStateVersion(for: activeWorkspaceID)
+    }
+
+    func markWorkspaceDirty(workspaceID: UUID) {
+        bumpStateVersion(for: workspaceID)
     }
 
     /// Quick lookup cache replaced with index-based lookup
@@ -924,6 +1067,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     /// Non-nil only in production composition; nil is the isolated legacy test owner.
     private let domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient?
     let workspaceActivityCoordinator: WorkspaceActivityCoordinator
+    private let workspaceAgentAdmissionCoordinator: WorkspaceAgentAdmissionCoordinator
     private var agentSessionProjectionReconciler: ((
         _ projectedWorkspaces: [WorkspaceModel],
         _ currentWorkspaces: [WorkspaceModel]
@@ -1044,6 +1188,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     private var beforeSaveListeners: [BeforeSaveListener] = []
     private var composeTabApplyTask: Task<Void, Never>?
     private var composeTabApplyTaskID = UUID()
+    private var composeTabApplyTaskTabID: UUID?
 
     func composeTabSnapshotPublisher() -> AnyPublisher<ComposeTabState, Never> {
         composeTabSnapshotSubject.eraseToAnyPublisher()
@@ -1901,6 +2046,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         workspaceSearchService: WorkspaceSearchService = WorkspaceSearchService(),
         domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient? = nil,
         workspaceActivityCoordinator: WorkspaceActivityCoordinator? = nil,
+        workspaceAgentAdmissionCoordinator: WorkspaceAgentAdmissionCoordinator = .shared,
         switchTimingPolicy: WorkspaceSwitchTimingPolicy = .production,
         performInitialWorkspaceActivation: Bool = true
     ) {
@@ -1913,6 +2059,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         self.domainWorkspaceAuthorityClient = domainWorkspaceAuthorityClient
         self.workspaceActivityCoordinator = workspaceActivityCoordinator
             ?? WindowStatesManager.shared.workspaceActivityCoordinator
+        self.workspaceAgentAdmissionCoordinator = workspaceAgentAdmissionCoordinator
         self.switchTimingPolicy = switchTimingPolicy
         self.promptViewModel.attachWorkspaceManager(self)
         self.fileManager.setWorkspaceManager(self)
@@ -2143,6 +2290,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         reloadPresetsTask = nil
         composeTabApplyTask?.cancel()
         composeTabApplyTask = nil
+        composeTabApplyTaskTabID = nil
         domainWorkingCommitTasks.values.forEach { $0.cancel() }
         domainWorkingCommitTasks.removeAll()
         postSwitchGitDataLoadTask?.cancel()
@@ -4797,13 +4945,26 @@ class WorkspaceManagerViewModel: ObservableObject {
             defer {
                 if self.composeTabApplyTaskID == taskID {
                     self.composeTabApplyTask = nil
+                    self.composeTabApplyTaskTabID = nil
                 }
             }
             await applyComposeTabStateInternal(tabID: tabID, markWorkspaceDirtyAfterApply: true)
         }
 
         composeTabApplyTask = applyTask
+        composeTabApplyTaskTabID = tabID
         await applyTask.value
+    }
+
+    @MainActor
+    func cancelComposeTabStateApplication(forTabID tabID: UUID) async {
+        guard composeTabApplyTaskTabID == tabID else { return }
+        composeTabApplyTaskID = UUID()
+        let task = composeTabApplyTask
+        composeTabApplyTask = nil
+        composeTabApplyTaskTabID = nil
+        task?.cancel()
+        await task?.value
     }
 
     @MainActor
@@ -4821,6 +4982,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         await applyComposeTabFastUIState(initialTab)
+        #if DEBUG
+            await composeTabFastStateDidApplyHandlerForTesting?(tabID)
+        #endif
         await Task.yield()
         guard !Task.isCancelled else { return }
         guard let refreshedTab = composeTab(with: tabID) else { return }
@@ -5318,7 +5482,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaces[workspaceIndex].composeTabs[tabIndex].activeAgentSessionID = sessionID
                 workspaces[workspaceIndex].composeTabs[tabIndex].lastModified = Date()
                 workspaces[workspaceIndex].dateModified = Date()
-                markWorkspaceDirty()
+                markWorkspaceDirty(workspaceID: workspaces[workspaceIndex].id)
                 return true
             }
 
@@ -5327,7 +5491,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaces[workspaceIndex].stashedTabs[stashedIndex].tab.activeAgentSessionID = sessionID
                 workspaces[workspaceIndex].stashedTabs[stashedIndex].tab.lastModified = Date()
                 workspaces[workspaceIndex].dateModified = Date()
-                markWorkspaceDirty()
+                markWorkspaceDirty(workspaceID: workspaces[workspaceIndex].id)
                 return true
             }
         }
@@ -5805,6 +5969,90 @@ class WorkspaceManagerViewModel: ObservableObject {
         #endif
     }
 
+    func withAgentSessionAdmission<T>(
+        workspaceID: UUID,
+        admissionID: UUID,
+        operation: @MainActor () async throws -> T
+    ) async throws -> T {
+        let lease = try await workspaceAgentAdmissionCoordinator.acquire(
+            workspaceID: workspaceID,
+            admissionID: admissionID
+        )
+        defer { lease.release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    private func recordAgentAdmissionSaveFailure(
+        _ failure: WorkspacePersistenceFailure,
+        workspaceID: UUID,
+        source: WorkspaceSaveSource
+    ) {
+        guard source.description.hasPrefix("agentSessionLifecycle") else { return }
+        let event = switch failure.category {
+        case .localSavePreparationRetryExhausted:
+            "localRetryExhausted"
+        case .authorityRevisionConflict, .authorityExternalConflict:
+            "authorityConflict"
+        case .durabilityUncertain:
+            "durabilityUncertain"
+        default:
+            "rejected"
+        }
+        let fields = [
+            "event=workspaceSave.agentAdmission.\(event)",
+            "workspace=\(WorkspaceAgentAdmissionCoordinator.redactedID(workspaceID))",
+            "source=\(Self.sanitizedAdmissionDiagnostic(source.description))",
+            "category=\(failure.category.rawValue)",
+            "domainError=\(failure.domainErrorCode?.rawValue ?? "nil")",
+            "authorityStarted=\(failure.authorityStarted)",
+            "acceptedOutcomeApplied=\(failure.acceptedOutcomeApplied)"
+        ].joined(separator: " ")
+        Self.agentAdmissionLogger.notice("\(fields, privacy: .public)")
+    }
+
+    private func recordAgentAdmissionSaveSuccess(
+        workspaceID: UUID,
+        stateVersion: Int,
+        source: WorkspaceSaveSource
+    ) {
+        guard source.description.hasPrefix("agentSessionLifecycle") else { return }
+        let fields = [
+            "event=workspaceSave.agentAdmission.persisted",
+            "workspace=\(WorkspaceAgentAdmissionCoordinator.redactedID(workspaceID))",
+            "source=\(Self.sanitizedAdmissionDiagnostic(source.description))",
+            "stateVersion=\(stateVersion)"
+        ].joined(separator: " ")
+        Self.agentAdmissionLogger.notice("\(fields, privacy: .public)")
+    }
+
+    private func recordAgentAdmissionLocalRetry(
+        workspaceID: UUID,
+        capturedStateVersion: Int,
+        latestStateVersion: Int,
+        remainingRetryCount: Int,
+        source: WorkspaceSaveSource
+    ) {
+        guard source.description.hasPrefix("agentSessionLifecycle") else { return }
+        let fields = [
+            "event=workspaceSave.agentAdmission.localRetry",
+            "workspace=\(WorkspaceAgentAdmissionCoordinator.redactedID(workspaceID))",
+            "source=\(Self.sanitizedAdmissionDiagnostic(source.description))",
+            "capturedStateVersion=\(capturedStateVersion)",
+            "latestStateVersion=\(latestStateVersion)",
+            "remainingRetryCount=\(remainingRetryCount)"
+        ].joined(separator: " ")
+        Self.agentAdmissionLogger.notice("\(fields, privacy: .public)")
+    }
+
+    private static func sanitizedAdmissionDiagnostic(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+        let scalars = raw.unicodeScalars.prefix(64).map {
+            allowed.contains($0) ? Character(String($0)) : "_"
+        }
+        return String(scalars)
+    }
+
     func pollAndSaveState(source: WorkspaceSaveSource = .pollAndSaveState) {
         guard let active = activeWorkspace else { return }
         let workspaceID = active.id
@@ -5892,23 +6140,27 @@ class WorkspaceManagerViewModel: ObservableObject {
                 return workspacePersistenceOutcomeOverrideForTesting
             }
         #endif
-        guard let savedStateVersion = await saveWorkspaceAsync(
+        let saveResult = await saveWorkspaceAsync(
             workspaceID: wsID,
             fileURL: fileURL,
             source: source
-        ) else {
+        )
+        let savedStateVersion: Int
+        switch saveResult {
+        case let .success(version):
+            savedStateVersion = version
+        case let .failure(failure):
             if workspace(withID: wsID)?.isEphemeral == true {
                 return .notRequired(workspaceID: wsID)
             }
-            let issueCategory = if domainWorkspaceAuthorityIssue?.message
-                .localizedCaseInsensitiveContains("workspace_not_writable") == true
-            {
-                "workspace_not_writable"
-            } else {
-                "workspace_save_failed"
-            }
+            recordAgentAdmissionSaveFailure(
+                failure,
+                workspaceID: wsID,
+                source: source
+            )
             return .rejected(
-                reason: issueCategory
+                reason: failure.publicReason,
+                category: failure.category
             )
         }
         await WorkspaceDiskWriter.shared.flush(url: fileURL)
@@ -5918,6 +6170,11 @@ class WorkspaceManagerViewModel: ObservableObject {
         lastSavedVersionByWorkspaceID[wsID] = max(
             lastSavedVersionByWorkspaceID[wsID, default: -1],
             savedStateVersion
+        )
+        recordAgentAdmissionSaveSuccess(
+            workspaceID: wsID,
+            stateVersion: savedStateVersion,
+            source: source
         )
         return .persisted(workspaceID: wsID, stateVersion: savedStateVersion)
     }
@@ -8656,12 +8913,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         fileURL: URL,
         source: WorkspaceSaveSource = .saveWorkspaceAsync,
         remainingRetryCount: Int = 1
-    ) async -> Int? {
-        guard !Task.isCancelled,
-              let initialIndex = workspaceIndex(for: workspaceID)
-        else { return nil }
+    ) async -> Result<Int, WorkspacePersistenceFailure> {
+        guard !Task.isCancelled else {
+            return .failure(WorkspacePersistenceFailure(category: .cancelled))
+        }
+        guard let initialIndex = workspaceIndex(for: workspaceID) else {
+            return .failure(WorkspacePersistenceFailure(category: .workspaceChanged))
+        }
         guard !workspaces[initialIndex].isEphemeral else {
-            return stateVersionByWorkspaceID[workspaceID, default: 0]
+            return .success(stateVersionByWorkspaceID[workspaceID, default: 0])
         }
         if domainWorkspaceAuthorityClient != nil {
             do {
@@ -8673,28 +8933,37 @@ class WorkspaceManagerViewModel: ObservableObject {
                     remainingRetryCount: remainingRetryCount
                 )
                 lastSavedVersionByWorkspaceID[workspaceID] = result.savedStateVersion
-                return result.savedStateVersion
+                return .success(result.savedStateVersion)
+            } catch let failure as WorkspacePersistenceFailure {
+                return .failure(failure)
             } catch is CancellationError {
-                return nil
+                return .failure(WorkspacePersistenceFailure(category: .cancelled))
             } catch WorkspaceDirectWriteError.ephemeralWorkspace {
-                return nil
+                return .failure(WorkspacePersistenceFailure(category: .workspaceChanged))
             } catch let error as DomainWorkspaceAuthorityOperationError {
                 reportDomainAuthorityIssue(error.outcome, operation: "save_workspace")
-                return nil
+                return .failure(WorkspacePersistenceFailure(outcome: error.outcome))
             } catch {
                 reportDomainAuthorityFailure(
                     error,
                     workspaceID: workspaceID,
                     operation: "save_workspace"
                 )
-                return nil
+                return .failure(WorkspacePersistenceFailure(
+                    category: .durabilityUncertain,
+                    authorityStarted: true
+                ))
             }
         }
         await WorkspaceDiskWriter.shared.flush(url: fileURL)
-        guard !Task.isCancelled,
-              let currentIndex = workspaceIndex(for: workspaceID),
+        guard !Task.isCancelled else {
+            return .failure(WorkspacePersistenceFailure(category: .cancelled))
+        }
+        guard let currentIndex = workspaceIndex(for: workspaceID),
               !workspaces[currentIndex].isEphemeral
-        else { return nil }
+        else {
+            return .failure(WorkspacePersistenceFailure(category: .workspaceChanged))
+        }
 
         let current = workspaces[currentIndex]
         let capturedStateVersion = stateVersionByWorkspaceID[workspaceID, default: 0]
@@ -8754,12 +9023,28 @@ class WorkspaceManagerViewModel: ObservableObject {
                     remainingRetryCount
                 )
             #endif
-            guard !Task.isCancelled,
-                  let latestIndex = workspaceIndex(for: workspaceID),
+            guard !Task.isCancelled else {
+                return .failure(WorkspacePersistenceFailure(category: .cancelled))
+            }
+            guard let latestIndex = workspaceIndex(for: workspaceID),
                   !workspaces[latestIndex].isEphemeral
-            else { return nil }
+            else {
+                return .failure(WorkspacePersistenceFailure(category: .workspaceChanged))
+            }
             let latestStateVersion = stateVersionByWorkspaceID[workspaceID, default: 0]
-            if latestStateVersion != capturedStateVersion {
+            let preparationDecision = workspaceSavePreparationDecision(
+                capturedStateVersion: capturedStateVersion,
+                latestStateVersion: latestStateVersion,
+                remainingRetryCount: remainingRetryCount
+            )
+            if preparationDecision != .current {
+                recordAgentAdmissionLocalRetry(
+                    workspaceID: workspaceID,
+                    capturedStateVersion: capturedStateVersion,
+                    latestStateVersion: latestStateVersion,
+                    remainingRetryCount: remainingRetryCount,
+                    source: source
+                )
                 #if DEBUG
                     WorkspaceRestorePerfLog.event(
                         "workspaceSave.stalePayload.retry",
@@ -8770,13 +9055,21 @@ class WorkspaceManagerViewModel: ObservableObject {
                         ]
                     )
                 #endif
-                guard remainingRetryCount > 0 else { return nil }
+            }
+            switch preparationDecision {
+            case .current:
+                break
+            case let .retry(nextRemainingCount):
                 return await saveWorkspaceAsync(
                     workspaceID: workspaceID,
                     fileURL: fileURL,
                     source: source,
-                    remainingRetryCount: remainingRetryCount - 1
+                    remainingRetryCount: nextRemainingCount
                 )
+            case .exhausted:
+                return .failure(WorkspacePersistenceFailure(
+                    category: .localSavePreparationRetryExhausted
+                ))
             }
 
             var publishedWorkspace = workspaces[latestIndex]
@@ -8801,10 +9094,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             if indexFieldsChanged, workspaceIndex(for: workspaceID) != nil {
                 await rebuildAndSaveIndexAsync()
             }
-            return capturedStateVersion
+            return .success(capturedStateVersion)
         } catch {
             print("💾 Failed to serialize workspace: \(error)")
-            return nil
+            return .failure(WorkspacePersistenceFailure(category: .persistenceFailure))
         }
     }
 
@@ -8886,27 +9179,47 @@ class WorkspaceManagerViewModel: ObservableObject {
             throw WorkspaceDirectWriteError.ephemeralWorkspace
         }
         let latestStateVersion = stateVersionByWorkspaceID[workspace.id, default: 0]
-        if latestStateVersion != capturedStateVersion,
-           let index = workspaceIndex(for: workspace.id)
-        {
-            #if DEBUG
-                WorkspaceRestorePerfLog.event(
-                    "workspaceSave.domain.stalePayload.retry",
-                    fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
-                        "capturedVersion": "\(capturedStateVersion)",
-                        "latestVersion": "\(latestStateVersion)"
-                    ]
-                )
-            #endif
-            guard remainingRetryCount > 0 else { throw CancellationError() }
-            return try await persistWorkspaceThroughDomainAuthority(
-                workspaces[index],
-                targetURL: targetURL,
-                preserveDiskRepoPathsIfUnchangedSinceBaseline: preserveDiskRepoPathsIfUnchangedSinceBaseline,
-                source: source,
-                remainingRetryCount: remainingRetryCount - 1
+        if let index = workspaceIndex(for: workspace.id) {
+            let preparationDecision = workspaceSavePreparationDecision(
+                capturedStateVersion: capturedStateVersion,
+                latestStateVersion: latestStateVersion,
+                remainingRetryCount: remainingRetryCount
             )
+            if preparationDecision != .current {
+                recordAgentAdmissionLocalRetry(
+                    workspaceID: workspace.id,
+                    capturedStateVersion: capturedStateVersion,
+                    latestStateVersion: latestStateVersion,
+                    remainingRetryCount: remainingRetryCount,
+                    source: source
+                )
+                #if DEBUG
+                    WorkspaceRestorePerfLog.event(
+                        "workspaceSave.domain.stalePayload.retry",
+                        fields: [
+                            "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                            "capturedVersion": "\(capturedStateVersion)",
+                            "latestVersion": "\(latestStateVersion)"
+                        ]
+                    )
+                #endif
+            }
+            switch preparationDecision {
+            case .current:
+                break
+            case let .retry(nextRemainingCount):
+                return try await persistWorkspaceThroughDomainAuthority(
+                    workspaces[index],
+                    targetURL: targetURL,
+                    preserveDiskRepoPathsIfUnchangedSinceBaseline: preserveDiskRepoPathsIfUnchangedSinceBaseline,
+                    source: source,
+                    remainingRetryCount: nextRemainingCount
+                )
+            case .exhausted:
+                throw WorkspacePersistenceFailure(
+                    category: .localSavePreparationRetryExhausted
+                )
+            }
         }
 
         let snapshot = await domainWorkspaceAuthorityClient.snapshot()
