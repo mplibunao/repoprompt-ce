@@ -1187,6 +1187,31 @@ actor InteractiveMCPClientSession {
         return CallTool.Result(content: [.text("Local window/context selection cleared.")], isError: false)
     }
 
+    func establishStartupRouting(contextID: String?, tabID: String?, windowID: Int?) async throws {
+        if let contextID {
+            let result = try await bindContextID(contextID, windowID: windowID)
+            let binding = try confirmedBinding(from: result)
+            guard binding.contextID?.uuidString.caseInsensitiveCompare(contextID) == .orderedSame else {
+                throw InteractiveSessionError.handshakeFailed(
+                    reason: "bind_context returned a different context than requested"
+                )
+            }
+            return
+        }
+
+        if let tabID {
+            let result = try await bindTab(selector: tabID, windowID: windowID)
+            let binding = try confirmedBinding(from: result)
+            guard let selectedContextID,
+                  binding.contextID?.uuidString.caseInsensitiveCompare(selectedContextID) == .orderedSame
+            else {
+                throw InteractiveSessionError.handshakeFailed(
+                    reason: "bind_context returned a different context than the selected tab"
+                )
+            }
+        }
+    }
+
     func bindContextID(_ contextID: String, windowID: Int? = nil) async throws -> CallTool.Result {
         var args: [String: Value] = [
             "op": .string("bind"),
@@ -1300,6 +1325,17 @@ actor InteractiveMCPClientSession {
         }
         let data = Data(text.utf8)
         return try JSONDecoder().decode(BindContextResponse.self, from: data)
+    }
+
+    private func confirmedBinding(from result: CallTool.Result) throws -> BindContextBinding {
+        guard result.isError != true else {
+            let reason = result.content.compactMap {
+                if case let .text(text, _, _) = $0 { return text }
+                return nil
+            }.first ?? "bind_context failed"
+            throw InteractiveSessionError.handshakeFailed(reason: reason)
+        }
+        return try decodeBindContextResponse(from: result).binding
     }
 
     // MARK: - Bootstrap Handshake
