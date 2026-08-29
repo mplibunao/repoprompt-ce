@@ -18,6 +18,7 @@ import XCTest
             let calls = await fixture.recorder.recordedCalls()
             XCTAssertEqual(calls.map(\.name), ["bind_context", "workspace_context"])
             XCTAssertEqual(calls[0].arguments?["context_id"], .string(contextID))
+            XCTAssertEqual(calls[0].arguments?["_rawJSON"], .bool(true))
             XCTAssertEqual(calls[1].arguments?["context_id"], .string(contextID))
         }
 
@@ -34,7 +35,9 @@ import XCTest
             let calls = await fixture.recorder.recordedCalls()
             XCTAssertEqual(calls.map(\.name), ["bind_context", "bind_context", "workspace_context"])
             XCTAssertEqual(calls[0].arguments?["op"], .string("list"))
+            XCTAssertEqual(calls[0].arguments?["_rawJSON"], .bool(true))
             XCTAssertEqual(calls[1].arguments?["context_id"], .string(fixture.namedTabContextID))
+            XCTAssertEqual(calls[1].arguments?["_rawJSON"], .bool(true))
             XCTAssertEqual(calls[2].arguments?["context_id"], .string(fixture.namedTabContextID))
         }
 
@@ -54,6 +57,7 @@ import XCTest
             XCTAssertEqual(calls.map(\.name), ["bind_context", "workspace_context"])
             XCTAssertEqual(calls[0].arguments?["op"], .string("bind"))
             XCTAssertEqual(calls[0].arguments?["context_id"], .string(contextID))
+            XCTAssertEqual(calls[0].arguments?["_rawJSON"], .bool(true))
             XCTAssertEqual(calls[1].arguments?["context_id"], .string(contextID))
         }
 
@@ -85,7 +89,15 @@ import XCTest
             )
             await server.withMethodHandler(CallTool.self) { params in
                 await recorder.record(params)
-                let text = if params.name == "bind_context", params.arguments?["op"] == .string("list") {
+                let text = if params.name == "bind_context",
+                              params.arguments?["_rawJSON"] != .bool(true)
+                {
+                    """
+                    ## Context Binding
+
+                    Bound to the requested context.
+                    """
+                } else if params.name == "bind_context", params.arguments?["op"] == .string("list") {
                     """
                     {"windows":[{"window_id":7,"workspace":null,"tabs":[{"context_id":"\(namedTabContextID)","name":"Review Tab"}]}],"binding":{"binding_kind":"unbound","window_id":null,"context_id":null,"workspace_name":null}}
                     """
