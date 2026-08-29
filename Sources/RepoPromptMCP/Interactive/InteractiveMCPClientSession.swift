@@ -9,6 +9,7 @@
 import Foundation
 import Logging
 import MCP
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 // MARK: - Progress Notification (CLI-side)
@@ -974,6 +975,9 @@ actor InteractiveMCPClientSession {
         }
         switch effectivePolicy {
         case .default:
+            if Self.isPromptContextExport(toolName: toolName, arguments: arguments) {
+                return nil
+            }
             if MCPTimeoutPolicy.cliDefaultUnboundedToolNames.contains(toolName) {
                 return nil
             }
@@ -993,6 +997,16 @@ actor InteractiveMCPClientSession {
         case .none:
             return nil
         }
+    }
+
+    private static func isPromptContextExport(
+        toolName: String,
+        arguments: [String: Value]
+    ) -> Bool {
+        guard toolName == MCPWindowToolName.prompt || toolName == MCPWindowToolName.workspaceContext else {
+            return false
+        }
+        return MCPPromptContextOperation.parse(toolName: toolName, arguments: arguments) == .export
     }
 
     private static func explicitSemanticWaitSeconds(
