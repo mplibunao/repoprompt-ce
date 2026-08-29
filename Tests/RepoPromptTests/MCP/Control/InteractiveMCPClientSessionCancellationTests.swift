@@ -22,12 +22,48 @@ import XCTest
 
         func testOrdinaryToolRetains300SecondClientDeadline() async {
             let session = makeUnconnectedSession()
+            let cases: [(toolName: String, arguments: [String: Value])] = [
+                ("read_file", [:]),
+                ("prompt", ["op": .string("get")]),
+                ("workspace_context", [:]),
+                ("read_file", ["op": .string("export")])
+            ]
 
-            let timeout = await session.test_resolvedToolCallTimeout(
-                toolName: "read_file"
-            )
+            for testCase in cases {
+                let timeout = await session.test_resolvedToolCallTimeout(
+                    toolName: testCase.toolName,
+                    arguments: testCase.arguments
+                )
 
-            XCTAssertEqual(timeout, MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds)
+                XCTAssertEqual(
+                    timeout,
+                    MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds,
+                    "Unexpected timeout for \(testCase.toolName) with \(testCase.arguments)"
+                )
+            }
+        }
+
+        func testPromptContextExportsRetain300SecondClientDeadline() async {
+            let session = makeUnconnectedSession()
+            let cases: [(toolName: String, operation: String)] = [
+                ("prompt", "export"),
+                ("prompt", "  EXPORT\n"),
+                ("workspace_context", "export"),
+                ("workspace_context", "\tExPoRt ")
+            ]
+
+            for testCase in cases {
+                let timeout = await session.test_resolvedToolCallTimeout(
+                    toolName: testCase.toolName,
+                    arguments: ["op": .string(testCase.operation)]
+                )
+
+                XCTAssertEqual(
+                    timeout,
+                    MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds,
+                    "Unexpected export timeout for \(testCase.toolName) op=\(testCase.operation.debugDescription)"
+                )
+            }
         }
 
         func testAgentRun600SecondWaitUsesRequestedWaitPlusDeliveryMargin() async {
@@ -67,10 +103,13 @@ import XCTest
             let session = makeUnconnectedSession()
             await session.setDefaultToolCallTimeout(.seconds(450))
 
-            let explicitDeadline = await session.test_resolvedToolCallTimeout(
-                toolName: "context_builder"
-            )
-            XCTAssertEqual(explicitDeadline, 450)
+            for toolName in ["prompt", "workspace_context"] {
+                let explicitDeadline = await session.test_resolvedToolCallTimeout(
+                    toolName: toolName,
+                    arguments: ["op": .string("export")]
+                )
+                XCTAssertEqual(explicitDeadline, 450)
+            }
 
             await session.setDefaultToolCallTimeout(.none)
             let explicitNone = await session.test_resolvedToolCallTimeout(
@@ -106,6 +145,25 @@ import XCTest
             XCTAssertEqual(explicitDeadline, 777)
             XCTAssertNil(explicitNone)
             XCTAssertNil(explicitZero)
+        }
+
+        func testExplicitPerCallTimeoutPolicyOverridesPromptExportDefault() async {
+            let session = makeUnconnectedSession()
+            let arguments: [String: Value] = ["op": .string("export")]
+
+            let explicitDeadline = await session.test_resolvedToolCallTimeout(
+                .seconds(777),
+                toolName: "prompt",
+                arguments: arguments
+            )
+            let explicitNone = await session.test_resolvedToolCallTimeout(
+                .none,
+                toolName: "workspace_context",
+                arguments: arguments
+            )
+
+            XCTAssertEqual(explicitDeadline, 777)
+            XCTAssertNil(explicitNone)
         }
 
         func testZeroSemanticWaitLeavesClientDeadlineUnbounded() async {
@@ -171,6 +229,46 @@ import XCTest
             }
         }
 
+        func testPromptExportImplicitTimeoutDeliversCancellationWithoutIndefiniteWait() async throws {
+            let cancellationDeliveryFinished = CLIAsyncSignal()
+            let fixture = try await makeFixture(
+                cancellationBehavior: .ignoreUntilReleased,
+                cancellationDeliveryOverride: { client, requestID, reason in
+                    try? await client.cancelRequest(requestID, reason: reason)
+                    await cancellationDeliveryFinished.signal()
+                },
+                timeoutSleep: { _ in }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "prompt",
+                        arguments: ["op": .string("export")]
+                    )
+                }
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected prompt export timeout")
+                } catch let error as InteractiveSessionError {
+                    guard case let .toolCallTimeout(toolName, seconds) = error else {
+                        XCTFail("Expected tool timeout, got \(error)")
+                        await fixture.cleanup()
+                        return
+                    }
+                    XCTAssertEqual(toolName, "prompt")
+                    XCTAssertEqual(seconds, MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds)
+                }
+
+                let cancellationDelivered = await cancellationDeliveryFinished.isSignalled()
+                XCTAssertTrue(cancellationDelivered)
+                await fixture.handlerCancelled.wait()
+                await fixture.cleanup()
+            } catch {
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
         func testTimeoutCancellationDrainIsBoundedWhenAttemptStalls() async throws {
             let cancellationStartGate = CLIAsyncGate()
             let cancellationDeliveryFinished = CLIAsyncSignal()
@@ -218,7 +316,7 @@ import XCTest
             }
         }
 
-        func testCallerCancellationBeforeRequestTaskStartupDoesNotSend() async throws {
+        func testCallerCancellationWhilePromptExportIsQueuedDoesNotSend() async throws {
             let requestStartGate = CLIAsyncGate()
             let fixture = try await makeFixture(
                 requestSendWillStart: {
@@ -228,9 +326,8 @@ import XCTest
             do {
                 let call = Task {
                     try await fixture.session.callTool(
-                        name: "slow_tool",
-                        arguments: nil,
-                        timeout: .none
+                        name: "prompt",
+                        arguments: ["op": .string("export")]
                     )
                 }
                 await requestStartGate.waitUntilArrived()

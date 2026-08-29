@@ -100,12 +100,23 @@ final class HeadlessMCPDomainRuntimeM0ContractTests: XCTestCase {
             let behavior = try string(contract, key: "behavior")
             XCTAssertTrue(["defaults_to_action", "source_declares_typed_invalid_params", "source_declares_typed_error_reply"].contains(behavior), tool)
             let evidence = try dictionary(contract, key: "source_evidence")
-            let sourceText = try source(string(evidence, key: "path"))
+            let evidencePath = try string(evidence, key: "path")
+            let sourceText = try source(evidencePath)
             let marker = try string(evidence, key: "marker")
             XCTAssertTrue(sourceText.contains(marker), tool)
             if behavior == "defaults_to_action" {
                 let defaultAction = try string(contract, key: "default_action")
-                XCTAssertTrue(marker.contains("?? \"\(defaultAction)\""), tool)
+                if tool == MCPWindowToolName.prompt || tool == MCPWindowToolName.workspaceContext {
+                    XCTAssertTrue(marker.contains("\"\(defaultAction)\""), tool)
+                    XCTAssertEqual(evidencePath, "Sources/RepoPromptDomainRuntime/MCPPromptContextOperation.swift", tool)
+                    XCTAssertEqual(
+                        marker,
+                        #"let defaultOperation = toolName == "workspace_context" ? "snapshot" : "get""#,
+                        tool
+                    )
+                } else {
+                    XCTAssertTrue(marker.contains("?? \"\(defaultAction)\""), tool)
+                }
             } else {
                 let errorType = try string(contract, key: "error_type")
                 let typeMarker = try string(evidence, key: "type_marker")
