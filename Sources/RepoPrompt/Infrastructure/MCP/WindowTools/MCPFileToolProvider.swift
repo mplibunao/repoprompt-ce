@@ -413,16 +413,41 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             authority.lookupContext
         }
         try Task.checkCancellation()
-        let (worktreeScope, translatedArtifactPath) = EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.providerPathTranslation) {
-            let worktreeScope = ToolResultDTOs.WorktreeScopeDTO.sessionBound(from: lookupContext.bindingProjection)
-            return (worktreeScope, lookupContext.translateInputPath(path))
-        }
+        #if DEBUG
+            let diagnosticCaptureActive = EditFlowPerf.currentLifecycleCorrelation?.captureID != nil
+            let (worktreeScope, translatedArtifactPath, diagnosticTranslation) = EditFlowPerf.measure(
+                EditFlowPerf.Stage.ReadFile.providerPathTranslation
+            ) {
+                let worktreeScope = ToolResultDTOs.WorktreeScopeDTO.sessionBound(from: lookupContext.bindingProjection)
+                if diagnosticCaptureActive {
+                    let translation = lookupContext.diagnosticTranslation(path)
+                    return (worktreeScope, translation.translatedPath, Optional(translation))
+                }
+                return (worktreeScope, lookupContext.translateInputPath(path), nil)
+            }
+        #else
+            let (worktreeScope, translatedArtifactPath) = EditFlowPerf.measure(
+                EditFlowPerf.Stage.ReadFile.providerPathTranslation
+            ) {
+                let worktreeScope = ToolResultDTOs.WorktreeScopeDTO.sessionBound(from: lookupContext.bindingProjection)
+                return (worktreeScope, lookupContext.translateInputPath(path))
+            }
+        #endif
         let exactInput: WorkspaceExactFileInput
         do {
             exactInput = try WorkspaceExactFileInput.parse(path)
         } catch let issue as PathResolutionIssue {
             throw MCPError.invalidParams(PathResolutionIssueRenderer.message(for: issue))
         }
+        #if DEBUG
+            if let diagnosticTranslation {
+                Self.recordPathClassification(
+                    input: exactInput,
+                    translation: diagnosticTranslation,
+                    lookupContext: lookupContext
+                )
+            }
+        #endif
         await MCPToolExecutionHandlerPhaseContext.report(.readFileRequestResolution, transition: .completed)
         try Task.checkCancellation()
         await MCPToolExecutionHandlerPhaseContext.report(.readFileContentRead)
@@ -509,6 +534,78 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         EditFlowPerf.lifecycleEvent(EditFlowPerf.Lifecycle.ReadFile.providerResultReady)
         return value
     }
+
+    #if DEBUG
+        private static func recordPathClassification(
+            input: WorkspaceExactFileInput,
+            translation: WorkspaceRootBindingProjection.DiagnosticTranslation,
+            lookupContext: WorkspaceLookupContext
+        ) {
+            guard let correlation = EditFlowPerf.currentLifecycleCorrelation,
+                  correlation.captureID != nil,
+                  correlation.captureEpoch != nil
+            else { return }
+            let shape = switch input {
+            case .absolute: "absolute"
+            case .explicitRoot: "explicit_root"
+            case .relative: "bare_relative"
+            }
+            let addressedRoot = translation.addressedRoot
+            let authorization = addressedRoot?.sessionRootAuthorization
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.pathClassified,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    usesWorktreeProjection: lookupContext.bindingProjection != nil,
+                    rootCount: addressedRoot == nil ? 0 : 1,
+                    inputShape: shape,
+                    translationRoute: translation.route.rawValue,
+                    rootScopeKind: diagnosticRootScopeKind(lookupContext.rootScope),
+                    logicalRootToken: addressedRoot.flatMap {
+                        diagnosticToken($0.logicalRoot.standardizedFullPath, domain: .logicalRoot, correlation: correlation)
+                    },
+                    physicalRootToken: addressedRoot.flatMap {
+                        diagnosticToken($0.physicalRoot.standardizedFullPath, domain: .physicalRoot, correlation: correlation)
+                    },
+                    bindingFingerprintToken: addressedRoot.flatMap {
+                        diagnosticToken(
+                            AgentWorkspaceLookupContextSource.worktreeBindingFingerprint([$0.binding]),
+                            domain: .bindingFingerprint,
+                            correlation: correlation
+                        )
+                    },
+                    ownershipGeneration: authorization?.ownershipGeneration,
+                    rootLifetimeID: authorization?.lifetimeID.uuidString
+                )
+            )
+        }
+
+        private static func diagnosticRootScopeKind(_ scope: WorkspaceLookupRootScope) -> String {
+            switch scope {
+            case .visibleWorkspace: "visible_workspace"
+            case .visibleWorkspacePlusGitData: "visible_workspace_plus_git_data"
+            case .allLoaded: "all_loaded"
+            case .allLoadedExcludingGitData: "all_loaded_excluding_git_data"
+            case .sessionBoundWorkspace: "session_bound"
+            case .validatedSessionBoundWorkspace: "validated_session_bound"
+            }
+        }
+
+        private static func diagnosticToken(
+            _ value: String,
+            domain: EditFlowPerf.DebugCaptureTokenDomain,
+            correlation: EditFlowPerf.LifecycleCorrelation
+        ) -> String? {
+            guard let captureID = correlation.captureID,
+                  let epoch = correlation.captureEpoch
+            else { return nil }
+            return EditFlowPerf.debugCaptureToken(
+                value,
+                domain: domain,
+                captureIdentity: EditFlowPerf.DebugCaptureIdentity(captureID: captureID, epoch: epoch)
+            )
+        }
+    #endif
 
     private static func readFileFreshnessTimeoutDTO(
         path: String,

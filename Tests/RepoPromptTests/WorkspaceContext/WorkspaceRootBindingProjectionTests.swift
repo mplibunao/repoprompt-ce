@@ -50,6 +50,22 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
             "Sources/App.swift"
         )
         XCTAssertNil(projection.projectedLogicalDisplayPath(forPhysicalPath: "/repo/project/Sources/App.swift"))
+        #if DEBUG
+            XCTAssertEqual(projection.diagnosticTranslation("Sources/App.swift").route, .singleBindingRelative)
+            XCTAssertEqual(
+                projection.diagnosticTranslation("/repo/project/Sources/App.swift").route,
+                .logicalToPhysical
+            )
+            XCTAssertEqual(projection.diagnosticTranslation("Project/Sources/App.swift").route, .aliasToPhysical)
+            XCTAssertEqual(
+                projection.diagnosticTranslation("/tmp/worktrees/project-agent/Sources/App.swift").route,
+                .unchangedPhysical
+            )
+            XCTAssertEqual(
+                projection.diagnosticTranslation("Project/Sources/App.swift").addressedRoot?.logicalRoot,
+                logicalRoot
+            )
+        #endif
     }
 
     func testProjectedLogicalPathComponentsMapsPhysicalRootItself() throws {
@@ -95,6 +111,10 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         )
 
         XCTAssertEqual(projection.translateInputPath("Docs/README.md"), "Docs/README.md")
+        #if DEBUG
+            XCTAssertEqual(projection.diagnosticTranslation("Docs/README.md").route, .blocked)
+            XCTAssertNil(projection.diagnosticTranslation("Docs/README.md").addressedRoot)
+        #endif
         XCTAssertEqual(
             projection.translateInputPath("Project/Sources/App.swift"),
             "/tmp/worktrees/project-agent/Sources/App.swift"

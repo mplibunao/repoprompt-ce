@@ -426,6 +426,14 @@ extension MCPServerViewModel {
                 lookupContext: targetServer.lookupContext(for: context),
                 targetWindowID: context.windowID
             )
+            #if DEBUG
+                Self.recordDomainReadRoute(
+                    toolName: toolName,
+                    context: context,
+                    bindingKind: handle.bindingKind,
+                    requestedRunValidated: true
+                )
+            #endif
             return invocation
         } catch {
             return try domainReadUnavailable(
@@ -487,8 +495,48 @@ extension MCPServerViewModel {
             lookupContext: targetServer.lookupContext(for: context),
             targetWindowID: context.windowID
         )
+        #if DEBUG
+            Self.recordDomainReadRoute(
+                toolName: toolName,
+                context: context,
+                bindingKind: bindingKind,
+                requestedRunValidated: true
+            )
+        #endif
         return invocation
     }
+
+    #if DEBUG
+        private nonisolated static func recordDomainReadRoute(
+            toolName: String,
+            context: TabContextSnapshot,
+            bindingKind: DomainReadBindingKind,
+            requestedRunValidated: Bool
+        ) {
+            guard toolName == MCPWindowToolName.readFile,
+                  let correlation = EditFlowPerf.currentLifecycleCorrelation,
+                  correlation.captureID != nil
+            else { return }
+            let bindingLabel = switch bindingKind {
+            case .explicit: "explicit"
+            case .appPresentation: "app_presentation"
+            case .runScoped: "run_scoped"
+            }
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.domainRouteResolved,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    windowID: context.windowID,
+                    runID: context.runID?.uuidString,
+                    workspaceID: context.workspaceID?.uuidString,
+                    tabID: context.tabID.uuidString,
+                    agentSessionID: context.activeAgentSessionID?.uuidString,
+                    bindingKind: bindingLabel,
+                    requestedRunValidated: requestedRunValidated
+                )
+            )
+        }
+    #endif
 
     @MainActor
     func domainReadAppExecutionContext(

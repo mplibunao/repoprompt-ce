@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptDomainRuntime
 
 enum AgentSessionWorktreeBindingState: Equatable {
     case notApplicable
@@ -252,6 +253,65 @@ enum AgentWorkspaceLookupContextResolver {
             return failClosedLookupContext
         }
     }
+
+    #if DEBUG
+        static func recordProjection(
+            source: AgentWorkspaceLookupContextSource,
+            context: WorkspaceLookupContext,
+            projectionSource: String,
+            lifetimeCurrentBefore: Bool? = nil,
+            lifetimeCurrentAfter: Bool? = nil,
+            visibleRootFingerprintBefore: String? = nil,
+            visibleRootFingerprintAfter: String? = nil
+        ) {
+            guard let correlation = EditFlowPerf.currentLifecycleCorrelation,
+                  let captureID = correlation.captureID,
+                  let epoch = correlation.captureEpoch
+            else { return }
+            let identity = EditFlowPerf.DebugCaptureIdentity(captureID: captureID, epoch: epoch)
+            let fingerprintToken = EditFlowPerf.debugCaptureToken(
+                source.identity.worktreeBindingFingerprint,
+                domain: .bindingFingerprint,
+                captureIdentity: identity
+            )
+            let visibleFingerprintToken = visibleRootFingerprintBefore.flatMap {
+                EditFlowPerf.debugCaptureToken(
+                    $0,
+                    domain: .visibleRootFingerprint,
+                    captureIdentity: identity
+                )
+            }
+            let visibleFingerprintTokenAfter = visibleRootFingerprintAfter.flatMap {
+                EditFlowPerf.debugCaptureToken(
+                    $0,
+                    domain: .visibleRootFingerprint,
+                    captureIdentity: identity
+                )
+            }
+            let hydrationState = switch source.worktreeBindingState {
+            case .notApplicable: "not_applicable"
+            case .hydrated: "hydrated"
+            case .unhydrated: "unhydrated"
+            case .unavailable: "unavailable"
+            }
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.lookupProjectionResolved,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    usesWorktreeProjection: context.bindingProjection != nil,
+                    rootCount: context.bindingProjection?.physicalRootRefs.count ?? 0,
+                    bindingFingerprintToken: fingerprintToken,
+                    hydrationState: hydrationState,
+                    projectionSource: projectionSource,
+                    lifetimeCurrentBefore: lifetimeCurrentBefore,
+                    lifetimeCurrentAfter: lifetimeCurrentAfter,
+                    visibleRootFingerprintToken: visibleFingerprintToken,
+                    visibleRootFingerprintTokenAfter: visibleFingerprintTokenAfter,
+                    agentSessionID: source.activeAgentSessionID?.uuidString
+                )
+            )
+        }
+    #endif
 
     /// Permissive resolution is reserved for non-authoritative UI consumers.
     static func lookupContext(

@@ -6074,6 +6074,43 @@ final class MCPServerViewModel: ObservableObject {
         metadata: RequestMetadata,
         lookupContext: WorkspaceLookupContext
     ) async throws -> ToolResultDTOs.ReadFileReply? {
+        #if DEBUG
+            let syntacticallyTargetsGitData = isGitDataArtifactRequest(
+                requestedPath,
+                resolvedPath: translatedLookupPath,
+                capability: nil
+            )
+            var diagnosticClassification = syntacticallyTargetsGitData ? "syntactic_git" : "not_evaluated"
+            var diagnosticCapability = "not_evaluated"
+            var diagnosticStatus = "failed"
+            var diagnosticRelationship = "not_evaluated"
+            var diagnosticCandidateCount: Int?
+            var diagnosticExaminedCount: Int?
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.gitPreflightBegan,
+                EditFlowPerf.Dimensions(
+                    gitClassification: diagnosticClassification,
+                    gitCapability: diagnosticCapability,
+                    gitPreflightStatus: "open"
+                )
+            )
+            defer {
+                let terminalStatus = Task.isCancelled && diagnosticStatus == "failed"
+                    ? "cancelled"
+                    : diagnosticStatus
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.gitPreflightEnded,
+                    EditFlowPerf.Dimensions(
+                        outcome: diagnosticRelationship,
+                        gitClassification: diagnosticClassification,
+                        gitCapability: diagnosticCapability,
+                        gitPreflightStatus: terminalStatus,
+                        candidateCount: diagnosticCandidateCount,
+                        examinedCount: diagnosticExaminedCount
+                    )
+                )
+            }
+        #endif
         guard var resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
             toolName: MCPWindowToolName.readFile
@@ -6093,7 +6130,17 @@ final class MCPServerViewModel: ObservableObject {
             resolvedPath: translatedLookupPath,
             capability: reviewGitContext.artifactCapability
         )
+        #if DEBUG
+            diagnosticClassification = targetsGitData ? "git_artifact_target" : "ordinary"
+            if reviewGitContext.artifactCapability == nil {
+                diagnosticCapability = "absent"
+            }
+        #endif
         guard let capability = reviewGitContext.artifactCapability else {
+            #if DEBUG
+                diagnosticStatus = targetsGitData ? "rejected" : "not_applicable"
+                diagnosticRelationship = targetsGitData ? "rejected_target" : "no_requested_match"
+            #endif
             if targetsGitData {
                 throw MCPError.invalidParams(
                     "Cannot read '\(requestedPath)'. Git-data artifacts must already be selected and authorized."
@@ -6102,6 +6149,13 @@ final class MCPServerViewModel: ObservableObject {
             return nil
         }
 
+        #if DEBUG
+            diagnosticClassification = targetsGitData ? "git_artifact_target" : "possible_git_artifact"
+            diagnosticCapability = switch capability.access {
+            case .direct: "direct"
+            case .delegated: "delegated"
+            }
+        #endif
         let physicalSelection = lookupContext.physicalizeSelection(context.selection)
         let authorization = await SelectedGitDiffArtifactAuthorizationService().authorize(
             SelectedGitArtifactAuthorizationRequest(
@@ -6110,6 +6164,10 @@ final class MCPServerViewModel: ObservableObject {
                 store: promptVM.workspaceFileContextStore
             )
         )
+        #if DEBUG
+            diagnosticCandidateCount = authorization.dispositions.count
+            diagnosticExaminedCount = authorization.entries.count + authorization.rejectedDisplayDiagnostics.count
+        #endif
         let requestedCandidates = Set([requestedPath, translatedLookupPath].map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
         })
@@ -6122,6 +6180,10 @@ final class MCPServerViewModel: ObservableObject {
             let content = entry.loadedContent,
             let displayPath = authorization.displayAliasesByAbsolutePath[entry.file.standardizedFullPath]
         else {
+            #if DEBUG
+                diagnosticStatus = targetsGitData ? "rejected" : "ordinary_fallthrough"
+                diagnosticRelationship = targetsGitData ? "rejected_target" : "no_requested_match"
+            #endif
             if targetsGitData {
                 throw MCPError.invalidParams(
                     "Cannot read '\(requestedPath)'. Git-data artifacts must already be selected and authorized."
@@ -6130,6 +6192,10 @@ final class MCPServerViewModel: ObservableObject {
             return nil
         }
 
+        #if DEBUG
+            diagnosticStatus = "authorized"
+            diagnosticRelationship = "authorized_requested_entry"
+        #endif
         let preparedContent = await WorkspaceInteractiveReadProcessor.prepareOffActor(content)
         do {
             let preparedReply = try await MCPReadFileToolProjection.makeBaseReply(
@@ -6145,6 +6211,24 @@ final class MCPServerViewModel: ObservableObject {
             throw MCPError.invalidParams("start_line must be positive (1-based) or negative (tail-like behavior)")
         }
     }
+
+    #if DEBUG
+        func readSelectedAuthorizedGitArtifactForTesting(
+            requestedPath: String,
+            translatedLookupPath: String,
+            metadata: RequestMetadata,
+            lookupContext: WorkspaceLookupContext = .visibleWorkspace
+        ) async throws -> ToolResultDTOs.ReadFileReply? {
+            try await readSelectedAuthorizedGitArtifact(
+                requestedPath: requestedPath,
+                translatedLookupPath: translatedLookupPath,
+                startLine1Based: nil,
+                lineCount: nil,
+                metadata: metadata,
+                lookupContext: lookupContext
+            )
+        }
+    #endif
 
     private func isGitDataArtifactRequest(
         _ requestedPath: String,

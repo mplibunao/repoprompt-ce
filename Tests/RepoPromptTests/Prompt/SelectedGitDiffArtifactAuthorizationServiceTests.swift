@@ -1,4 +1,5 @@
 @testable import RepoPromptApp
+import RepoPromptShared
 import XCTest
 
 final class SelectedGitDiffArtifactAuthorizationServiceTests: XCTestCase {
@@ -18,6 +19,7 @@ final class SelectedGitDiffArtifactAuthorizationServiceTests: XCTestCase {
     private var temporaryRoots = FileSystemTemporaryRoots()
 
     override func tearDownWithError() throws {
+        EditFlowPerf.resetDebugCaptureForTesting()
         temporaryRoots.removeAll()
         try super.tearDownWithError()
     }
@@ -94,6 +96,53 @@ final class SelectedGitDiffArtifactAuthorizationServiceTests: XCTestCase {
             result.displayAliasesByAbsolutePath[fixture.allPatchURL.path],
             "_git_data/repos/repo-storage/2026-06-19/1851/diff/all.patch"
         )
+    }
+
+    func testAuthorizationEmitsOrderedPathFreeCandidateOutcomes() async throws {
+        #if DEBUG
+            let fixture = try await makeUnboundFixture()
+            switch EditFlowPerf.beginDebugCapture(
+                label: "git-candidate-outcomes",
+                maxSamples: 100,
+                expiryMilliseconds: 120_000,
+                toolFilter: .readFile
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Read-file capture should start")
+            }
+            let identity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .number(1),
+                connectionID: UUID().uuidString,
+                connectionGeneration: 1,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            _ = await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                await authorize(
+                    fixture,
+                    selectedPaths: [fixture.mapURL.path, fixture.unlistedPatchURL.path]
+                )
+            }
+
+            let events = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "ReadFile.GitCandidateResolved"
+            }
+            XCTAssertEqual(events.count, 2)
+            XCTAssertTrue(events[0].sanitizedDimensions.contains("outcome=authorized"))
+            XCTAssertTrue(events[0].sanitizedDimensions.contains("candidateKind=map"))
+            XCTAssertTrue(events[1].sanitizedDimensions.contains("outcome=rejected"))
+            XCTAssertTrue(events[1].sanitizedDimensions.contains("rejectionReason=unlisted_patch"))
+            XCTAssertTrue(events.allSatisfy {
+                !$0.sanitizedDimensions.contains(fixture.workspace.path)
+                    && !$0.sanitizedDimensions.contains("MAP.txt")
+            })
+        #endif
     }
 
     func testExactPathAuthorizationMatchesSelectedPathAuthorization() async throws {

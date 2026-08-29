@@ -2088,6 +2088,13 @@ extension MCPServerViewModel {
         else {
             #if DEBUG
                 fileToolLookupContextStaleCompletionCount += 1
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                    projectionSource: "fail_closed",
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                )
             #endif
             return ProspectiveFileToolLookupResolution(
                 lookupContext: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
@@ -2236,6 +2243,16 @@ extension MCPServerViewModel {
                 &snapshot,
                 connectionID: metadata.connectionID
             ) else {
+                #if DEBUG
+                    AgentWorkspaceLookupContextResolver.recordProjection(
+                        source: AgentWorkspaceLookupContextSource(
+                            activeAgentSessionID: snapshot.activeAgentSessionID,
+                            worktreeBindingState: snapshot.worktreeBindingState
+                        ),
+                        context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                        projectionSource: "fail_closed"
+                    )
+                #endif
                 return AgentWorkspaceLookupContextResolver.failClosedLookupContext
             }
 
@@ -2259,18 +2276,34 @@ extension MCPServerViewModel {
         let baseScope = Self.resolveFileToolLookupRootScope(purpose: purpose, resolvedContext: resolved)
         guard let resolved else {
             if purpose == .agentModeRun {
+                #if DEBUG
+                    AgentWorkspaceLookupContextResolver.recordProjection(
+                        source: AgentWorkspaceLookupContextSource(
+                            activeAgentSessionID: nil,
+                            worktreeBindingState: .unavailable
+                        ),
+                        context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                        projectionSource: "fail_closed"
+                    )
+                #endif
                 return AgentWorkspaceLookupContextResolver.failClosedLookupContext
             }
             return WorkspaceLookupContext(rootScope: baseScope, bindingProjection: nil)
         }
-        if let frozenLookupContext = resolved.snapshot.frozenLookupContext {
-            return frozenLookupContext
-        }
-
         let source = AgentWorkspaceLookupContextSource(
             activeAgentSessionID: resolved.snapshot.activeAgentSessionID,
             worktreeBindingState: resolved.snapshot.worktreeBindingState
         )
+        if let frozenLookupContext = resolved.snapshot.frozenLookupContext {
+            #if DEBUG
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: frozenLookupContext,
+                    projectionSource: "frozen_context"
+                )
+            #endif
+            return frozenLookupContext
+        }
         guard let connectionID = metadata.connectionID,
               let boundSnapshot = tabContextByConnectionID[connectionID],
               fileToolLookupSnapshotMatches(boundSnapshot, resolved.snapshot),
@@ -2281,7 +2314,17 @@ extension MCPServerViewModel {
                 source: source,
                 store: promptVM.workspaceFileContextStore
             )
-            return Self.fileToolLookupContext(lookupContext, applying: baseScope)
+            let adjustedLookupContext = Self.fileToolLookupContext(lookupContext, applying: baseScope)
+            #if DEBUG
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: adjustedLookupContext,
+                    projectionSource: lookupContext == AgentWorkspaceLookupContextResolver.failClosedLookupContext
+                        ? "fail_closed"
+                        : "authoritative"
+                )
+            #endif
+            return adjustedLookupContext
         }
 
         let visibleRootFingerprint = await fileToolVisibleRootFingerprint()
@@ -2290,6 +2333,11 @@ extension MCPServerViewModel {
         else {
             #if DEBUG
                 fileToolLookupContextStaleCompletionCount += 1
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                    projectionSource: "fail_closed"
+                )
             #endif
             return AgentWorkspaceLookupContextResolver.failClosedLookupContext
         }
@@ -2327,6 +2375,13 @@ extension MCPServerViewModel {
                     fileToolLookupContextCacheByConnectionID.removeValue(forKey: connectionID)
                     #if DEBUG
                         fileToolLookupContextStaleCompletionCount += 1
+                        AgentWorkspaceLookupContextResolver.recordProjection(
+                            source: source,
+                            context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                            projectionSource: "fail_closed",
+                            visibleRootFingerprintBefore: visibleRootFingerprint,
+                            visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                        )
                     #endif
                     return AgentWorkspaceLookupContextResolver.failClosedLookupContext
                 }
@@ -2339,11 +2394,29 @@ extension MCPServerViewModel {
                     fileToolLookupContextCacheByConnectionID.removeValue(forKey: connectionID)
                     #if DEBUG
                         fileToolLookupContextStaleCompletionCount += 1
+                        AgentWorkspaceLookupContextResolver.recordProjection(
+                            source: source,
+                            context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                            projectionSource: "fail_closed",
+                            lifetimeCurrentBefore: true,
+                            lifetimeCurrentAfter: false,
+                            visibleRootFingerprintBefore: visibleRootFingerprint,
+                            visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                        )
                     #endif
                     return AgentWorkspaceLookupContextResolver.failClosedLookupContext
                 }
                 #if DEBUG
                     fileToolLookupContextCacheHitCount += 1
+                    AgentWorkspaceLookupContextResolver.recordProjection(
+                        source: source,
+                        context: currentCachedContext,
+                        projectionSource: "cache_hit",
+                        lifetimeCurrentBefore: true,
+                        lifetimeCurrentAfter: true,
+                        visibleRootFingerprintBefore: visibleRootFingerprint,
+                        visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                    )
                 #endif
                 return currentCachedContext
             }
@@ -2404,6 +2477,13 @@ extension MCPServerViewModel {
             }
             #if DEBUG
                 fileToolLookupContextStaleCompletionCount += 1
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                    projectionSource: "fail_closed",
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                )
             #endif
             return AgentWorkspaceLookupContextResolver.failClosedLookupContext
         }
@@ -2413,6 +2493,17 @@ extension MCPServerViewModel {
             if ownsPendingResolution {
                 pendingFileToolLookupContextResolutionByConnectionID.removeValue(forKey: connectionID)
             }
+            #if DEBUG
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: adjustedLookupContext,
+                    projectionSource: lookupContext == AgentWorkspaceLookupContextResolver.failClosedLookupContext
+                        ? "fail_closed"
+                        : "authoritative",
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: currentVisibleRootFingerprint
+                )
+            #endif
             return adjustedLookupContext
         }
 
@@ -2447,6 +2538,13 @@ extension MCPServerViewModel {
             }
             #if DEBUG
                 fileToolLookupContextStaleCompletionCount += 1
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                    projectionSource: "fail_closed",
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: finalVisibleRootFingerprint
+                )
             #endif
             return AgentWorkspaceLookupContextResolver.failClosedLookupContext
         }
@@ -2460,9 +2558,27 @@ extension MCPServerViewModel {
                 fileToolLookupContextCacheByConnectionID.removeValue(forKey: connectionID)
                 #if DEBUG
                     fileToolLookupContextStaleCompletionCount += 1
+                    AgentWorkspaceLookupContextResolver.recordProjection(
+                        source: source,
+                        context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                        projectionSource: "fail_closed",
+                        lifetimeCurrentAfter: false,
+                        visibleRootFingerprintBefore: visibleRootFingerprint,
+                        visibleRootFingerprintAfter: finalVisibleRootFingerprint
+                    )
                 #endif
                 return AgentWorkspaceLookupContextResolver.failClosedLookupContext
             }
+            #if DEBUG
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: currentPublishedContext,
+                    projectionSource: "cache_hit",
+                    lifetimeCurrentAfter: true,
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: finalVisibleRootFingerprint
+                )
+            #endif
             return currentPublishedContext
         }
 
@@ -2481,12 +2597,30 @@ extension MCPServerViewModel {
             }
             #if DEBUG
                 fileToolLookupContextStaleCompletionCount += 1
+                AgentWorkspaceLookupContextResolver.recordProjection(
+                    source: source,
+                    context: AgentWorkspaceLookupContextResolver.failClosedLookupContext,
+                    projectionSource: "fail_closed",
+                    lifetimeCurrentAfter: false,
+                    visibleRootFingerprintBefore: visibleRootFingerprint,
+                    visibleRootFingerprintAfter: finalVisibleRootFingerprint
+                )
             #endif
             return AgentWorkspaceLookupContextResolver.failClosedLookupContext
         }
         if stillOwnsResolution {
             pendingFileToolLookupContextResolutionByConnectionID.removeValue(forKey: connectionID)
         }
+        #if DEBUG
+            AgentWorkspaceLookupContextResolver.recordProjection(
+                source: source,
+                context: adjustedLookupContext,
+                projectionSource: "newly_materialized",
+                lifetimeCurrentAfter: true,
+                visibleRootFingerprintBefore: visibleRootFingerprint,
+                visibleRootFingerprintAfter: finalVisibleRootFingerprint
+            )
+        #endif
         return adjustedLookupContext
     }
 

@@ -11008,7 +11008,8 @@ actor ServerNetworkManager {
                     requestOrdinal: requestIdentity.requestOrdinal
                 )
                 let lifecycleCorrelation = EditFlowPerf.makeLifecycleCorrelationIfActive(
-                    requestIdentity: resolvedRequestIdentity
+                    requestIdentity: resolvedRequestIdentity,
+                    toolName: toolName
                 )
                 if let resolvedRequestIdentity {
                     MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(

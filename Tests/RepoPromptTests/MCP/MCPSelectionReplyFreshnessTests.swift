@@ -1,5 +1,7 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptDomainRuntime
+import RepoPromptShared
 import XCTest
 
 @MainActor
@@ -1563,6 +1565,27 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
             let retry = await window.mcpServer.resolveFileToolLookupContext(from: metadata)
             XCTAssertEqual(retry.bindingProjection?.physicalRootRefs.map(\.id), [replacementPhysicalRoot.id])
 
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            guard case .started = EditFlowPerf.beginDebugCapture(
+                label: "lifetime-invalidation-attribution",
+                maxSamples: 64,
+                toolFilter: .readFile
+            ) else {
+                return XCTFail("Expected a fresh diagnostic capture")
+            }
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("lifetime-invalidation"),
+                connectionID: connectionID.uuidString,
+                connectionGeneration: 1,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: requestIdentity,
+                toolName: "read_file"
+            ))
+
             let cacheUseGate = TokenAccountingGate()
             window.mcpServer.setAfterFileToolLookupContextRootValidationForTesting {
                 await cacheUseGate.markStartedAndWaitForRelease()
@@ -1574,7 +1597,9 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
                 await cacheUseGate.release()
             }
             let cachedLookup = Task { @MainActor in
-                await window.mcpServer.resolveFileToolLookupContext(from: metadata)
+                await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    await window.mcpServer.resolveFileToolLookupContext(from: metadata)
+                }
             }
             addTeardownBlock {
                 cachedLookup.cancel()
@@ -1592,6 +1617,15 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
 
             let cachedResult = await cachedLookup.value
             XCTAssertEqual(cachedResult, AgentWorkspaceLookupContextResolver.failClosedLookupContext)
+            let lifetimeSnapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let lifetimeEvent = try XCTUnwrap(lifetimeSnapshot.lifecycleEvents.last {
+                $0.eventName == "ReadFile.LookupProjectionResolved"
+                    && $0.sanitizedDimensions.contains("projectionSource=fail_closed")
+            })
+            XCTAssertTrue(lifetimeEvent.sanitizedDimensions.contains("lifetimeCurrentBefore=true"))
+            XCTAssertTrue(lifetimeEvent.sanitizedDimensions.contains("lifetimeCurrentAfter=false"))
+            XCTAssertFalse(lifetimeEvent.sanitizedDimensions.contains(workspaceRoot.path))
+            XCTAssertFalse(lifetimeEvent.sanitizedDimensions.contains(worktreeRoot.path))
             window.mcpServer.setAfterFileToolLookupContextRootValidationForTesting(nil)
             let latestRetry = await window.mcpServer.resolveFileToolLookupContext(from: metadata)
             XCTAssertEqual(latestRetry.bindingProjection?.physicalRootRefs.map(\.id), [latestPhysicalRoot.id])
@@ -1599,6 +1633,78 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
                 window.mcpServer.fileToolLookupContextCacheStatsForTesting(),
                 .init(hits: 0, misses: 3, coalescedWaits: 1, staleCompletions: 3)
             )
+        }
+
+        func testFileToolProjectionLeavesLifetimeUncheckedWhenHydrationFails() async throws {
+            let workspaceRoot = try makeTemporaryRoot(name: "HydrationFailurePrivacyCanary")
+            defer { try? FileManager.default.removeItem(at: workspaceRoot.deletingLastPathComponent()) }
+            let tabID = UUID()
+            let sessionID = UUID()
+            let connectionID = UUID()
+            let (window, workspaceID) = await makeWindow(
+                root: workspaceRoot,
+                tabID: tabID,
+                selection: StoredSelection()
+            )
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+
+            var liveTab = try XCTUnwrap(window.workspaceManager.composeTab(with: tabID))
+            liveTab.activeAgentSessionID = sessionID
+            XCTAssertTrue(window.workspaceManager.updateComposeTabStoredOnly(liveTab, inWorkspaceID: workspaceID))
+            window.mcpServer.registerAgentWorktreeBindingsProvider { requestedSessionID, requestedTabID in
+                guard requestedSessionID == sessionID, requestedTabID == tabID else { return .unavailable }
+                return .unhydrated
+            }
+            try window.mcpServer.bindTabForConnection(
+                connectionID: connectionID,
+                clientName: "hydration-error-privacy-canary",
+                tabID: tabID,
+                workspaceID: workspaceID,
+                windowID: window.windowID
+            )
+            let metadata = MCPServerViewModel.RequestMetadata(
+                connectionID: connectionID,
+                clientName: "hydration-error-privacy-canary",
+                windowID: window.windowID,
+                runPurpose: .agentModeRun
+            )
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            guard case .started = EditFlowPerf.beginDebugCapture(
+                label: "pre-lifetime-hydration-failure",
+                maxSamples: 64,
+                toolFilter: .readFile
+            ) else {
+                return XCTFail("Expected a fresh diagnostic capture")
+            }
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("hydration-failure"),
+                connectionID: connectionID.uuidString,
+                connectionGeneration: 1,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: requestIdentity,
+                toolName: "read_file"
+            ))
+
+            let result = await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                await window.mcpServer.resolveFileToolLookupContext(from: metadata)
+            }
+            XCTAssertEqual(result, AgentWorkspaceLookupContextResolver.failClosedLookupContext)
+            let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let event = try XCTUnwrap(snapshot.lifecycleEvents.last {
+                $0.eventName == "ReadFile.LookupProjectionResolved"
+            })
+            XCTAssertTrue(event.sanitizedDimensions.contains("projectionSource=fail_closed"))
+            XCTAssertTrue(event.sanitizedDimensions.contains("hydrationState=unhydrated"))
+            XCTAssertFalse(event.sanitizedDimensions.contains("lifetimeCurrentBefore="))
+            XCTAssertFalse(event.sanitizedDimensions.contains("lifetimeCurrentAfter="))
+            XCTAssertFalse(event.sanitizedDimensions.contains(workspaceRoot.path))
+            XCTAssertFalse(event.sanitizedDimensions.contains("HydrationFailurePrivacyCanary"))
+            XCTAssertFalse(event.sanitizedDimensions.contains("hydration-error-privacy-canary"))
         }
 
         func testFileToolLookupCacheInvalidatesWithoutLeakingStaleRoots() async throws {

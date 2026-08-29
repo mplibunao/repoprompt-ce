@@ -14,6 +14,147 @@
             super.tearDown()
         }
 
+        func testRoutingProjectionAndGitSectionsKeepMechanicalOutcomesDistinctAndPathFree() async throws {
+            _ = try startedCapture(label: "routing-git-attribution")
+            let connectionID = UUID()
+            let cases = [
+                ("ordinary", "absent", "not_applicable", "untranslated"),
+                ("possible_git_artifact", "direct", "ordinary_fallthrough", "logical_to_physical"),
+                ("git_artifact_target", "direct", "authorized", "alias_to_physical"),
+                ("git_artifact_target", "delegated", "rejected", "blocked")
+            ]
+            for (ordinal, testCase) in cases.enumerated() {
+                let appInvocationID = UUID()
+                let identity = requestIdentity(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    generation: 7,
+                    ordinal: UInt64(ordinal + 1),
+                    requestID: "route-\(ordinal)"
+                )
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                    requestIdentity: identity,
+                    toolName: "read_file"
+                ))
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.MCPToolCall.received,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(toolName: "read_file")
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.lookupProjectionResolved,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(
+                        usesWorktreeProjection: true,
+                        rootCount: 2,
+                        bindingFingerprintToken: "binding_fingerprint:opaque",
+                        hydrationState: "hydrated",
+                        projectionSource: ordinal.isMultiple(of: 2) ? "cache_hit" : "newly_materialized",
+                        lifetimeCurrentBefore: true,
+                        lifetimeCurrentAfter: true,
+                        visibleRootFingerprintToken: "visible_root_fingerprint:before",
+                        visibleRootFingerprintTokenAfter: "visible_root_fingerprint:after"
+                    )
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.pathClassified,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(
+                        rootCount: testCase.3 == "blocked" ? 0 : 1,
+                        inputShape: ordinal == 0 ? "absolute" : "explicit_root",
+                        translationRoute: testCase.3,
+                        rootScopeKind: "validated_session_bound",
+                        physicalRootToken: "physical_root:opaque"
+                    )
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.gitPreflightEnded,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(
+                        outcome: testCase.2 == "authorized" ? "authorized_requested_entry" : "no_requested_match",
+                        gitClassification: testCase.0,
+                        gitCapability: testCase.1,
+                        gitPreflightStatus: testCase.2,
+                        candidateCount: 1,
+                        examinedCount: 1
+                    )
+                )
+
+                let response = try await packetResponse(appInvocationID: appInvocationID)
+                let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+                let routing = try XCTUnwrap(packet["routing_projection"] as? [String: Any])
+                let routingEntries = try XCTUnwrap(routing["entries"] as? [[String: Any]])
+                XCTAssertEqual(routingEntries.last?["translation_route"] as? String, testCase.3)
+                let git = try XCTUnwrap(packet["git_artifact"] as? [String: Any])
+                let gitEntries = try XCTUnwrap(git["entries"] as? [[String: Any]])
+                XCTAssertEqual(gitEntries.last?["git_classification"] as? String, testCase.0)
+                XCTAssertEqual(gitEntries.last?["git_capability"] as? String, testCase.1)
+                XCTAssertEqual(gitEntries.last?["git_preflight_status"] as? String, testCase.2)
+            }
+
+            let serialized = try JSONSerialization.data(withJSONObject: EditFlowPerf.debugCaptureSnapshot(finish: false).payload())
+            let text = String(decoding: serialized, as: UTF8.self)
+            XCTAssertFalse(text.contains("/Users/"))
+            XCTAssertFalse(text.contains("Secret.swift"))
+        }
+
+        func testDedicatedRouteAndGitEventsDoNotManufactureLifecycleTruncation() async throws {
+            _ = try startedCapture(label: "dedicated-attribution-is-not-lifecycle-loss")
+            let appInvocationID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: UUID(),
+                generation: 1,
+                ordinal: 1,
+                requestID: "dedicated-attribution"
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.MCPToolCall.received,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(toolName: "read_file")
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.lookupProjectionResolved,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    hydrationState: "unhydrated",
+                    projectionSource: "fail_closed"
+                )
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.gitPreflightEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    outcome: "no_requested_match",
+                    gitClassification: "ordinary",
+                    gitCapability: "absent",
+                    gitPreflightStatus: "not_applicable"
+                )
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            let routing = try XCTUnwrap(packet["routing_projection"] as? [String: Any])
+            let git = try XCTUnwrap(packet["git_artifact"] as? [String: Any])
+            let lifecycle = try XCTUnwrap(packet["lifecycle"] as? [String: Any])
+
+            XCTAssertEqual(routing["state"] as? String, "observed")
+            XCTAssertEqual(routing["retained_count"] as? Int, 1)
+            let routingEntries = try XCTUnwrap(routing["entries"] as? [[String: Any]])
+            XCTAssertEqual(routingEntries.first?["lifetime_current_before"] as? String, "not_checked")
+            XCTAssertEqual(routingEntries.first?["lifetime_current_after"] as? String, "not_checked")
+            XCTAssertEqual(git["state"] as? String, "observed")
+            XCTAssertEqual(git["retained_count"] as? Int, 1)
+            XCTAssertEqual(lifecycle["omitted_count"] as? Int, 0)
+            XCTAssertEqual(lifecycle["truncated"] as? Bool, false)
+            XCTAssertEqual(packet["dropped_event_count"] as? Int, 0)
+            XCTAssertNotEqual(packet["packet_state"] as? String, "truncated")
+        }
+
         func testBusyCaptureHandlerReturnsTokenWithoutOperatorLabelAnywhere() async throws {
             let manager = ServerNetworkManager.shared
             let rawLabel = "RFD02AllowedRawLabel7D19C4"

@@ -1147,6 +1147,129 @@ import XCTest
             }
         }
 
+        func testReadFileFilteredCaptureRetainsLifecycleFromRealDispatch() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                EditFlowPerf.resetDebugCaptureForTesting()
+                defer { EditFlowPerf.resetDebugCaptureForTesting() }
+                switch EditFlowPerf.beginDebugCapture(
+                    label: "read-file-real-dispatch",
+                    maxSamples: 200,
+                    expiryMilliseconds: 120_000,
+                    toolFilter: .readFile,
+                    prepare: { captureIdentity in
+                        MCPResponseDeliveryTracer.prepareDebugCapture(captureIdentity.captureID)
+                        MCPToolExecutionTracer.prepareDebugCapture(captureIdentity)
+                        MCPToolWorkCountDiagnostics.prepareDebugCapture(captureIdentity)
+                    }
+                ) {
+                case .started:
+                    break
+                case .busy:
+                    await fixture.cleanup()
+                    return XCTFail("Read-file capture should start")
+                }
+
+                do {
+                    let endpoint = try fixture.endpointA()
+                    _ = try await endpoint.callTool(
+                        name: MCPWindowToolName.readFile,
+                        arguments: [
+                            "path": fixture.contextA.fileURL.path,
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    let readCorrelationID = try XCTUnwrap(snapshot.lifecycleEvents.first {
+                        $0.eventName == "MCP.ToolCall.Received"
+                    }?.correlationID)
+                    let readEvents = snapshot.lifecycleEvents.filter {
+                        $0.correlationID == readCorrelationID
+                    }
+                    let observedEvents = readEvents.map(\.eventName).joined(separator: ",")
+                    XCTAssertTrue(
+                        readEvents.contains { $0.eventName == "ReadFile.ProviderEntered" },
+                        observedEvents
+                    )
+                    XCTAssertTrue(
+                        readEvents.contains { $0.eventName == "ReadFile.PathClassified" },
+                        observedEvents
+                    )
+                    XCTAssertTrue(
+                        readEvents.contains { $0.eventName == "ReadFile.GitPreflightEnded" },
+                        observedEvents
+                    )
+                    XCTAssertTrue(
+                        readEvents.contains { $0.eventName == "ReadFile.ProviderResultReady" },
+                        observedEvents
+                    )
+                    XCTAssertTrue(readEvents.allSatisfy {
+                        !$0.sanitizedDimensions.contains(fixture.contextA.fileURL.path)
+                    })
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testGitPreflightEarlyTabResolutionFailureDoesNotClaimOrdinaryFallthrough() async throws {
+            let window = WindowState()
+            let connectionID = UUID()
+            let pathCanary = "_git_data/private-path-canary-7D19C4.patch"
+            let errorCanary = "private-error-canary-7D19C4"
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            guard case .started = EditFlowPerf.beginDebugCapture(
+                label: "git-preflight-unresolved-context",
+                maxSamples: 64,
+                toolFilter: .readFile
+            ) else {
+                return XCTFail("Read-file capture should start")
+            }
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("git-preflight-unresolved"),
+                connectionID: connectionID.uuidString,
+                connectionGeneration: 1,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: requestIdentity,
+                toolName: "read_file"
+            ))
+            let metadata = MCPServerViewModel.RequestMetadata(
+                connectionID: connectionID,
+                clientName: errorCanary,
+                windowID: Int.max,
+                runPurpose: .agentModeRun
+            )
+
+            let reply = try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                try await window.mcpServer.readSelectedAuthorizedGitArtifactForTesting(
+                    requestedPath: pathCanary,
+                    translatedLookupPath: pathCanary,
+                    metadata: metadata
+                )
+            }
+            XCTAssertNil(reply)
+
+            let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let ended = try XCTUnwrap(snapshot.lifecycleEvents.last {
+                $0.eventName == "ReadFile.GitPreflightEnded"
+            })
+            XCTAssertTrue(ended.sanitizedDimensions.contains("gitClassification=syntactic_git"))
+            XCTAssertTrue(ended.sanitizedDimensions.contains("gitCapability=not_evaluated"))
+            XCTAssertTrue(ended.sanitizedDimensions.contains("gitPreflightStatus=failed"))
+            XCTAssertTrue(ended.sanitizedDimensions.contains("outcome=not_evaluated"))
+            XCTAssertFalse(ended.sanitizedDimensions.contains("gitClassification=ordinary"))
+            XCTAssertFalse(ended.sanitizedDimensions.contains("outcome=no_requested_match"))
+            XCTAssertFalse(ended.sanitizedDimensions.contains(pathCanary))
+            XCTAssertFalse(ended.sanitizedDimensions.contains(errorCanary))
+        }
+
         func testBoundedWindowAndGlobalDispatchBranchesReturnOneTimeoutAndKeepConnectionUsable() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)

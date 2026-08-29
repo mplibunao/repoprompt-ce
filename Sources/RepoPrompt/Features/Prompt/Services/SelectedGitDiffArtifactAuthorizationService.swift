@@ -117,6 +117,33 @@ enum SelectedGitArtifactRejectionReason: Equatable {
     case legacyArtifactNotDelegable
     case delegationBindingMismatch
 
+    #if DEBUG
+        var diagnosticCode: String {
+            switch self {
+            case .invalidAbsolutePath: "invalid_absolute_path"
+            case .outsideWorkspaceGitData: "outside_workspace_git_data"
+            case .capabilityRootUnavailable: "capability_root_unavailable"
+            case .notCataloged: "not_cataloged"
+            case .unsupportedArtifactPath: "unsupported_artifact_path"
+            case .manifestNotCataloged: "manifest_not_cataloged"
+            case .manifestUnreadable: "manifest_unreadable"
+            case .manifestInvalid: "manifest_invalid"
+            case .manifestIdentityMismatch: "manifest_identity_mismatch"
+            case .tabMismatch: "tab_mismatch"
+            case .legacyTabNotAllowed: "legacy_tab_not_allowed"
+            case .repositoryProvenanceMissing: "repository_provenance_missing"
+            case .checkoutProvenanceMismatch: "checkout_provenance_mismatch"
+            case .unlistedPatch: "unlisted_patch"
+            case .contentUnreadable: "content_unreadable"
+            case .notInDelegatedSelection: "not_in_delegated_selection"
+            case .delegationConsumerMismatch: "delegation_consumer_mismatch"
+            case .delegationWorkspaceMismatch: "delegation_workspace_mismatch"
+            case .legacyArtifactNotDelegable: "legacy_artifact_not_delegable"
+            case .delegationBindingMismatch: "delegation_binding_mismatch"
+            }
+        }
+    #endif
+
     var diagnosticLabel: String {
         switch self {
         case .invalidAbsolutePath: "invalid selected artifact path"
@@ -371,6 +398,9 @@ struct SelectedGitDiffArtifactAuthorizationService {
             checkoutProvenanceByAbsolutePath[path] = checkoutAuthorization.provenance
         }
 
+        #if DEBUG
+            recordCandidateOutcomes(dispositions)
+        #endif
         return SelectedGitArtifactAuthorizationResult(
             entries: entries,
             consumedSelectionPaths: consumedPaths,
@@ -379,6 +409,36 @@ struct SelectedGitDiffArtifactAuthorizationService {
             checkoutProvenanceByAbsolutePath: checkoutProvenanceByAbsolutePath
         )
     }
+
+    #if DEBUG
+        private func recordCandidateOutcomes(_ dispositions: [SelectedGitArtifactDisposition]) {
+            guard let correlation = EditFlowPerf.currentLifecycleCorrelation,
+                  correlation.captureID != nil
+            else { return }
+            for (ordinal, disposition) in dispositions.enumerated() {
+                let dimensions = switch disposition {
+                case let .authorized(_, kind, _):
+                    EditFlowPerf.Dimensions(
+                        outcome: "authorized",
+                        serialPosition: ordinal,
+                        candidateKind: kind.rawValue
+                    )
+                case let .rejected(_, reason):
+                    EditFlowPerf.Dimensions(
+                        outcome: "rejected",
+                        serialPosition: ordinal,
+                        candidateKind: "unknown",
+                        rejectionReason: reason.diagnosticCode
+                    )
+                }
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.gitCandidateResolved,
+                    correlation: correlation,
+                    dimensions
+                )
+            }
+        }
+    #endif
 
     func authorizeExactPaths(
         _ request: ExactSelectedGitArtifactAuthorizationRequest

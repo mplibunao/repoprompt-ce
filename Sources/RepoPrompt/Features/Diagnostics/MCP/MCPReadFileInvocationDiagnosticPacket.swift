@@ -23,6 +23,8 @@
         let missingRequiredEvidence: [String]
         let invocation: InvocationSection
         let runtimeIdentity: RuntimeIdentitySection
+        let routingProjection: AttributionSection
+        let gitArtifact: AttributionSection
         let lifecycle: LifecycleSection
         let executionTrace: ExecutionTraceSection
         let workCounts: WorkCountSection
@@ -43,6 +45,8 @@
                 "missing_required_evidence": missingRequiredEvidence,
                 "invocation": invocation.payload,
                 "runtime_identity": runtimeIdentity.payload,
+                "routing_projection": routingProjection.payload,
+                "git_artifact": gitArtifact.payload,
                 "lifecycle": lifecycle.payload,
                 "execution_trace": executionTrace.payload,
                 "work_counts": workCounts.payload
@@ -92,6 +96,81 @@
                     "diagnostic_patch_present": MCPReadFileInvocationDiagnosticPacket.optional(identity.diagnosticPatchPresent),
                     "diagnostic_patch_digest": MCPReadFileInvocationDiagnosticPacket.optional(identity.diagnosticPatchDigest),
                     "process_start_id": identity.processStartID.uuidString
+                ]
+            }
+        }
+
+        struct AttributionEntry {
+            let ordinal: UInt64
+            let offsetMilliseconds: Double
+            let kind: String
+            let dimensions: [String: String]
+
+            var payload: [String: Any] {
+                var result: [String: Any] = [
+                    "ordinal": ordinal,
+                    "offset_ms": MCPReadFileInvocationDiagnosticPacket.roundedMS(offsetMilliseconds),
+                    "kind": kind
+                ]
+                for key in Self.allowedKeys {
+                    let value: Any = if let dimension = dimensions[key] {
+                        dimension
+                    } else if kind == "ReadFile.LookupProjectionResolved",
+                              Self.lifetimeTruthKeys.contains(key)
+                    {
+                        "not_checked"
+                    } else {
+                        NSNull()
+                    }
+                    result[Self.payloadKey(for: key)] = value
+                }
+                return result
+            }
+
+            private static let lifetimeTruthKeys: Set<String> = [
+                "lifetimeCurrentBefore", "lifetimeCurrentAfter"
+            ]
+
+            private static let allowedKeys = [
+                "inputShape", "translationRoute", "rootScopeKind", "rootCount",
+                "logicalRootToken", "physicalRootToken", "bindingFingerprintToken",
+                "hydrationState", "projectionSource", "usesWorktreeProjection",
+                "ownershipGeneration", "rootLifetimeID", "lifetimeCurrentBefore",
+                "lifetimeCurrentAfter", "visibleRootFingerprintToken", "visibleRootFingerprintTokenAfter", "windowID",
+                "workspaceID", "tabID", "agentSessionID", "runID", "bindingKind",
+                "requestedRunValidated", "gitClassification", "gitCapability",
+                "gitPreflightStatus", "candidateKind", "rejectionReason",
+                "candidateCount", "examinedCount", "outcome"
+            ]
+
+            private static func payloadKey(for dimensionKey: String) -> String {
+                var scalars: [Character] = []
+                for character in dimensionKey {
+                    if character.isUppercase {
+                        scalars.append("_")
+                        scalars.append(Character(character.lowercased()))
+                    } else {
+                        scalars.append(character)
+                    }
+                }
+                return String(scalars)
+            }
+        }
+
+        struct AttributionSection {
+            let state: String
+            let retainedCount: Int
+            let omittedCount: Int
+            let truncated: Bool
+            let entries: [AttributionEntry]
+
+            var payload: [String: Any] {
+                [
+                    "state": state,
+                    "retained_count": retainedCount,
+                    "omitted_count": omittedCount,
+                    "truncated": truncated,
+                    "entries": entries.map(\.payload)
                 ]
             }
         }
@@ -418,6 +497,18 @@
                 throw MCPReadFileInvocationDiagnosticPacketAssemblyError.ambiguousInvocation
             }
 
+            let routingProjection = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: routeProjectionEventNames,
+                limit: 64
+            )
+            let gitArtifact = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: gitEventNames,
+                limit: 128
+            )
             let lifecycle = lifecycleSection(
                 appInvocationID: appInvocationID,
                 capture: capture,
@@ -473,7 +564,11 @@
                 missingRequiredEvidence.append("execution_terminal")
             }
 
-            let selectedInvocationTruncated = lifecycle.truncated || execution.truncated || workCounts.truncated
+            let selectedInvocationTruncated = routingProjection.truncated
+                || gitArtifact.truncated
+                || lifecycle.truncated
+                || execution.truncated
+                || workCounts.truncated
             let packetState: MCPReadFileInvocationDiagnosticPacket.PacketState = if selectedInvocationTruncated {
                 .truncated
             } else if missingRequiredEvidence.isEmpty, !captureWideLoss.hasAny {
@@ -503,6 +598,8 @@
                 missingRequiredEvidence: missingRequiredEvidence,
                 invocation: invocation,
                 runtimeIdentity: runtime,
+                routingProjection: routingProjection,
+                gitArtifact: gitArtifact,
                 lifecycle: lifecycle,
                 executionTrace: execution,
                 workCounts: workCounts
@@ -690,6 +787,59 @@
             ))
         }
 
+        private static let routeProjectionEventNames: Set<String> = [
+            "ReadFile.DomainRouteResolved",
+            "ReadFile.LookupProjectionResolved",
+            "ReadFile.PathClassified"
+        ]
+
+        private static let gitEventNames: Set<String> = [
+            "ReadFile.GitPreflightBegan",
+            "ReadFile.GitCandidateResolved",
+            "ReadFile.GitPreflightEnded"
+        ]
+
+        private static func attributionSection(
+            appInvocationID: UUID,
+            capture: EditFlowPerf.DebugCaptureSnapshot,
+            eventNames: Set<String>,
+            limit: Int
+        ) -> MCPReadFileInvocationDiagnosticPacket.AttributionSection {
+            let selected = capture.lifecycleEvents.filter {
+                eventNames.contains($0.eventName)
+                    && $0.requestIdentity?.appInvocationID.flatMap(UUID.init(uuidString:)) == appInvocationID
+            }
+            let entries = selected.prefix(limit).map { event in
+                MCPReadFileInvocationDiagnosticPacket.AttributionEntry(
+                    ordinal: event.ordinal,
+                    offsetMilliseconds: event.offsetMS,
+                    kind: event.eventName,
+                    dimensions: sanitizedDimensionMap(event.sanitizedDimensions)
+                )
+            }
+            let omitted = max(0, selected.count - entries.count)
+            return MCPReadFileInvocationDiagnosticPacket.AttributionSection(
+                state: entries.isEmpty ? "missing" : (omitted > 0 ? "partial" : "observed"),
+                retainedCount: entries.count,
+                omittedCount: omitted,
+                truncated: omitted > 0,
+                entries: entries
+            )
+        }
+
+        private static func sanitizedDimensionMap(_ serialized: String) -> [String: String] {
+            Dictionary(
+                serialized.split(separator: " ").compactMap { component -> (String, String)? in
+                    guard let separator = component.firstIndex(of: "=") else { return nil }
+                    let key = String(component[..<separator])
+                    let value = String(component[component.index(after: separator)...])
+                    guard !key.isEmpty, !value.isEmpty else { return nil }
+                    return (key, value)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+
         private static func lifecycleSection(
             appInvocationID: UUID,
             capture: EditFlowPerf.DebugCaptureSnapshot,
@@ -698,7 +848,10 @@
             let selected = capture.lifecycleEvents.filter {
                 $0.requestIdentity?.appInvocationID.flatMap(UUID.init(uuidString:)) == appInvocationID
             }
-            let recognized = selected.compactMap { event -> MCPReadFileInvocationDiagnosticPacket.LifecycleEntry? in
+            let genericSelected = selected.filter {
+                !routeProjectionEventNames.contains($0.eventName) && !gitEventNames.contains($0.eventName)
+            }
+            let recognized = genericSelected.compactMap { event -> MCPReadFileInvocationDiagnosticPacket.LifecycleEntry? in
                 guard let kind = lifecycleKind(event.eventName) else { return nil }
                 return MCPReadFileInvocationDiagnosticPacket.LifecycleEntry(
                     ordinal: event.ordinal,
@@ -708,7 +861,7 @@
             }
             .sorted { $0.ordinal < $1.ordinal }
             let entries = Array(recognized.prefix(lifecycleLimit))
-            let unrecognizedCount = max(0, selected.count - recognized.count)
+            let unrecognizedCount = max(0, genericSelected.count - recognized.count)
             let omitted = [
                 unrecognizedCount,
                 max(0, recognized.count - entries.count)

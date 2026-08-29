@@ -155,6 +155,74 @@ struct WorkspaceRootBindingProjection: Equatable {
         )
     }
 
+    #if DEBUG
+        enum DiagnosticTranslationRoute: String {
+            case unchangedPhysical = "unchanged_physical"
+            case logicalToPhysical = "logical_to_physical"
+            case aliasToPhysical = "alias_to_physical"
+            case singleBindingRelative = "single_binding_relative"
+            case untranslated
+            case blocked
+        }
+
+        struct DiagnosticTranslation {
+            let translatedPath: String
+            let route: DiagnosticTranslationRoute
+            let addressedRoot: BoundRoot?
+        }
+
+        func diagnosticTranslation(_ rawPath: String) -> DiagnosticTranslation {
+            let translatedPath = translateInputPath(rawPath)
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return DiagnosticTranslation(translatedPath: translatedPath, route: .untranslated, addressedRoot: nil)
+            }
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            let standardized = expanded.hasPrefix("/")
+                ? StandardizedPath.absolute(expanded)
+                : StandardizedPath.relative(expanded)
+            if standardized.hasPrefix("/") {
+                if let root = boundRoot(containingPhysicalAbsolutePath: standardized) {
+                    return DiagnosticTranslation(
+                        translatedPath: translatedPath,
+                        route: .unchangedPhysical,
+                        addressedRoot: root
+                    )
+                }
+                if let root = boundRoot(containingLogicalAbsolutePath: standardized) {
+                    return DiagnosticTranslation(
+                        translatedPath: translatedPath,
+                        route: .logicalToPhysical,
+                        addressedRoot: root
+                    )
+                }
+                return DiagnosticTranslation(translatedPath: translatedPath, route: .untranslated, addressedRoot: nil)
+            }
+            if translateAliasPrefixedRelativePath(standardized) != nil,
+               let root = boundRoot(containingPhysicalAbsolutePath: translatedPath)
+            {
+                return DiagnosticTranslation(
+                    translatedPath: translatedPath,
+                    route: .aliasToPhysical,
+                    addressedRoot: root
+                )
+            }
+            if isAliasPrefixedToUnboundLogicalRoot(standardized) {
+                return DiagnosticTranslation(translatedPath: translatedPath, route: .blocked, addressedRoot: nil)
+            }
+            if replacementsByLogicalRootPath.count == 1,
+               let root = replacementsByLogicalRootPath.values.first
+            {
+                return DiagnosticTranslation(
+                    translatedPath: translatedPath,
+                    route: .singleBindingRelative,
+                    addressedRoot: root
+                )
+            }
+            return DiagnosticTranslation(translatedPath: translatedPath, route: .untranslated, addressedRoot: nil)
+        }
+    #endif
+
     func translateInputPaths(_ paths: [String]) -> [String] {
         paths.map { translateInputPath($0) }
     }
@@ -752,6 +820,17 @@ struct WorkspaceLookupContext: Equatable {
     func translateInputPaths(_ paths: [String]) -> [String] {
         bindingProjection?.translateInputPaths(paths) ?? paths
     }
+
+    #if DEBUG
+        func diagnosticTranslation(_ path: String) -> WorkspaceRootBindingProjection.DiagnosticTranslation {
+            bindingProjection?.diagnosticTranslation(path)
+                ?? WorkspaceRootBindingProjection.DiagnosticTranslation(
+                    translatedPath: path,
+                    route: .untranslated,
+                    addressedRoot: nil
+                )
+        }
+    #endif
 
     func translateSliceInputs(_ slices: [WorkspaceSelectionSliceInput]) -> [WorkspaceSelectionSliceInput] {
         bindingProjection?.translateSliceInputs(slices) ?? slices

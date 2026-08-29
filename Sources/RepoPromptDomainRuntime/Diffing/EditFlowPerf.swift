@@ -139,6 +139,32 @@ package enum EditFlowPerf {
         var permitActive: Bool?
         var publicationPending: Bool?
         var terminalBarrier: Bool?
+        var inputShape: String?
+        var translationRoute: String?
+        var rootScopeKind: String?
+        var logicalRootToken: String?
+        var physicalRootToken: String?
+        var bindingFingerprintToken: String?
+        var hydrationState: String?
+        var projectionSource: String?
+        var ownershipGeneration: UInt64?
+        var rootLifetimeID: String?
+        var lifetimeCurrentBefore: Bool?
+        var lifetimeCurrentAfter: Bool?
+        var visibleRootFingerprintToken: String?
+        var visibleRootFingerprintTokenAfter: String?
+        var workspaceID: String?
+        var tabID: String?
+        var agentSessionID: String?
+        var bindingKind: String?
+        var requestedRunValidated: Bool?
+        var gitClassification: String?
+        var gitCapability: String?
+        var gitPreflightStatus: String?
+        var candidateKind: String?
+        var rejectionReason: String?
+        var candidateCount: Int?
+        var examinedCount: Int?
 
         package init(
             toolName: String? = nil,
@@ -234,7 +260,33 @@ package enum EditFlowPerf {
             networkScopeActive: Bool? = nil,
             permitActive: Bool? = nil,
             publicationPending: Bool? = nil,
-            terminalBarrier: Bool? = nil
+            terminalBarrier: Bool? = nil,
+            inputShape: String? = nil,
+            translationRoute: String? = nil,
+            rootScopeKind: String? = nil,
+            logicalRootToken: String? = nil,
+            physicalRootToken: String? = nil,
+            bindingFingerprintToken: String? = nil,
+            hydrationState: String? = nil,
+            projectionSource: String? = nil,
+            ownershipGeneration: UInt64? = nil,
+            rootLifetimeID: String? = nil,
+            lifetimeCurrentBefore: Bool? = nil,
+            lifetimeCurrentAfter: Bool? = nil,
+            visibleRootFingerprintToken: String? = nil,
+            visibleRootFingerprintTokenAfter: String? = nil,
+            workspaceID: String? = nil,
+            tabID: String? = nil,
+            agentSessionID: String? = nil,
+            bindingKind: String? = nil,
+            requestedRunValidated: Bool? = nil,
+            gitClassification: String? = nil,
+            gitCapability: String? = nil,
+            gitPreflightStatus: String? = nil,
+            candidateKind: String? = nil,
+            rejectionReason: String? = nil,
+            candidateCount: Int? = nil,
+            examinedCount: Int? = nil
         ) {
             self.toolName = Self.sanitizedLabel(toolName)
             self.runPurpose = Self.sanitizedLabel(runPurpose)
@@ -330,6 +382,32 @@ package enum EditFlowPerf {
             self.permitActive = permitActive
             self.publicationPending = publicationPending
             self.terminalBarrier = terminalBarrier
+            self.inputShape = Self.sanitizedLabel(inputShape)
+            self.translationRoute = Self.sanitizedLabel(translationRoute)
+            self.rootScopeKind = Self.sanitizedLabel(rootScopeKind)
+            self.logicalRootToken = Self.sanitizedLabel(logicalRootToken)
+            self.physicalRootToken = Self.sanitizedLabel(physicalRootToken)
+            self.bindingFingerprintToken = Self.sanitizedLabel(bindingFingerprintToken)
+            self.hydrationState = Self.sanitizedLabel(hydrationState)
+            self.projectionSource = Self.sanitizedLabel(projectionSource)
+            self.ownershipGeneration = ownershipGeneration
+            self.rootLifetimeID = Self.sanitizedLabel(rootLifetimeID)
+            self.lifetimeCurrentBefore = lifetimeCurrentBefore
+            self.lifetimeCurrentAfter = lifetimeCurrentAfter
+            self.visibleRootFingerprintToken = Self.sanitizedLabel(visibleRootFingerprintToken)
+            self.visibleRootFingerprintTokenAfter = Self.sanitizedLabel(visibleRootFingerprintTokenAfter)
+            self.workspaceID = Self.sanitizedLabel(workspaceID)
+            self.tabID = Self.sanitizedLabel(tabID)
+            self.agentSessionID = Self.sanitizedLabel(agentSessionID)
+            self.bindingKind = Self.sanitizedLabel(bindingKind)
+            self.requestedRunValidated = requestedRunValidated
+            self.gitClassification = Self.sanitizedLabel(gitClassification)
+            self.gitCapability = Self.sanitizedLabel(gitCapability)
+            self.gitPreflightStatus = Self.sanitizedLabel(gitPreflightStatus)
+            self.candidateKind = Self.sanitizedLabel(candidateKind)
+            self.rejectionReason = Self.sanitizedLabel(rejectionReason)
+            self.candidateCount = Self.nonNegative(candidateCount)
+            self.examinedCount = Self.nonNegative(examinedCount)
         }
 
         fileprivate var logDescription: String {
@@ -428,6 +506,32 @@ package enum EditFlowPerf {
             append("permitActive", permitActive, to: &parts)
             append("publicationPending", publicationPending, to: &parts)
             append("terminalBarrier", terminalBarrier, to: &parts)
+            append("inputShape", inputShape, to: &parts)
+            append("translationRoute", translationRoute, to: &parts)
+            append("rootScopeKind", rootScopeKind, to: &parts)
+            append("logicalRootToken", logicalRootToken, to: &parts)
+            append("physicalRootToken", physicalRootToken, to: &parts)
+            append("bindingFingerprintToken", bindingFingerprintToken, to: &parts)
+            append("hydrationState", hydrationState, to: &parts)
+            append("projectionSource", projectionSource, to: &parts)
+            append("ownershipGeneration", ownershipGeneration, to: &parts)
+            append("rootLifetimeID", rootLifetimeID, to: &parts)
+            append("lifetimeCurrentBefore", lifetimeCurrentBefore, to: &parts)
+            append("lifetimeCurrentAfter", lifetimeCurrentAfter, to: &parts)
+            append("visibleRootFingerprintToken", visibleRootFingerprintToken, to: &parts)
+            append("visibleRootFingerprintTokenAfter", visibleRootFingerprintTokenAfter, to: &parts)
+            append("workspaceID", workspaceID, to: &parts)
+            append("tabID", tabID, to: &parts)
+            append("agentSessionID", agentSessionID, to: &parts)
+            append("bindingKind", bindingKind, to: &parts)
+            append("requestedRunValidated", requestedRunValidated, to: &parts)
+            append("gitClassification", gitClassification, to: &parts)
+            append("gitCapability", gitCapability, to: &parts)
+            append("gitPreflightStatus", gitPreflightStatus, to: &parts)
+            append("candidateKind", candidateKind, to: &parts)
+            append("rejectionReason", rejectionReason, to: &parts)
+            append("candidateCount", candidateCount, to: &parts)
+            append("examinedCount", examinedCount, to: &parts)
             return parts.joined(separator: " ")
         }
 
@@ -789,6 +893,12 @@ package enum EditFlowPerf {
 
         package enum ReadFile {
             package static let providerEntered: StaticString = "ReadFile.ProviderEntered"
+            package static let domainRouteResolved: StaticString = "ReadFile.DomainRouteResolved"
+            package static let lookupProjectionResolved: StaticString = "ReadFile.LookupProjectionResolved"
+            package static let pathClassified: StaticString = "ReadFile.PathClassified"
+            package static let gitPreflightBegan: StaticString = "ReadFile.GitPreflightBegan"
+            package static let gitCandidateResolved: StaticString = "ReadFile.GitCandidateResolved"
+            package static let gitPreflightEnded: StaticString = "ReadFile.GitPreflightEnded"
             package static let explicitFreshnessBegan: StaticString = "ReadFile.ExplicitFreshnessBegan"
             package static let explicitFreshnessEnded: StaticString = "ReadFile.ExplicitFreshnessEnded"
             package static let exactCatalogLookupResolved: StaticString = "ReadFile.ExactCatalogLookupResolved"
@@ -853,6 +963,11 @@ package enum EditFlowPerf {
         package struct DebugCaptureIdentity: Hashable {
             package let captureID: UUID
             package let epoch: UInt64
+
+            package init(captureID: UUID, epoch: UInt64) {
+                self.captureID = captureID
+                self.epoch = epoch
+            }
         }
 
         package enum DebugCaptureToolFilter: String, Equatable {
@@ -873,6 +988,9 @@ package enum EditFlowPerf {
             case captureLabel = "capture_label"
             case jsonRPCRequest = "jsonrpc_request"
             case bindingFingerprint = "binding_fingerprint"
+            case logicalRoot = "logical_root"
+            case physicalRoot = "physical_root"
+            case visibleRootFingerprint = "visible_root_fingerprint"
             case fileSystemFingerprint = "filesystem_fingerprint"
             case cacheKey = "cache_key"
         }
