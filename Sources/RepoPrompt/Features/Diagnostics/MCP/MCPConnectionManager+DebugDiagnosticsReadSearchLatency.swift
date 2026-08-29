@@ -21,9 +21,43 @@ import RepoPromptShared
                 return debugDiagnosticsError(op: op, code: "invalid_params", message: "`max_samples` must be an integer between 100 and 100000.")
             }
 
-            MCPResponseDeliveryTracer.resetDebugEvents()
-            MCPToolWorkCountDiagnostics.resetDebugHistory()
-            switch EditFlowPerf.beginDebugCapture(label: label, maxSamples: maxSamples) {
+            let expiryMilliseconds: Int
+            switch debugBoundedInt(arguments, "expiry_ms", defaultValue: 120_000, range: 10000 ... 900_000) {
+            case let .value(parsed), let .defaulted(parsed):
+                expiryMilliseconds = parsed
+            case .invalid:
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "invalid_params",
+                    message: "`expiry_ms` must be an integer between 10000 and 900000."
+                )
+            }
+
+            let toolFilter: EditFlowPerf.DebugCaptureToolFilter
+            switch debugString(arguments, "tool_filter") ?? EditFlowPerf.DebugCaptureToolFilter.readFile.rawValue {
+            case EditFlowPerf.DebugCaptureToolFilter.readFile.rawValue:
+                toolFilter = .readFile
+            case EditFlowPerf.DebugCaptureToolFilter.all.rawValue:
+                toolFilter = .all
+            default:
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "invalid_params",
+                    message: "`tool_filter` must be `read_file` or `all`."
+                )
+            }
+
+            switch EditFlowPerf.beginDebugCapture(
+                label: label,
+                maxSamples: maxSamples,
+                expiryMilliseconds: expiryMilliseconds,
+                toolFilter: toolFilter,
+                prepare: { captureIdentity in
+                    MCPResponseDeliveryTracer.prepareDebugCapture(captureIdentity.captureID)
+                    MCPToolExecutionTracer.prepareDebugCapture(captureIdentity)
+                    MCPToolWorkCountDiagnostics.prepareDebugCapture(captureIdentity)
+                }
+            ) {
             case let .started(snapshot):
                 return debugDiagnosticsResult([
                     "ok": true,
@@ -31,11 +65,17 @@ import RepoPromptShared
                     "capture": snapshot.payload()
                 ])
             case let .busy(snapshot):
-                return debugDiagnosticsError(
-                    op: op,
-                    code: "capture_busy",
-                    message: "A read/search latency capture is already active with label `\(snapshot.label)`."
-                )
+                return debugDiagnosticsResult([
+                    "ok": false,
+                    "op": op,
+                    "code": "capture_busy",
+                    "error": "A read/search latency capture is already active.",
+                    "capture": [
+                        "capture_id": Self.debugOptionalValue(snapshot.captureID?.uuidString),
+                        "capture_label_token": Self.debugOptionalValue(snapshot.captureLabelToken),
+                        "capture_state": snapshot.captureState.rawValue
+                    ]
+                ], isError: true)
             }
         }
 
@@ -49,6 +89,219 @@ import RepoPromptShared
                 "capture": snapshot.payload(includeTimeline: includeTimeline),
                 "delivery_events": MCPResponseDeliveryTracer.debugEventSnapshot().map(\.payload)
             ])
+        }
+
+        func debugMCPReadFileInvocationListPayload(
+            op: String,
+            arguments: [String: Value]
+        ) -> CallTool.Result {
+            let requestedCaptureID: UUID?
+            if let rawCaptureID = debugString(arguments, "capture_id") {
+                guard let parsedCaptureID = UUID(uuidString: rawCaptureID) else {
+                    return debugDiagnosticsError(
+                        op: op,
+                        code: "invalid_params",
+                        message: "`capture_id` must be a UUID string when provided."
+                    )
+                }
+                requestedCaptureID = parsedCaptureID
+            } else {
+                requestedCaptureID = nil
+            }
+
+            let limit: Int
+            switch debugBoundedInt(arguments, "limit", defaultValue: 64, range: 1 ... 128) {
+            case let .value(parsed), let .defaulted(parsed):
+                limit = parsed
+            case .invalid:
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "invalid_params",
+                    message: "`limit` must be an integer between 1 and 128."
+                )
+            }
+
+            guard let access = withDebugMCPReadFileCaptureEvidence(
+                requestedCaptureID: requestedCaptureID,
+                { evidence -> Result<MCPReadFileInvocationDiagnosticList, DebugMCPReadFileCaptureAccessFailure> in
+                    return .success(MCPReadFileInvocationDiagnosticPacketAssembler.invocationList(
+                        capture: evidence.capture,
+                        trace: evidence.trace,
+                        work: evidence.work,
+                        limit: limit
+                    ))
+                }
+            ) else {
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "capture_unavailable",
+                    message: "No active or retained finished capture is available."
+                )
+            }
+            let list: MCPReadFileInvocationDiagnosticList
+            switch access {
+            case let .success(value):
+                list = value
+            case let .failure(failure):
+                return debugMCPReadFileCaptureError(op: op, failure: failure)
+            }
+            var payload = list.payload
+            payload["ok"] = true
+            payload["op"] = op
+            return debugDiagnosticsResult(payload)
+        }
+
+        func debugMCPReadFileInvocationPacketPayload(
+            op: String,
+            arguments: [String: Value]
+        ) async -> CallTool.Result {
+            guard let rawAppInvocationID = debugString(arguments, "app_invocation_id"),
+                  let appInvocationID = UUID(uuidString: rawAppInvocationID)
+            else {
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "invalid_params",
+                    message: "`app_invocation_id` is required and must be a UUID string."
+                )
+            }
+            let finishCapture = debugBool(arguments, "finish_capture") ?? false
+            let runtimeIdentity = await MCPReadFileDiagnosticRuntimeIdentityProvider.snapshot()
+            guard let access = withDebugMCPReadFileCaptureEvidence(
+                finishOnSuccess: finishCapture,
+                { evidence -> Result<MCPReadFileInvocationDiagnosticPacket, DebugMCPReadFileCaptureAccessFailure> in
+                    do {
+                        return try .success(MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                            appInvocationID: appInvocationID,
+                            capture: evidence.capture,
+                            trace: evidence.trace,
+                            work: evidence.work,
+                            runtimeIdentity: runtimeIdentity
+                        ))
+                    } catch MCPReadFileInvocationDiagnosticPacketAssemblyError.invocationNotFound {
+                        return .failure(DebugMCPReadFileCaptureAccessFailure(
+                            code: "invocation_not_found",
+                            message: "The selected app invocation was not found in the capture.",
+                            snapshot: evidence.capture
+                        ))
+                    } catch MCPReadFileInvocationDiagnosticPacketAssemblyError.ambiguousInvocation {
+                        return .failure(DebugMCPReadFileCaptureAccessFailure(
+                            code: "ambiguous_invocation",
+                            message: "The selected app invocation matched more than one identity tuple.",
+                            snapshot: evidence.capture
+                        ))
+                    } catch MCPReadFileInvocationDiagnosticPacketAssemblyError.inconsistentIdentity {
+                        return .failure(DebugMCPReadFileCaptureAccessFailure(
+                            code: "inconsistent_identity",
+                            message: "The selected app invocation has conflicting identity evidence.",
+                            snapshot: evidence.capture
+                        ))
+                    } catch MCPReadFileInvocationDiagnosticPacketAssemblyError.malformedIdentity {
+                        return .failure(DebugMCPReadFileCaptureAccessFailure(
+                            code: "malformed_identity",
+                            message: "The selected app invocation has malformed identity evidence.",
+                            snapshot: evidence.capture
+                        ))
+                    } catch {
+                        return .failure(DebugMCPReadFileCaptureAccessFailure(
+                            code: "packet_unavailable",
+                            message: "The diagnostic packet could not be assembled.",
+                            snapshot: evidence.capture
+                        ))
+                    }
+                }
+            ) else {
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "capture_unavailable",
+                    message: "No active or retained finished capture is available."
+                )
+            }
+            switch access {
+            case let .success(packet):
+                return debugDiagnosticsResult([
+                    "ok": true,
+                    "op": op,
+                    "capture_finished": finishCapture,
+                    "packet": packet.payload
+                ])
+            case let .failure(failure):
+                return debugMCPReadFileCaptureError(op: op, failure: failure)
+            }
+        }
+
+        private func debugMCPReadFileCaptureError(
+            op: String,
+            failure: DebugMCPReadFileCaptureAccessFailure
+        ) -> CallTool.Result {
+            debugDiagnosticsResult([
+                "ok": false,
+                "op": op,
+                "code": failure.code,
+                "error": failure.message,
+                "capture": [
+                    "capture_id": Self.debugOptionalValue(failure.snapshot.captureID?.uuidString),
+                    "capture_state": failure.snapshot.captureState.rawValue
+                ]
+            ], isError: true)
+        }
+
+        private struct DebugMCPReadFileCaptureAccessFailure: Error {
+            let code: String
+            let message: String
+            let snapshot: EditFlowPerf.DebugCaptureSnapshot
+        }
+
+        private struct DebugMCPReadFileCaptureEvidence {
+            let capture: EditFlowPerf.DebugCaptureSnapshot
+            let trace: MCPToolExecutionTracer.DebugEventSnapshot
+            let work: MCPToolWorkCountDiagnostics.DebugReadFileSnapshot
+        }
+
+        private func withDebugMCPReadFileCaptureEvidence<Value>(
+            requestedCaptureID: UUID? = nil,
+            finishOnSuccess: Bool = false,
+            _ assemble: (DebugMCPReadFileCaptureEvidence)
+                -> Result<Value, DebugMCPReadFileCaptureAccessFailure>
+        ) -> Result<Value, DebugMCPReadFileCaptureAccessFailure>? {
+            EditFlowPerf.withDebugCaptureSnapshot(finishOnSuccess: finishOnSuccess) { snapshot in
+                guard let captureID = snapshot.captureID else {
+                    return .failure(DebugMCPReadFileCaptureAccessFailure(
+                        code: "capture_unavailable",
+                        message: "No active or retained finished capture is available.",
+                        snapshot: snapshot
+                    ))
+                }
+                guard snapshot.toolFilter == .readFile else {
+                    return .failure(DebugMCPReadFileCaptureAccessFailure(
+                        code: "capture_incompatible",
+                        message: "The selected capture is not compatible with read-file invocation diagnostics.",
+                        snapshot: snapshot
+                    ))
+                }
+                guard requestedCaptureID == nil || requestedCaptureID == captureID else {
+                    return .failure(DebugMCPReadFileCaptureAccessFailure(
+                        code: "capture_unavailable",
+                        message: "The requested capture is not the active or retained finished capture.",
+                        snapshot: snapshot
+                    ))
+                }
+                let trace = MCPToolExecutionTracer.debugEventSnapshot(captureID)
+                let work = MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID)
+                guard trace.retainedCaptureID == captureID,
+                      work.retainedCaptureID == captureID
+                else {
+                    return .failure(DebugMCPReadFileCaptureAccessFailure(
+                        code: "capture_replaced",
+                        message: "The capture changed while diagnostic evidence was being assembled.",
+                        snapshot: snapshot
+                    ))
+                }
+                return assemble(DebugMCPReadFileCaptureEvidence(
+                    capture: snapshot,
+                    trace: trace,
+                    work: work
+                ))
+            }
         }
 
         func debugMCPReadFileAutoSelectionProbeBeginPayload(
@@ -1167,13 +1420,12 @@ import RepoPromptShared
 
         private func debugMCPReadSearchCaptureLabel(_ raw: String) -> String? {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
             let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
-            let replacement = UnicodeScalar("_")
-            let scalars = trimmed.unicodeScalars.map { scalar in
-                allowed.contains(scalar) ? scalar : replacement
-            }
-            return String(String.UnicodeScalarView(scalars.prefix(64)))
+            guard !trimmed.isEmpty,
+                  trimmed.unicodeScalars.count <= 64,
+                  trimmed.unicodeScalars.allSatisfy(allowed.contains)
+            else { return nil }
+            return trimmed
         }
     }
 

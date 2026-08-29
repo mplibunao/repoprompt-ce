@@ -285,6 +285,7 @@ public enum MCPResponseDeliveryTracer {
     private static let lock = NSLock()
     #if DEBUG
         private nonisolated(unsafe) static var debugEvents: [MCPResponseDeliveryTraceEvent] = []
+        private nonisolated(unsafe) static var debugCaptureID: UUID?
         private static let maximumDebugEvents = 20000
     #endif
 
@@ -322,9 +323,17 @@ public enum MCPResponseDeliveryTracer {
     }
 
     #if DEBUG
+        public static func prepareDebugCapture(_ captureID: UUID) {
+            lock.lock()
+            debugEvents.removeAll(keepingCapacity: true)
+            debugCaptureID = captureID
+            lock.unlock()
+        }
+
         public static func resetDebugEvents() {
             lock.lock()
             debugEvents.removeAll(keepingCapacity: true)
+            debugCaptureID = nil
             lock.unlock()
         }
 

@@ -294,6 +294,7 @@ enum MCPToolExecutionTracer {
 
         struct DebugEventSnapshot: Equatable {
             let captureID: UUID
+            let retainedCaptureID: UUID?
             let maxEventCount: Int
             let retainedEventCount: Int
             let droppedEventCount: Int
@@ -385,11 +386,20 @@ enum MCPToolExecutionTracer {
                 let dropped = saturatedSum(overwritten, rejected)
                 return DebugEventSnapshot(
                     captureID: captureID,
+                    retainedCaptureID: state.retainedCaptureID,
                     maxEventCount: State.debugEventCapacity,
                     retainedEventCount: events.count,
                     droppedEventCount: dropped,
                     events: events
                 )
+            }
+        }
+
+        static func prepareDebugCapture(_ captureIdentity: EditFlowPerf.DebugCaptureIdentity) {
+            state.lock.withLock {
+                initializeRetainedDebugEventRing(captureID: captureIdentity.captureID)
+                state.unrelatedRejectedCaptureID = nil
+                state.unrelatedRejectedEventCount = 0
             }
         }
 

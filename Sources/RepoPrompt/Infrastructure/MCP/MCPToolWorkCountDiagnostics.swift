@@ -29,6 +29,21 @@ enum MCPToolWorkCountDiagnostics {
     }
 
     #if DEBUG
+        struct DebugCapturedReadFileInvocation: Equatable {
+            let sequence: UInt64
+            let captureIdentity: EditFlowPerf.DebugCaptureIdentity
+            let snapshot: ReadFileInvocationSnapshot
+        }
+
+        struct DebugReadFileSnapshot: Equatable {
+            let captureID: UUID
+            let retainedCaptureID: UUID?
+            let maxEntryCount: Int
+            let retainedEntryCount: Int
+            let droppedEntryCount: Int
+            let entries: [DebugCapturedReadFileInvocation]
+        }
+
         private final class GitInvocationCapture: @unchecked Sendable {
             private let lock = NSLock()
             let operation: String
@@ -110,6 +125,7 @@ enum MCPToolWorkCountDiagnostics {
         private final class ReadFileInvocationCapture: @unchecked Sendable {
             private let lock = NSLock()
             let requestIdentity: MCPRequestTimelineIdentity?
+            let captureIdentity: EditFlowPerf.DebugCaptureIdentity?
             private var source = "unknown"
             private var readBytes = 0
             private var returnedBytes = 0
@@ -117,8 +133,12 @@ enum MCPToolWorkCountDiagnostics {
             private var decodeMicroseconds = 0
             private var cacheHit = false
 
-            init(requestIdentity: MCPRequestTimelineIdentity?) {
+            init(
+                requestIdentity: MCPRequestTimelineIdentity?,
+                captureIdentity: EditFlowPerf.DebugCaptureIdentity?
+            ) {
                 self.requestIdentity = requestIdentity
+                self.captureIdentity = captureIdentity
             }
 
             func recordDiskRead(bytes: Int, decodeMicroseconds: Int) {
@@ -169,6 +189,13 @@ enum MCPToolWorkCountDiagnostics {
             private let limit = 64
             private var git: [GitInvocationSnapshot] = []
             private var readFile: [ReadFileInvocationSnapshot] = []
+            private var capturedReadFile: [DebugCapturedReadFileInvocation] = []
+            private var retainedCaptureID: UUID?
+            private var nextCaptureSequence: UInt64 = 1
+            private var overwrittenCaptureEntryCount = 0
+            private var retainedCaptureRejectedEntryCount = 0
+            private var unrelatedRejectedCaptureID: UUID?
+            private var unrelatedRejectedEntryCount = 0
 
             func append(_ snapshot: GitInvocationSnapshot) {
                 lock.lock()
@@ -184,17 +211,121 @@ enum MCPToolWorkCountDiagnostics {
                 lock.unlock()
             }
 
+            func append(
+                _ snapshot: ReadFileInvocationSnapshot,
+                captureIdentity: EditFlowPerf.DebugCaptureIdentity
+            ) {
+                let accepted = EditFlowPerf.performIfDebugCaptureAccepted(captureIdentity) {
+                    lock.withLock {
+                        if retainedCaptureID != captureIdentity.captureID {
+                            resetCapturedReadFileLocked(captureID: captureIdentity.captureID)
+                        }
+                        if capturedReadFile.count == limit {
+                            capturedReadFile.removeFirst()
+                            overwrittenCaptureEntryCount = Self.incremented(overwrittenCaptureEntryCount)
+                        }
+                        capturedReadFile.append(DebugCapturedReadFileInvocation(
+                            sequence: nextCaptureSequence,
+                            captureIdentity: captureIdentity,
+                            snapshot: snapshot
+                        ))
+                        nextCaptureSequence &+= 1
+                    }
+                }
+                guard !accepted else { return }
+
+                lock.withLock {
+                    if retainedCaptureID == captureIdentity.captureID {
+                        retainedCaptureRejectedEntryCount = Self.incremented(
+                            retainedCaptureRejectedEntryCount
+                        )
+                    } else {
+                        if unrelatedRejectedCaptureID != captureIdentity.captureID {
+                            unrelatedRejectedCaptureID = captureIdentity.captureID
+                            unrelatedRejectedEntryCount = 0
+                        }
+                        unrelatedRejectedEntryCount = Self.incremented(unrelatedRejectedEntryCount)
+                    }
+                }
+            }
+
             func snapshots() -> (git: [GitInvocationSnapshot], readFile: [ReadFileInvocationSnapshot]) {
                 lock.lock()
                 defer { lock.unlock() }
                 return (git, readFile)
             }
 
-            func reset() {
-                lock.lock()
-                git.removeAll(keepingCapacity: false)
-                readFile.removeAll(keepingCapacity: false)
-                lock.unlock()
+            func capturedReadFileSnapshot(captureID: UUID) -> DebugReadFileSnapshot {
+                lock.withLock {
+                    let entries = capturedReadFile
+                        .filter { $0.captureIdentity.captureID == captureID }
+                        .sorted { $0.sequence < $1.sequence }
+                    let dropped = if retainedCaptureID == captureID {
+                        Self.saturatedSum(
+                            overwrittenCaptureEntryCount,
+                            retainedCaptureRejectedEntryCount
+                        )
+                    } else if unrelatedRejectedCaptureID == captureID {
+                        unrelatedRejectedEntryCount
+                    } else {
+                        0
+                    }
+                    return DebugReadFileSnapshot(
+                        captureID: captureID,
+                        retainedCaptureID: retainedCaptureID,
+                        maxEntryCount: limit,
+                        retainedEntryCount: entries.count,
+                        droppedEntryCount: dropped,
+                        entries: entries
+                    )
+                }
+            }
+
+            func prepareCapture(_ captureIdentity: EditFlowPerf.DebugCaptureIdentity) {
+                lock.withLock {
+                    git.removeAll(keepingCapacity: false)
+                    readFile.removeAll(keepingCapacity: false)
+                    resetCapturedReadFileLocked(captureID: captureIdentity.captureID)
+                    unrelatedRejectedCaptureID = nil
+                    unrelatedRejectedEntryCount = 0
+                }
+            }
+
+            func reset(closingCaptureID: UUID? = nil) {
+                lock.withLock {
+                    git.removeAll(keepingCapacity: false)
+                    readFile.removeAll(keepingCapacity: false)
+                    guard let closingCaptureID else {
+                        resetCapturedReadFileLocked(captureID: nil)
+                        unrelatedRejectedCaptureID = nil
+                        unrelatedRejectedEntryCount = 0
+                        return
+                    }
+                    if retainedCaptureID == closingCaptureID {
+                        resetCapturedReadFileLocked(captureID: nil)
+                    }
+                    if unrelatedRejectedCaptureID == closingCaptureID {
+                        unrelatedRejectedCaptureID = nil
+                        unrelatedRejectedEntryCount = 0
+                    }
+                }
+            }
+
+            private func resetCapturedReadFileLocked(captureID: UUID?) {
+                capturedReadFile.removeAll(keepingCapacity: false)
+                retainedCaptureID = captureID
+                nextCaptureSequence = 1
+                overwrittenCaptureEntryCount = 0
+                retainedCaptureRejectedEntryCount = 0
+            }
+
+            private static func incremented(_ value: Int) -> Int {
+                value == Int.max ? value : value + 1
+            }
+
+            private static func saturatedSum(_ lhs: Int, _ rhs: Int) -> Int {
+                let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+                return overflow ? Int.max : sum
             }
         }
 
@@ -269,14 +400,20 @@ enum MCPToolWorkCountDiagnostics {
 
     static func withReadFileInvocation<T>(_ body: () async throws -> T) async rethrows -> T {
         #if DEBUG
-            let capture = ReadFileInvocationCapture(requestIdentity: MCPRequestTimelineContext.current)
+            let capture = ReadFileInvocationCapture(
+                requestIdentity: MCPRequestTimelineContext.current,
+                captureIdentity: EditFlowPerf.debugCaptureIdentity(toolName: "read_file")
+            )
             return try await $currentReadFileCapture.withValue(capture) {
                 do {
                     let value = try await body()
-                    history.append(capture.snapshot(outcome: "success"))
+                    appendReadFileSnapshot(capture.snapshot(outcome: "success"), capture: capture)
                     return value
                 } catch {
-                    history.append(capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"))
+                    appendReadFileSnapshot(
+                        capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"),
+                        capture: capture
+                    )
                     throw error
                 }
             }
@@ -317,8 +454,26 @@ enum MCPToolWorkCountDiagnostics {
             history.snapshots()
         }
 
-        static func resetDebugHistory() {
-            history.reset()
+        static func debugReadFileSnapshot(captureID: UUID) -> DebugReadFileSnapshot {
+            history.capturedReadFileSnapshot(captureID: captureID)
+        }
+
+        static func prepareDebugCapture(_ captureIdentity: EditFlowPerf.DebugCaptureIdentity) {
+            history.prepareCapture(captureIdentity)
+        }
+
+        static func resetDebugHistory(closingCaptureID: UUID? = nil) {
+            history.reset(closingCaptureID: closingCaptureID)
+        }
+
+        private static func appendReadFileSnapshot(
+            _ snapshot: ReadFileInvocationSnapshot,
+            capture: ReadFileInvocationCapture
+        ) {
+            history.append(snapshot)
+            if let captureIdentity = capture.captureIdentity {
+                history.append(snapshot, captureIdentity: captureIdentity)
+            }
         }
 
         static func resetForTesting() {

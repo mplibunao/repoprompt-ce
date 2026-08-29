@@ -139,6 +139,18 @@ import MCP
                 #else
                     return debugDiagnosticsError(op: op, code: "unavailable", message: "`mcp_read_search_capture_snapshot` is only available in DEBUG builds.")
                 #endif
+            case "list_read_file_invocations":
+                #if DEBUG
+                    return debugMCPReadFileInvocationListPayload(op: op, arguments: arguments)
+                #else
+                    return debugDiagnosticsError(op: op, code: "unavailable", message: "`list_read_file_invocations` is only available in DEBUG builds.")
+                #endif
+            case "read_file_invocation_packet":
+                #if DEBUG
+                    return await debugMCPReadFileInvocationPacketPayload(op: op, arguments: arguments)
+                #else
+                    return debugDiagnosticsError(op: op, code: "unavailable", message: "`read_file_invocation_packet` is only available in DEBUG builds.")
+                #endif
             case "mcp_tool_duration_inventory":
                 return debugMCPToolDurationInventoryPayload(op: op)
             case "mcp_tool_concurrency_evidence_snapshot":

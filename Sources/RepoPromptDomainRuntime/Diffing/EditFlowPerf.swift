@@ -1119,7 +1119,8 @@ package enum EditFlowPerf {
                 label: String,
                 maxSamples: Int,
                 expiryMilliseconds: Int,
-                toolFilter: DebugCaptureToolFilter
+                toolFilter: DebugCaptureToolFilter,
+                prepare: (DebugCaptureIdentity) -> Void
             ) -> DebugCaptureBeginResult {
                 acquireLock()
                 defer { lock.unlock() }
@@ -1157,7 +1158,9 @@ package enum EditFlowPerf {
                 retainedLifecycleEventCount = 0
                 droppedLifecycleEventCount = 0
                 lifecycleEvents.removeAll(keepingCapacity: true)
+                // The recorder lock remains the publication barrier while producers queue behind it.
                 activeHint.store(true)
+                prepare(identity)
                 return .started(snapshotLocked())
             }
 
@@ -1169,6 +1172,21 @@ package enum EditFlowPerf {
                     closeLocked(state: captureState == .sampleLimitReached ? .sampleLimitReached : .finished)
                 }
                 return snapshotLocked()
+            }
+
+            package func withSnapshot<Value, Failure: Error>(
+                finishOnSuccess: Bool,
+                _ operation: (DebugCaptureSnapshot) -> Result<Value, Failure>
+            ) -> Result<Value, Failure>? {
+                acquireLock()
+                defer { lock.unlock() }
+                expireIfNeededLocked()
+                guard captureID != nil else { return nil }
+                let result = operation(snapshotLocked())
+                if case .success = result, finishOnSuccess, active {
+                    closeLocked(state: captureState == .sampleLimitReached ? .sampleLimitReached : .finished)
+                }
+                return result
             }
 
             package func resetForTesting() {
@@ -1496,18 +1514,30 @@ package enum EditFlowPerf {
             label: String,
             maxSamples: Int,
             expiryMilliseconds: Int = 120_000,
-            toolFilter: DebugCaptureToolFilter = .all
+            toolFilter: DebugCaptureToolFilter = .all,
+            prepare: (DebugCaptureIdentity) -> Void = { _ in }
         ) -> DebugCaptureBeginResult {
             debugCaptureRecorder.begin(
                 label: label,
                 maxSamples: maxSamples,
                 expiryMilliseconds: expiryMilliseconds,
-                toolFilter: toolFilter
+                toolFilter: toolFilter,
+                prepare: prepare
             )
         }
 
         package static func debugCaptureSnapshot(finish: Bool) -> DebugCaptureSnapshot {
             debugCaptureRecorder.snapshot(finish: finish)
+        }
+
+        package static func withDebugCaptureSnapshot<Value, Failure: Error>(
+            finishOnSuccess: Bool = false,
+            _ operation: (DebugCaptureSnapshot) -> Result<Value, Failure>
+        ) -> Result<Value, Failure>? {
+            debugCaptureRecorder.withSnapshot(
+                finishOnSuccess: finishOnSuccess,
+                operation
+            )
         }
 
         package static func resetDebugCaptureForTesting() {
