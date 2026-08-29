@@ -2632,7 +2632,11 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
             "prompt_export.ingress_wait:started",
             "prompt_export.ingress_wait:completed",
             "prompt_export.reply_assembly:started",
-            "prompt_export.reply_assembly:completed"
+            "prompt_export.reply_assembly:completed",
+            "prompt_export.formatting:started",
+            "prompt_export.formatting:completed",
+            "prompt_export.publication:started",
+            "prompt_export.publication:completed"
         ]
 
         func assertManageSelectionClearOrdering(fixture: Fixture) async throws {

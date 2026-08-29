@@ -11937,6 +11937,48 @@ actor ServerNetworkManager {
                                     now: { executionWatchdogEnvironment.now() }
                                 )
 
+                                @Sendable func reportPromptExportPostProviderPhase(
+                                    _ phase: MCPToolExecutionHandlerPhase,
+                                    transition: MCPToolExecutionHandlerPhaseTransition = .started
+                                ) async {
+                                    guard isPromptExport, let contract = selectedExecutionContract else { return }
+                                    let snapshot = await MCPToolExecutionHandlerPhaseContext.report(
+                                        phase,
+                                        transition: transition,
+                                        using: handlerPhaseRecorder
+                                    )
+                                    let now = executionWatchdogEnvironment.now()
+                                    MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                        toolName: toolName,
+                                        operationIdentity: evidenceOperationIdentity,
+                                        connectionID: connectionID,
+                                        invocationID: invocationID,
+                                        runID: observerRunIDForCallbacksFinal,
+                                        requestIdentity: resolvedRequestIdentity,
+                                        contractKind: contract.kind,
+                                        executionDeadlineSeconds: contract.deadline?.mcpSeconds,
+                                        cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
+                                        cleanupDisposition: contract.cleanupDisposition,
+                                        phase: .handlerPhaseTransition,
+                                        elapsedMilliseconds: max(
+                                            0,
+                                            now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds
+                                        ),
+                                        cancellationRequested: nil,
+                                        cancellationOutcome: nil,
+                                        cancellationOrigin: nil,
+                                        settlement: nil,
+                                        graceOutcome: nil,
+                                        escalationReason: nil,
+                                        handlerPhase: snapshot,
+                                        handlerPhaseAgeMilliseconds: max(
+                                            0,
+                                            now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds
+                                                - snapshot.elapsedMilliseconds
+                                        )
+                                    ))
+                                }
+
                                 @Sendable func dispatchResolvedProvider(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
                                     guard await self.isCurrentConnectionCallLimiterResolution(
                                         limiterResolution,
@@ -12015,6 +12057,7 @@ actor ServerNetworkManager {
                                             connectionID: connectionID,
                                             invocationID: invocationID,
                                             runID: observerRunIDForCallbacksFinal,
+                                            requestIdentity: resolvedRequestIdentity,
                                             contractKind: contract.kind,
                                             executionDeadlineSeconds: contract.deadline?.mcpSeconds,
                                             cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
@@ -12682,6 +12725,7 @@ actor ServerNetworkManager {
                                                     )
                                                     defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.permitPostDispatchEnvelope, permitPostDispatchEnvelopeState) }
 
+                                                    await reportPromptExportPostProviderPhase(.promptExportFormatting)
                                                     #if DEBUG
                                                         await self.debugBeforeToolResultFormattingForTesting?(connectionID, toolName)
                                                     #endif
@@ -12701,6 +12745,11 @@ actor ServerNetworkManager {
                                                         EditFlowPerf.Lifecycle.MCPToolCall.formatResultReturned,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
                                                     )
+                                                    await reportPromptExportPostProviderPhase(
+                                                        .promptExportFormatting,
+                                                        transition: .completed
+                                                    )
+                                                    await reportPromptExportPostProviderPhase(.promptExportPublication)
 
                                                     // Fire completion observer with result for detailed UI rendering
                                                     #if DEBUG
@@ -12750,6 +12799,10 @@ actor ServerNetworkManager {
                                                     // (e.g., Claude Desktop) that invoked context_builder.
 
                                                     try await validatePromptExportPublicationAuthority()
+                                                    await reportPromptExportPostProviderPhase(
+                                                        .promptExportPublication,
+                                                        transition: .completed
+                                                    )
                                                     return handlerResult(
                                                         CallTool.Result(content: contentBlocks, isError: false),
                                                         outcome: "success"
