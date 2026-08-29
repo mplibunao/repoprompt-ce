@@ -791,12 +791,29 @@
             let joinedIdentities = payloads.compactMap { $0["request_identity"] as? [String: Any] }
             XCTAssertEqual(joinedIdentities.count, 3)
             XCTAssertTrue(joinedIdentities.allSatisfy {
-                $0["jsonrpc_request_id"] as? String == "number:41"
+                $0["jsonrpc_request_kind"] as? String == "number"
+                    && ($0["jsonrpc_request_token"] as? String)?.hasPrefix("jsonrpc_request:") == true
+                    && $0["jsonrpc_request_id"] == nil
                     && $0["connection_id"] as? String == connectionID.uuidString
                     && ($0["connection_generation"] as? NSNumber)?.uint64Value == 7
                     && $0["app_invocation_id"] as? String == identity.appInvocationID
                     && ($0["request_ordinal"] as? NSNumber)?.uint64Value == 3
             })
+            func containsRawRequestID(_ value: Any) -> Bool {
+                if let string = value as? String {
+                    return string.contains("number:41")
+                }
+                if let dictionary = value as? [String: Any] {
+                    return dictionary.contains { key, nestedValue in
+                        key.contains("number:41") || containsRawRequestID(nestedValue)
+                    }
+                }
+                if let array = value as? [Any] {
+                    return array.contains(where: containsRawRequestID)
+                }
+                return false
+            }
+            XCTAssertFalse(containsRawRequestID(payloads))
 
             let managerSource = try source("Sources/RepoPrompt/Infrastructure/MCP/MCPConnectionManager.swift")
             for hook in [

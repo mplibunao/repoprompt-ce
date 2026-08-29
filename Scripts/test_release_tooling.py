@@ -28,6 +28,258 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 class ReleaseToolingTests(unittest.TestCase):
+    def test_debug_provenance_digest_includes_tracked_and_untracked_diagnostic_patch_material(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        generator = package_script.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        repo = temp_dir / "repo"
+        bundle = temp_dir / "RepoPrompt.app"
+        (bundle / "Contents" / "Resources").mkdir(parents=True)
+        repo.mkdir()
+
+        def git(*args: str) -> str:
+            completed = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return completed.stdout.strip()
+
+        def provenance(base_commit: str | None = None) -> dict[str, object]:
+            env = os.environ.copy()
+            env["ROOT_DIR_FOR_PROVENANCE"] = str(repo)
+            env["APP_BUNDLE_FOR_PROVENANCE"] = str(bundle)
+            if base_commit is not None:
+                env["REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT"] = base_commit
+            else:
+                env.pop("REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT", None)
+            subprocess.run([sys.executable, "-c", generator], check=True, capture_output=True, env=env)
+            return json.loads(
+                (bundle / "Contents" / "Resources" / "RepoPromptDebugProvenance.json").read_text()
+            )
+
+        git("init", "-q")
+        git("config", "user.email", "tests@example.invalid")
+        git("config", "user.name", "RepoPrompt Tests")
+        (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-qm", "base")
+        base_commit = git("rev-parse", "HEAD")
+        unknown = provenance()
+        self.assertIsNone(unknown["commit"])
+        self.assertIsNone(unknown["diagnosticPatchPresent"])
+        self.assertIsNone(unknown["diagnosticPatchDigest"])
+        invalid = provenance("f" * 40)
+        self.assertIsNone(invalid["commit"])
+        self.assertIsNone(invalid["diagnosticPatchPresent"])
+        self.assertIsNone(invalid["diagnosticPatchDigest"])
+
+        at_base = provenance(base_commit)
+        self.assertEqual(at_base["commit"], base_commit)
+        self.assertFalse(at_base["diagnosticPatchPresent"])
+        self.assertIsNone(at_base["diagnosticPatchDigest"])
+
+        (repo / "tracked.txt").write_text("committed diagnostic change\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-qm", "diagnostic patch")
+        committed = provenance(base_commit)
+        committed_digest = committed["diagnosticPatchDigest"]
+        self.assertEqual(committed["commit"], base_commit)
+        self.assertFalse(committed["dirty"])
+        self.assertTrue(committed["diagnosticPatchPresent"])
+        self.assertRegex(str(committed_digest), r"^[0-9a-f]{64}$")
+        self.assertEqual(provenance(base_commit)["diagnosticPatchDigest"], committed_digest)
+
+        (repo / "tracked.txt").write_text("tracked working change\n", encoding="utf-8")
+        tracked_digest = provenance(base_commit)["diagnosticPatchDigest"]
+        self.assertRegex(str(tracked_digest), r"^[0-9a-f]{64}$")
+        self.assertNotEqual(tracked_digest, committed_digest)
+        self.assertEqual(provenance(base_commit)["diagnosticPatchDigest"], tracked_digest)
+
+        (repo / "untracked.txt").write_text("untracked diagnostic source\n", encoding="utf-8")
+        combined = provenance(base_commit)
+        self.assertTrue(combined["diagnosticPatchPresent"])
+        self.assertNotEqual(combined["diagnosticPatchDigest"], tracked_digest)
+
+    def test_debug_provenance_streams_patch_inputs_when_whole_output_apis_are_unavailable(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        generator = package_script.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        repo = temp_dir / "repo"
+        bundle = temp_dir / "RepoPrompt.app"
+        (bundle / "Contents" / "Resources").mkdir(parents=True)
+        repo.mkdir()
+
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "tests@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "RepoPrompt Tests"], check=True)
+        (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+        base_commit = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        (repo / "tracked.txt").write_text("tracked diagnostic change\n", encoding="utf-8")
+        (repo / "untracked.txt").write_text("untracked diagnostic source\n", encoding="utf-8")
+
+        real_run = subprocess.run
+
+        def reject_captured_diff(command, *args, **kwargs):
+            whole_output_operations = {"diff", "ls-files", "status"}
+            if whole_output_operations.intersection(command) and kwargs.get("capture_output"):
+                raise AssertionError("repo-sized git output must be streamed")
+            return real_run(command, *args, **kwargs)
+
+        environment = {
+            "ROOT_DIR_FOR_PROVENANCE": str(repo),
+            "APP_BUNDLE_FOR_PROVENANCE": str(bundle),
+            "REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT": base_commit,
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch("subprocess.run", side_effect=reject_captured_diff),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("untracked content must be streamed")),
+        ):
+            exec(compile(generator, "package_app.sh:debug-provenance", "exec"), {})
+
+        provenance = json.loads(
+            (bundle / "Contents" / "Resources" / "RepoPromptDebugProvenance.json").read_text()
+        )
+        self.assertTrue(provenance["dirty"])
+        self.assertTrue(provenance["diagnosticPatchPresent"])
+        self.assertRegex(str(provenance["diagnosticPatchDigest"]), r"^[0-9a-f]{64}$")
+
+    def test_debug_provenance_hashes_untracked_symlink_identity_without_following_target(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        generator = package_script.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        repo = temp_dir / "repo"
+        bundle = temp_dir / "RepoPrompt.app"
+        (bundle / "Contents" / "Resources").mkdir(parents=True)
+        (repo / "AppResources").mkdir(parents=True)
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        def provenance(base_commit: str) -> dict[str, object]:
+            environment = os.environ.copy()
+            environment.update({
+                "ROOT_DIR_FOR_PROVENANCE": str(repo),
+                "APP_BUNDLE_FOR_PROVENANCE": str(bundle),
+                "REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT": base_commit,
+            })
+            subprocess.run([sys.executable, "-c", generator], check=True, capture_output=True, env=environment)
+            return json.loads(
+                (bundle / "Contents" / "Resources" / "RepoPromptDebugProvenance.json").read_text()
+            )
+
+        git("init", "-q")
+        git("config", "user.email", "tests@example.invalid")
+        git("config", "user.name", "RepoPrompt Tests")
+        (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-qm", "base")
+        base_commit = git("rev-parse", "HEAD")
+
+        first_target = temp_dir / "external-secret-one-7D19C4"
+        second_target = temp_dir / "external-secret-two-8E20D5"
+        first_target.write_text("first external content\n", encoding="utf-8")
+        second_target.write_text("second external content\n", encoding="utf-8")
+        link = repo / "AppResources" / "diagnostic-helper"
+        link.symlink_to(first_target)
+
+        first = provenance(base_commit)
+        first_digest = first["diagnosticPatchDigest"]
+        first_target.write_text("changed external content that must not be read\n", encoding="utf-8")
+        self.assertEqual(provenance(base_commit)["diagnosticPatchDigest"], first_digest)
+
+        link.unlink()
+        link.symlink_to(second_target)
+        retargeted = provenance(base_commit)
+        self.assertNotEqual(retargeted["diagnosticPatchDigest"], first_digest)
+        serialized = json.dumps(retargeted, sort_keys=True)
+        self.assertNotIn(first_target.name, serialized)
+        self.assertNotIn(second_target.name, serialized)
+
+    def test_debug_provenance_fails_closed_when_untracked_path_is_replaced_during_streaming(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        generator = package_script.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        repo = temp_dir / "repo"
+        bundle = temp_dir / "RepoPrompt.app"
+        (bundle / "Contents" / "Resources").mkdir(parents=True)
+        repo.mkdir()
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        git("init", "-q")
+        git("config", "user.email", "tests@example.invalid")
+        git("config", "user.name", "RepoPrompt Tests")
+        (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-qm", "base")
+        base_commit = git("rev-parse", "HEAD")
+
+        candidate = repo / "untracked-diagnostic.bin"
+        candidate.write_bytes(bytes(index % 251 for index in range(64 * 1024 * 2 + 137)))
+        opened_identity = candidate.stat()
+        replacement = temp_dir / "replacement-diagnostic.bin"
+        replacement.write_bytes(b"replacement identity\n")
+        real_read = os.read
+        swapped = False
+
+        def swap_after_opened_file_read(descriptor: int, count: int) -> bytes:
+            nonlocal swapped
+            chunk = real_read(descriptor, count)
+            metadata = os.fstat(descriptor)
+            if (
+                not swapped
+                and stat.S_ISREG(metadata.st_mode)
+                and metadata.st_dev == opened_identity.st_dev
+                and metadata.st_ino == opened_identity.st_ino
+            ):
+                os.replace(replacement, candidate)
+                swapped = True
+            return chunk
+
+        environment = {
+            "ROOT_DIR_FOR_PROVENANCE": str(repo),
+            "APP_BUNDLE_FOR_PROVENANCE": str(bundle),
+            "REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT": base_commit,
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch("os.read", side_effect=swap_after_opened_file_read),
+        ):
+            exec(compile(generator, "package_app.sh:debug-provenance", "exec"), {})
+
+        provenance = json.loads(
+            (bundle / "Contents" / "Resources" / "RepoPromptDebugProvenance.json").read_text()
+        )
+        self.assertTrue(swapped)
+        self.assertTrue(provenance["dirty"])
+        self.assertIsNone(provenance["diagnosticPatchPresent"])
+        self.assertIsNone(provenance["diagnosticPatchDigest"])
+
     def test_debug_provenance_uses_json_validation_and_rejects_truncated_output(self) -> None:
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
         validator = SCRIPT_DIR / "validate_json.py"

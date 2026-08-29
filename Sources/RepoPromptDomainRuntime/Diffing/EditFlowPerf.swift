@@ -1,6 +1,7 @@
 import Foundation
 import RepoPromptShared
 #if DEBUG
+    import CryptoKit
     import Synchronization
 #endif
 #if DEBUG || EDIT_FLOW_PERF
@@ -17,6 +18,9 @@ import RepoPromptShared
 package enum EditFlowPerf {
     package struct LifecycleCorrelation {
         package let id: UUID
+        #if DEBUG
+            package let captureID: UUID?
+        #endif
         package let captureEpoch: UInt64?
         package let requestIdentity: MCPRequestTimelineIdentity?
     }
@@ -846,6 +850,40 @@ package enum EditFlowPerf {
     }
 
     #if DEBUG
+        package struct DebugCaptureIdentity: Hashable {
+            package let captureID: UUID
+            package let epoch: UInt64
+        }
+
+        package enum DebugCaptureToolFilter: String, Equatable {
+            case all
+            case readFile = "read_file"
+
+            fileprivate func includes(_ toolName: String?) -> Bool {
+                switch self {
+                case .all:
+                    true
+                case .readFile:
+                    toolName == rawValue
+                }
+            }
+        }
+
+        package enum DebugCaptureTokenDomain: String {
+            case captureLabel = "capture_label"
+            case jsonRPCRequest = "jsonrpc_request"
+            case bindingFingerprint = "binding_fingerprint"
+            case fileSystemFingerprint = "filesystem_fingerprint"
+            case cacheKey = "cache_key"
+        }
+
+        package enum DebugCaptureState: String, Equatable {
+            case active
+            case finished
+            case expired
+            case sampleLimitReached = "sample_limit_reached"
+        }
+
         package struct DebugCaptureStageAggregate {
             package let stageName: String
             package let sanitizedDimensions: String
@@ -878,6 +916,8 @@ package enum EditFlowPerf {
             package let eventName: String
             package let correlationID: String
             package let requestIdentity: MCPRequestTimelineIdentity?
+            package let jsonRPCRequestKind: String?
+            package let jsonRPCRequestToken: String?
             package let sanitizedDimensions: String
 
             package var payload: [String: Any] {
@@ -886,14 +926,15 @@ package enum EditFlowPerf {
                     "offset_ms": Self.roundedMS(offsetMS),
                     "event_name": eventName,
                     "correlation_id": correlationID,
-                    "request_identity": requestIdentity.map(Self.requestIdentityPayload) ?? NSNull(),
+                    "request_identity": requestIdentity.map(requestIdentityPayload) ?? NSNull(),
                     "sanitized_dimensions": sanitizedDimensions
                 ]
             }
 
-            private static func requestIdentityPayload(_ identity: MCPRequestTimelineIdentity) -> [String: Any] {
+            private func requestIdentityPayload(_ identity: MCPRequestTimelineIdentity) -> [String: Any] {
                 [
-                    "jsonrpc_request_id": identity.jsonRPCRequestID?.description ?? NSNull(),
+                    "jsonrpc_request_kind": jsonRPCRequestKind ?? NSNull(),
+                    "jsonrpc_request_token": jsonRPCRequestToken ?? NSNull(),
                     "connection_id": identity.connectionID ?? NSNull(),
                     "connection_generation": identity.connectionGeneration ?? NSNull(),
                     "app_invocation_id": identity.appInvocationID ?? NSNull(),
@@ -907,13 +948,20 @@ package enum EditFlowPerf {
         }
 
         package struct DebugCaptureSnapshot {
+            package let captureID: UUID?
+            package let captureLabelToken: String?
+            package let captureState: DebugCaptureState
             package let label: String
             package let active: Bool
             package let startedAt: Date?
             package let finishedAt: Date?
+            package let expiresAt: Date?
+            package let expiryMilliseconds: Int
+            package let toolFilter: DebugCaptureToolFilter
             package let maxSamples: Int
             package let retainedSampleCount: Int
             package let droppedSampleCount: Int
+            package let droppedClosedEpochEventCount: Int
             package let stages: [DebugCaptureStageAggregate]
             package let maxLifecycleEvents: Int
             package let retainedLifecycleEventCount: Int
@@ -922,13 +970,19 @@ package enum EditFlowPerf {
 
             package func payload(includeTimeline: Bool = true) -> [String: Any] {
                 var result: [String: Any] = [
-                    "label": label,
+                    "capture_id": captureID?.uuidString ?? NSNull(),
+                    "capture_label_token": captureLabelToken ?? NSNull(),
+                    "capture_state": captureState.rawValue,
                     "active": active,
                     "started_at": startedAt?.timeIntervalSince1970 ?? NSNull(),
                     "finished_at": finishedAt?.timeIntervalSince1970 ?? NSNull(),
+                    "expires_at": expiresAt?.timeIntervalSince1970 ?? NSNull(),
+                    "expiry_ms": expiryMilliseconds,
+                    "tool_filter": toolFilter.rawValue,
                     "max_samples": maxSamples,
                     "retained_sample_count": retainedSampleCount,
                     "dropped_sample_count": droppedSampleCount,
+                    "dropped_closed_epoch_event_count": droppedClosedEpochEventCount,
                     "stages": stages.map(\.payload),
                     "max_lifecycle_events": maxLifecycleEvents,
                     "retained_lifecycle_event_count": retainedLifecycleEventCount,
@@ -1019,19 +1073,32 @@ package enum EditFlowPerf {
 
         private final class DebugCaptureRecorder {
             private static let sampleLimitRange = 100 ... 100_000
+            private static let expiryMillisecondsRange = 10000 ... 900_000
             private static let lifecycleEventLimit = 20000
+            private static let saltByteCount = 32
 
             private let lock = NSLock()
+            private let contentionHookLock = NSLock()
             private let activeHint = DebugCaptureActiveHint()
+            private var contentionHook: (@Sendable () -> Void)?
             private var active = false
             private var captureEpoch: UInt64 = 0
+            private var captureID: UUID?
+            private var captureSalt: Data?
+            private var captureLabelToken: String?
+            private var captureState = DebugCaptureState.finished
             private var label = ""
             private var startedAt: Date?
             private var finishedAt: Date?
+            private var expiresAt: Date?
             private var captureStartNanoseconds: UInt64?
+            private var expiryDeadlineNanoseconds: UInt64?
+            private var expiryMilliseconds = 120_000
+            private var toolFilter = DebugCaptureToolFilter.all
             private var maxSamples = 20000
             private var retainedSampleCount = 0
             private var droppedSampleCount = 0
+            private var droppedClosedEpochEventCount = 0
             private var samplesByKey: [DebugCaptureKey: [Double]] = [:]
             private var nextLifecycleOrdinal: UInt64 = 1
             private var retainedLifecycleEventCount = 0
@@ -1040,27 +1107,51 @@ package enum EditFlowPerf {
 
             var isActive: Bool {
                 if let active = activeHint.loadIfAvailable() {
-                    return active
+                    guard active else { return false }
                 }
                 lock.lock()
                 defer { lock.unlock() }
+                expireIfNeededLocked()
                 return active
             }
 
-            package func begin(label: String, maxSamples: Int) -> DebugCaptureBeginResult {
-                lock.lock()
+            package func begin(
+                label: String,
+                maxSamples: Int,
+                expiryMilliseconds: Int,
+                toolFilter: DebugCaptureToolFilter
+            ) -> DebugCaptureBeginResult {
+                acquireLock()
                 defer { lock.unlock() }
+                expireIfNeededLocked()
                 guard !active else { return .busy(snapshotLocked()) }
                 captureEpoch += 1
                 self.label = Self.sanitizedLabel(label)
                 // Defense in depth for non-MCP callers; MCP controls reject out-of-range input earlier.
                 self.maxSamples = Self.clampedMaxSamples(maxSamples)
+                self.expiryMilliseconds = Self.clampedExpiryMilliseconds(expiryMilliseconds)
+                self.toolFilter = toolFilter
+                let identity = DebugCaptureIdentity(captureID: UUID(), epoch: captureEpoch)
+                let salt = Data((0 ..< Self.saltByteCount).map { _ in UInt8.random(in: .min ... .max) })
+                captureID = identity.captureID
+                captureSalt = salt
+                captureLabelToken = Self.token(
+                    self.label,
+                    domain: .captureLabel,
+                    salt: salt
+                )
+                captureState = .active
                 active = true
-                startedAt = Date()
+                let startDate = Date()
+                startedAt = startDate
                 finishedAt = nil
-                captureStartNanoseconds = DispatchTime.now().uptimeNanoseconds
+                expiresAt = startDate.addingTimeInterval(Double(self.expiryMilliseconds) / 1000)
+                let startNanoseconds = DispatchTime.now().uptimeNanoseconds
+                captureStartNanoseconds = startNanoseconds
+                expiryDeadlineNanoseconds = startNanoseconds + UInt64(self.expiryMilliseconds) * 1_000_000
                 retainedSampleCount = 0
                 droppedSampleCount = 0
+                droppedClosedEpochEventCount = 0
                 samplesByKey.removeAll(keepingCapacity: true)
                 nextLifecycleOrdinal = 1
                 retainedLifecycleEventCount = 0
@@ -1071,27 +1162,36 @@ package enum EditFlowPerf {
             }
 
             package func snapshot(finish: Bool) -> DebugCaptureSnapshot {
-                lock.lock()
+                acquireLock()
                 defer { lock.unlock() }
+                expireIfNeededLocked()
                 if finish, active {
-                    active = false
-                    activeHint.store(false)
-                    finishedAt = Date()
+                    closeLocked(state: captureState == .sampleLimitReached ? .sampleLimitReached : .finished)
                 }
                 return snapshotLocked()
             }
 
             package func resetForTesting() {
-                lock.lock()
+                acquireLock()
+                captureEpoch &+= 1
                 active = false
                 activeHint.store(false)
+                captureID = nil
+                captureSalt = nil
+                captureLabelToken = nil
+                captureState = .finished
                 label = ""
                 startedAt = nil
                 finishedAt = nil
+                expiresAt = nil
                 captureStartNanoseconds = nil
+                expiryDeadlineNanoseconds = nil
+                expiryMilliseconds = 120_000
+                toolFilter = .all
                 maxSamples = 20000
                 retainedSampleCount = 0
                 droppedSampleCount = 0
+                droppedClosedEpochEventCount = 0
                 samplesByKey.removeAll(keepingCapacity: false)
                 nextLifecycleOrdinal = 1
                 retainedLifecycleEventCount = 0
@@ -1100,27 +1200,88 @@ package enum EditFlowPerf {
                 lock.unlock()
             }
 
-            package func startTimestampIfActive() -> DebugCaptureStart? {
+            package func startTimestampIfActive(
+                correlation: LifecycleCorrelation?
+            ) -> DebugCaptureStart? {
                 if let active = activeHint.loadIfAvailable(), !active { return nil }
                 lock.lock()
                 defer { lock.unlock() }
-                guard active else { return nil }
+                expireIfNeededLocked()
+                guard active,
+                      toolFilter == .all || (
+                          correlation?.captureID == captureID
+                              && correlation?.captureEpoch == captureEpoch
+                      )
+                else { return nil }
                 return DebugCaptureStart(epoch: captureEpoch, startNanoseconds: DispatchTime.now().uptimeNanoseconds)
             }
 
-            package func activeEpochIfActive() -> UInt64? {
+            package func activeIdentityIfActive(toolName: String?) -> DebugCaptureIdentity? {
                 if let active = activeHint.loadIfAvailable(), !active { return nil }
                 lock.lock()
                 defer { lock.unlock() }
-                return active ? captureEpoch : nil
+                expireIfNeededLocked()
+                guard active,
+                      toolFilter.includes(toolName),
+                      let captureID
+                else { return nil }
+                return DebugCaptureIdentity(captureID: captureID, epoch: captureEpoch)
+            }
+
+            package func performIfAccepted(
+                _ identity: DebugCaptureIdentity,
+                _ operation: () -> Void
+            ) -> Bool {
+                if let active = activeHint.loadIfAvailable(), !active { return false }
+                acquireLock()
+                defer { lock.unlock() }
+                expireIfNeededLocked()
+                guard active,
+                      identity.captureID == captureID,
+                      identity.epoch == captureEpoch
+                else { return false }
+                operation()
+                return true
+            }
+
+            package func setContentionHookForTesting(_ hook: (@Sendable () -> Void)?) {
+                contentionHookLock.withLock {
+                    contentionHook = hook
+                }
+            }
+
+            package func token(
+                _ value: String,
+                domain: DebugCaptureTokenDomain,
+                identity: DebugCaptureIdentity
+            ) -> String? {
+                if let active = activeHint.loadIfAvailable(), !active { return nil }
+                lock.lock()
+                defer { lock.unlock() }
+                expireIfNeededLocked()
+                guard active,
+                      identity.captureID == captureID,
+                      identity.epoch == captureEpoch,
+                      let captureSalt
+                else { return nil }
+                return Self.token(value, domain: domain, salt: captureSalt)
             }
 
             package func shouldRecordLifecycleEvent(_ correlation: LifecycleCorrelation) -> Bool {
-                guard let correlationEpoch = correlation.captureEpoch else { return false }
-                if let active = activeHint.loadIfAvailable(), !active { return false }
+                guard let correlationID = correlation.captureID,
+                      let correlationEpoch = correlation.captureEpoch
+                else { return false }
                 lock.lock()
                 defer { lock.unlock() }
-                return active && correlationEpoch == captureEpoch
+                expireIfNeededLocked()
+                guard active,
+                      correlationID == captureID,
+                      correlationEpoch == captureEpoch
+                else {
+                    incrementClosedEpochDropLocked()
+                    return false
+                }
+                return true
             }
 
             package func recordLifecycleEvent(
@@ -1128,18 +1289,26 @@ package enum EditFlowPerf {
                 correlation: LifecycleCorrelation,
                 sanitizedDimensions: String
             ) {
-                guard let correlationEpoch = correlation.captureEpoch else { return }
+                guard let correlationID = correlation.captureID,
+                      let correlationEpoch = correlation.captureEpoch
+                else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
                 lock.lock()
                 defer { lock.unlock() }
+                expireIfNeededLocked(nowNanoseconds: nowNanoseconds)
                 guard active,
+                      correlationID == captureID,
                       correlationEpoch == captureEpoch,
                       let captureStartNanoseconds
-                else { return }
+                else {
+                    incrementClosedEpochDropLocked()
+                    return
+                }
                 let ordinal = nextLifecycleOrdinal
                 nextLifecycleOrdinal &+= 1
                 guard retainedLifecycleEventCount < min(maxSamples, Self.lifecycleEventLimit) else {
                     droppedLifecycleEventCount += 1
+                    captureState = .sampleLimitReached
                     return
                 }
                 let elapsedNanoseconds = nowNanoseconds >= captureStartNanoseconds
@@ -1151,6 +1320,12 @@ package enum EditFlowPerf {
                     eventName: eventName,
                     correlationID: correlation.id.uuidString,
                     requestIdentity: correlation.requestIdentity,
+                    jsonRPCRequestKind: correlation.requestIdentity?.jsonRPCRequestID.map(Self.requestKind),
+                    jsonRPCRequestToken: correlation.requestIdentity?.jsonRPCRequestID.flatMap { requestID in
+                        captureSalt.map {
+                            Self.token(requestID.description, domain: .jsonRPCRequest, salt: $0)
+                        }
+                    },
                     sanitizedDimensions: sanitizedDimensions
                 ))
                 retainedLifecycleEventCount += 1
@@ -1161,9 +1336,14 @@ package enum EditFlowPerf {
                 let elapsedMS = Double(elapsedNanoseconds) / 1_000_000.0
                 lock.lock()
                 defer { lock.unlock() }
-                guard active, captureEpoch == self.captureEpoch else { return }
+                expireIfNeededLocked()
+                guard active, captureEpoch == self.captureEpoch else {
+                    incrementClosedEpochDropLocked()
+                    return
+                }
                 guard retainedSampleCount < maxSamples else {
                     droppedSampleCount += 1
+                    captureState = .sampleLimitReached
                     return
                 }
                 let key = DebugCaptureKey(stageName: stageName, sanitizedDimensions: sanitizedDimensions)
@@ -1175,6 +1355,13 @@ package enum EditFlowPerf {
                 min(max(maxSamples, sampleLimitRange.lowerBound), sampleLimitRange.upperBound)
             }
 
+            private static func clampedExpiryMilliseconds(_ expiryMilliseconds: Int) -> Int {
+                min(
+                    max(expiryMilliseconds, expiryMillisecondsRange.lowerBound),
+                    expiryMillisecondsRange.upperBound
+                )
+            }
+
             private static func sanitizedLabel(_ label: String) -> String {
                 let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
                 let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
@@ -1183,6 +1370,71 @@ package enum EditFlowPerf {
                     allowed.contains(scalar) ? scalar : replacement
                 }
                 return String(String.UnicodeScalarView(scalars.prefix(64)))
+            }
+
+            private static func requestKind(_ requestID: JSONRPCBridgeID) -> String {
+                switch requestID {
+                case .number:
+                    "number"
+                case .string:
+                    "string"
+                case .null:
+                    "null"
+                }
+            }
+
+            private static func token(
+                _ value: String,
+                domain: DebugCaptureTokenDomain,
+                salt: Data
+            ) -> String {
+                var material = Data("RepoPrompt.DebugCaptureToken.v1\0\(domain.rawValue)\0".utf8)
+                material.append(salt)
+                material.append(0)
+                material.append(contentsOf: value.utf8)
+                let digest = SHA256.hash(data: material).map { String(format: "%02x", $0) }.joined()
+                return "\(domain.rawValue):\(digest)"
+            }
+
+            private func expireIfNeededLocked(
+                nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+            ) {
+                guard active,
+                      let expiryDeadlineNanoseconds,
+                      nowNanoseconds >= expiryDeadlineNanoseconds
+                else { return }
+                closeLocked(state: .expired)
+            }
+
+            private func closeLocked(state: DebugCaptureState) {
+                active = false
+                activeHint.store(false)
+                captureState = state
+                finishedAt = Date()
+                captureSalt = nil
+                expiryDeadlineNanoseconds = nil
+            }
+
+            private func incrementClosedEpochDropLocked() {
+                if droppedClosedEpochEventCount < Int.max {
+                    droppedClosedEpochEventCount += 1
+                }
+            }
+
+            package func expireForTesting() {
+                acquireLock()
+                if active {
+                    expiryDeadlineNanoseconds = 0
+                    expireIfNeededLocked()
+                }
+                lock.unlock()
+            }
+
+            private func acquireLock() {
+                guard !lock.try() else { return }
+                let hook = contentionHookLock.withLock { contentionHook }
+                hook?()
+                lock.lock()
             }
 
             private func snapshotLocked() -> DebugCaptureSnapshot {
@@ -1205,13 +1457,20 @@ package enum EditFlowPerf {
                     return $0.stageName < $1.stageName
                 }
                 return DebugCaptureSnapshot(
+                    captureID: captureID,
+                    captureLabelToken: captureLabelToken,
+                    captureState: captureState,
                     label: label,
                     active: active,
                     startedAt: startedAt,
                     finishedAt: finishedAt,
+                    expiresAt: expiresAt,
+                    expiryMilliseconds: expiryMilliseconds,
+                    toolFilter: toolFilter,
                     maxSamples: maxSamples,
                     retainedSampleCount: retainedSampleCount,
                     droppedSampleCount: droppedSampleCount,
+                    droppedClosedEpochEventCount: droppedClosedEpochEventCount,
                     stages: stages,
                     maxLifecycleEvents: min(maxSamples, Self.lifecycleEventLimit),
                     retainedLifecycleEventCount: retainedLifecycleEventCount,
@@ -1233,8 +1492,18 @@ package enum EditFlowPerf {
             debugCaptureRecorder.isActive
         }
 
-        package static func beginDebugCapture(label: String, maxSamples: Int) -> DebugCaptureBeginResult {
-            debugCaptureRecorder.begin(label: label, maxSamples: maxSamples)
+        package static func beginDebugCapture(
+            label: String,
+            maxSamples: Int,
+            expiryMilliseconds: Int = 120_000,
+            toolFilter: DebugCaptureToolFilter = .all
+        ) -> DebugCaptureBeginResult {
+            debugCaptureRecorder.begin(
+                label: label,
+                maxSamples: maxSamples,
+                expiryMilliseconds: expiryMilliseconds,
+                toolFilter: toolFilter
+            )
         }
 
         package static func debugCaptureSnapshot(finish: Bool) -> DebugCaptureSnapshot {
@@ -1243,6 +1512,35 @@ package enum EditFlowPerf {
 
         package static func resetDebugCaptureForTesting() {
             debugCaptureRecorder.resetForTesting()
+        }
+
+        package static func debugCaptureIdentity(toolName: String? = nil) -> DebugCaptureIdentity? {
+            debugCaptureRecorder.activeIdentityIfActive(toolName: toolName)
+        }
+
+        package static func performIfDebugCaptureAccepted(
+            _ identity: DebugCaptureIdentity,
+            _ operation: () -> Void
+        ) -> Bool {
+            debugCaptureRecorder.performIfAccepted(identity, operation)
+        }
+
+        package static func setDebugCaptureLockContentionHookForTesting(
+            _ hook: (@Sendable () -> Void)?
+        ) {
+            debugCaptureRecorder.setContentionHookForTesting(hook)
+        }
+
+        package static func debugCaptureToken(
+            _ value: String,
+            domain: DebugCaptureTokenDomain,
+            captureIdentity: DebugCaptureIdentity
+        ) -> String? {
+            debugCaptureRecorder.token(value, domain: domain, identity: captureIdentity)
+        }
+
+        package static func expireDebugCaptureForTesting() {
+            debugCaptureRecorder.expireForTesting()
         }
     #endif
 
@@ -1272,7 +1570,9 @@ package enum EditFlowPerf {
         private static func makeIntervalState(_ name: StaticString, dimensions: Dimensions) -> IntervalState? {
             let signpostState = isEnabled ? signposter.beginInterval(name) : nil
             #if DEBUG
-                let debugCaptureStart = debugCaptureRecorder.startTimestampIfActive()
+                let debugCaptureStart = debugCaptureRecorder.startTimestampIfActive(
+                    correlation: currentLifecycleCorrelation
+                )
                 guard signpostState != nil || debugCaptureStart != nil else { return nil }
                 return IntervalState(
                     signpostState: signpostState,
@@ -1306,16 +1606,7 @@ package enum EditFlowPerf {
         package static func end(_ name: StaticString, _ state: IntervalState?) {
             guard let state else { return }
             #if DEBUG
-                if let captureEpoch = state.debugCaptureEpoch,
-                   let startNanoseconds = state.debugCaptureStartNanoseconds
-                {
-                    debugCaptureRecorder.record(
-                        stageName: state.debugCaptureStageName,
-                        sanitizedDimensions: state.debugCaptureDimensions,
-                        captureEpoch: captureEpoch,
-                        startNanoseconds: startNanoseconds
-                    )
-                }
+                recordDebugCaptureEnd(state, sanitizedDimensions: state.debugCaptureDimensions)
             #endif
             if let signpostState = state.signpostState {
                 signposter.endInterval(name, signpostState)
@@ -1329,16 +1620,10 @@ package enum EditFlowPerf {
                 logDimensions(renderedDimensions)
             }
             #if DEBUG
-                if let captureEpoch = state.debugCaptureEpoch,
-                   let startNanoseconds = state.debugCaptureStartNanoseconds
-                {
-                    debugCaptureRecorder.record(
-                        stageName: state.debugCaptureStageName,
-                        sanitizedDimensions: renderedDimensions.isEmpty ? state.debugCaptureDimensions : renderedDimensions.logDescription,
-                        captureEpoch: captureEpoch,
-                        startNanoseconds: startNanoseconds
-                    )
-                }
+                let captureDimensions = renderedDimensions.isEmpty
+                    ? state.debugCaptureDimensions
+                    : renderedDimensions.logDescription
+                recordDebugCaptureEnd(state, sanitizedDimensions: captureDimensions)
             #endif
             if let signpostState = state.signpostState {
                 signposter.endInterval(name, signpostState)
@@ -1357,14 +1642,16 @@ package enum EditFlowPerf {
         }
 
         package static func makeLifecycleCorrelationIfActive(
-            requestIdentity: MCPRequestTimelineIdentity? = MCPRequestTimelineContext.current
+            requestIdentity: MCPRequestTimelineIdentity? = MCPRequestTimelineContext.current,
+            toolName: String? = nil
         ) -> LifecycleCorrelation? {
             #if DEBUG
-                let captureEpoch = debugCaptureRecorder.activeEpochIfActive()
-                guard isEnabled || captureEpoch != nil else { return nil }
+                let captureIdentity = debugCaptureRecorder.activeIdentityIfActive(toolName: toolName)
+                guard isEnabled || captureIdentity != nil else { return nil }
                 return LifecycleCorrelation(
                     id: UUID(),
-                    captureEpoch: captureEpoch,
+                    captureID: captureIdentity?.captureID,
+                    captureEpoch: captureIdentity?.epoch,
                     requestIdentity: requestIdentity
                 )
             #else
@@ -1447,6 +1734,23 @@ package enum EditFlowPerf {
             guard !dimensions.isEmpty else { return }
             logger.debug("dimensions \(dimensions.logDescription, privacy: .public)")
         }
+
+        #if DEBUG
+            private static func recordDebugCaptureEnd(
+                _ state: IntervalState,
+                sanitizedDimensions: String
+            ) {
+                guard let captureEpoch = state.debugCaptureEpoch,
+                      let startNanoseconds = state.debugCaptureStartNanoseconds
+                else { return }
+                debugCaptureRecorder.record(
+                    stageName: state.debugCaptureStageName,
+                    sanitizedDimensions: sanitizedDimensions,
+                    captureEpoch: captureEpoch,
+                    startNanoseconds: startNanoseconds
+                )
+            }
+        #endif
     #else
         package static var isEnabled: Bool {
             false
@@ -1477,7 +1781,10 @@ package enum EditFlowPerf {
         package static func event(_ name: StaticString, _ dimensions: @autoclosure () -> Dimensions) {}
 
         @inline(__always)
-        package static func makeLifecycleCorrelationIfActive() -> LifecycleCorrelation? {
+        package static func makeLifecycleCorrelationIfActive(
+            requestIdentity: MCPRequestTimelineIdentity? = nil,
+            toolName: String? = nil
+        ) -> LifecycleCorrelation? {
             nil
         }
 
@@ -1519,7 +1826,7 @@ package enum EditFlowPerf {
             try await operation()
         }
 
-        // Keep the dimensions overload behind the same issue #301 optimizer barrier.
+        /// Keep the dimensions overload behind the same issue #301 optimizer barrier.
         @inline(never)
         package static func measure<T>(
             _ name: StaticString,

@@ -406,8 +406,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import json
 import os
+import select
+import stat
 import subprocess
 import time
 
@@ -424,16 +427,205 @@ def git(args: list[str]) -> str | None:
     value = completed.stdout.strip()
     return value or None
 
-status = git(["status", "--porcelain"])
+def git_succeeds(args: list[str]) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+def append_frame(digest, value: bytes) -> None:
+    digest.update(len(value).to_bytes(8, byteorder="big"))
+    digest.update(value)
+
+def stream_git_bytes(args: list[str], consume) -> tuple[int, bytes] | None:
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    assert process.stdout is not None
+    deadline = time.monotonic() + 5
+    byte_count = 0
+    content_digest = hashlib.sha256()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            if not ready:
+                raise TimeoutError
+            chunk = os.read(process.stdout.fileno(), 64 * 1024)
+            if not chunk:
+                break
+            byte_count += len(chunk)
+            content_digest.update(chunk)
+            if consume is not None:
+                consume(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or process.wait(timeout=remaining) != 0:
+            return None
+        return (byte_count, content_digest.digest())
+    except Exception:
+        process.kill()
+        process.wait()
+        return None
+    finally:
+        process.stdout.close()
+
+def stream_git_nul_records(args: list[str], consume_record) -> bool:
+    pending = bytearray()
+
+    def consume(chunk: bytes) -> None:
+        pending.extend(chunk)
+        while True:
+            separator = pending.find(0)
+            if separator < 0:
+                if len(pending) > 1024 * 1024:
+                    raise ValueError("git record exceeds bounded buffer")
+                return
+            if separator > 1024 * 1024:
+                raise ValueError("git record exceeds bounded buffer")
+            record = bytes(pending[:separator])
+            del pending[:separator + 1]
+            if record:
+                consume_record(record)
+
+    streamed = stream_git_bytes(args, consume)
+    return streamed is not None and not pending
+
+def append_git_frame(digest, args: list[str], measured: tuple[int, bytes]) -> bool:
+    digest.update(measured[0].to_bytes(8, byteorder="big"))
+    streamed = stream_git_bytes(args, digest.update)
+    return streamed == measured
+
+def append_untracked_content_frame(digest, candidate: Path) -> bool:
+    try:
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            append_frame(digest, b"symlink\0" + os.fsencode(os.readlink(candidate)))
+            return True
+        if not stat.S_ISREG(metadata.st_mode):
+            append_frame(digest, b"unsupported\0")
+            return True
+
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(candidate, flags)
+        try:
+            opened_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_metadata.st_mode)
+                or metadata.st_dev != opened_metadata.st_dev
+                or metadata.st_ino != opened_metadata.st_ino
+                or stat.S_IFMT(metadata.st_mode) != stat.S_IFMT(opened_metadata.st_mode)
+            ):
+                return False
+            digest.update((len(b"file\0") + opened_metadata.st_size).to_bytes(8, byteorder="big"))
+            digest.update(b"file\0")
+            streamed_size = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                streamed_size += len(chunk)
+                digest.update(chunk)
+            final_metadata = os.fstat(descriptor)
+            final_path_metadata = candidate.lstat()
+            return (
+                streamed_size == opened_metadata.st_size
+                and final_metadata.st_size == opened_metadata.st_size
+                and final_metadata.st_mtime_ns == opened_metadata.st_mtime_ns
+                and final_metadata.st_dev == opened_metadata.st_dev
+                and final_metadata.st_ino == opened_metadata.st_ino
+                and stat.S_IFMT(final_metadata.st_mode) == stat.S_IFMT(opened_metadata.st_mode)
+                and final_path_metadata.st_dev == opened_metadata.st_dev
+                and final_path_metadata.st_ino == opened_metadata.st_ino
+                and stat.S_IFMT(final_path_metadata.st_mode) == stat.S_IFMT(opened_metadata.st_mode)
+            )
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return False
+
+def source_base_commit() -> str | None:
+    supplied = os.environ.get("REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT", "").lower()
+    if len(supplied) != 40 or any(character not in "0123456789abcdef" for character in supplied):
+        return None
+    resolved = git(["rev-parse", "--verify", f"{supplied}^{{commit}}"])
+    if resolved is None or resolved.lower() != supplied:
+        return None
+    if not git_succeeds(["merge-base", "--is-ancestor", supplied, "HEAD"]):
+        return None
+    return supplied
+
+def diagnostic_patch(base_commit: str) -> tuple[bool, str | None] | None:
+    tracked_patch_args = [
+        "diff", "--binary", "--full-index", "--no-ext-diff", "--no-color",
+        base_commit, "--", ".",
+    ]
+    tracked_patch = stream_git_bytes(tracked_patch_args, None)
+    if tracked_patch is None:
+        return None
+
+    digest = hashlib.sha256()
+    digest.update(b"RepoPrompt.DebugDiagnosticPatch.v1\0")
+    if not append_git_frame(digest, tracked_patch_args, tracked_patch):
+        return None
+    untracked_count = 0
+
+    def append_untracked_path(relative_path_bytes: bytes) -> None:
+        nonlocal untracked_count
+        untracked_count += 1
+        relative_path = Path(os.fsdecode(relative_path_bytes))
+        candidate = root / relative_path
+        append_frame(digest, relative_path_bytes)
+        if not append_untracked_content_frame(digest, candidate):
+            raise OSError("untracked diagnostic input unavailable")
+
+    if not stream_git_nul_records(
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        append_untracked_path,
+    ):
+        return None
+    if tracked_patch[0] == 0 and untracked_count == 0:
+        return (False, None)
+    return (True, digest.hexdigest())
+
+dirty_record_count = 0
+
+def count_dirty_record(_record: bytes) -> None:
+    global dirty_record_count
+    dirty_record_count += 1
+
+status_streamed = stream_git_nul_records(
+    ["status", "--porcelain=v1", "--untracked-files=normal", "-z"],
+    count_dirty_record,
+)
+source_tree_dirty = bool(dirty_record_count) if status_streamed else None
+base_commit = source_base_commit()
+patch = diagnostic_patch(base_commit) if base_commit is not None else None
+diagnostic_patch_present = patch[0] if patch is not None else None
+diagnostic_patch_digest = patch[1] if patch is not None else None
 now = time.time()
 payload = {
-    "version": 1,
+    "version": 2,
     "repoRoot": str(root),
     "worktreePath": str(root),
     "worktreeName": root.name,
     "branch": git(["rev-parse", "--abbrev-ref", "HEAD"]),
-    "commit": git(["rev-parse", "HEAD"]),
-    "dirty": bool(status),
+    "commit": base_commit,
+    "dirty": source_tree_dirty,
+    "diagnosticPatchPresent": diagnostic_patch_present,
+    "diagnosticPatchDigest": diagnostic_patch_digest,
     "buildTimeEpoch": now,
     "buildTimeISO": datetime.fromtimestamp(now, timezone.utc).astimezone().isoformat(timespec="seconds"),
 }

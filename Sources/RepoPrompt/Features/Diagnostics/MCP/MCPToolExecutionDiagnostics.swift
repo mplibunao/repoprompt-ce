@@ -281,9 +281,47 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
 }
 
 enum MCPToolExecutionTracer {
+    #if DEBUG
+        struct DebugCapturedEvent: Equatable {
+            let sequence: UInt64
+            let captureIdentity: EditFlowPerf.DebugCaptureIdentity
+            let event: MCPToolExecutionTraceEvent
+
+            var captureID: UUID {
+                captureIdentity.captureID
+            }
+        }
+
+        struct DebugEventSnapshot: Equatable {
+            let captureID: UUID
+            let maxEventCount: Int
+            let retainedEventCount: Int
+            let droppedEventCount: Int
+            let events: [DebugCapturedEvent]
+        }
+    #endif
+
     private final class State: @unchecked Sendable {
+        #if DEBUG
+            static let debugEventCapacity = 512
+        #endif
+
         let lock = NSLock()
         var testSink: (@Sendable (MCPToolExecutionTraceEvent) -> Void)?
+        #if DEBUG
+            var debugEventSlots = [DebugCapturedEvent?](
+                repeating: nil,
+                count: debugEventCapacity
+            )
+            var nextDebugEventSlot = 0
+            var nextDebugEventSequence: UInt64 = 1
+            var retainedCaptureID: UUID?
+            var overwrittenDebugEventCount = 0
+            var retainedCaptureRejectedEventCount = 0
+            var unrelatedRejectedCaptureID: UUID?
+            var unrelatedRejectedEventCount = 0
+            var beforeRetentionMutationHook: (@Sendable (EditFlowPerf.DebugCaptureIdentity) -> Void)?
+        #endif
     }
 
     private static let state = State()
@@ -317,10 +355,137 @@ enum MCPToolExecutionTracer {
     }
 
     #if DEBUG
+        static func emit(
+            _ event: MCPToolExecutionTraceEvent,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity?
+        ) {
+            if let captureIdentity {
+                retainDebugEvent(event, captureIdentity: captureIdentity)
+            }
+            emit(event)
+        }
+
+        static func debugEventSnapshot(_ captureID: UUID) -> DebugEventSnapshot {
+            state.lock.withLock {
+                let events: [DebugCapturedEvent] = state.debugEventSlots.compactMap { captured in
+                    guard captured?.captureID == captureID else { return nil }
+                    return captured
+                }
+                .sorted { $0.sequence < $1.sequence }
+                let overwritten = state.retainedCaptureID == captureID
+                    ? state.overwrittenDebugEventCount
+                    : 0
+                let rejected = if state.retainedCaptureID == captureID {
+                    state.retainedCaptureRejectedEventCount
+                } else if state.unrelatedRejectedCaptureID == captureID {
+                    state.unrelatedRejectedEventCount
+                } else {
+                    0
+                }
+                let dropped = saturatedSum(overwritten, rejected)
+                return DebugEventSnapshot(
+                    captureID: captureID,
+                    maxEventCount: State.debugEventCapacity,
+                    retainedEventCount: events.count,
+                    droppedEventCount: dropped,
+                    events: events
+                )
+            }
+        }
+
+        static func resetDebugEvents(closingCaptureID: UUID? = nil) {
+            state.lock.withLock {
+                guard let closingCaptureID else {
+                    initializeRetainedDebugEventRing(captureID: nil)
+                    state.unrelatedRejectedCaptureID = nil
+                    state.unrelatedRejectedEventCount = 0
+                    return
+                }
+                if state.retainedCaptureID == closingCaptureID {
+                    initializeRetainedDebugEventRing(captureID: nil)
+                }
+                if state.unrelatedRejectedCaptureID == closingCaptureID {
+                    state.unrelatedRejectedCaptureID = nil
+                    state.unrelatedRejectedEventCount = 0
+                }
+            }
+        }
+
         static func setTestSink(_ sink: (@Sendable (MCPToolExecutionTraceEvent) -> Void)?) {
             state.lock.lock()
             state.testSink = sink
             state.lock.unlock()
+        }
+
+        static func setBeforeRetentionMutationHookForTesting(
+            _ hook: (@Sendable (EditFlowPerf.DebugCaptureIdentity) -> Void)?
+        ) {
+            state.lock.withLock {
+                state.beforeRetentionMutationHook = hook
+            }
+        }
+
+        private static func retainDebugEvent(
+            _ event: MCPToolExecutionTraceEvent,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity
+        ) {
+            let retained = EditFlowPerf.performIfDebugCaptureAccepted(captureIdentity) {
+                let hook = state.lock.withLock { state.beforeRetentionMutationHook }
+                hook?(captureIdentity)
+                state.lock.withLock {
+                    if state.retainedCaptureID != captureIdentity.captureID {
+                        initializeRetainedDebugEventRing(captureID: captureIdentity.captureID)
+                    }
+
+                    let slot = state.nextDebugEventSlot
+                    if state.debugEventSlots[slot] != nil {
+                        state.overwrittenDebugEventCount = incremented(state.overwrittenDebugEventCount)
+                    }
+                    state.debugEventSlots[slot] = DebugCapturedEvent(
+                        sequence: state.nextDebugEventSequence,
+                        captureIdentity: captureIdentity,
+                        event: event
+                    )
+                    state.nextDebugEventSequence &+= 1
+                    state.nextDebugEventSlot = (slot + 1) % State.debugEventCapacity
+                }
+            }
+            guard !retained else { return }
+
+            state.lock.withLock {
+                if state.retainedCaptureID == captureIdentity.captureID {
+                    state.retainedCaptureRejectedEventCount = incremented(
+                        state.retainedCaptureRejectedEventCount
+                    )
+                    return
+                }
+                if state.unrelatedRejectedCaptureID != captureIdentity.captureID {
+                    state.unrelatedRejectedCaptureID = captureIdentity.captureID
+                    state.unrelatedRejectedEventCount = 0
+                }
+                state.unrelatedRejectedEventCount = incremented(state.unrelatedRejectedEventCount)
+            }
+        }
+
+        /// Callers hold `state.lock` so the ring and its coupled accounting change as one unit.
+        private static func initializeRetainedDebugEventRing(captureID: UUID?) {
+            state.debugEventSlots = [DebugCapturedEvent?](
+                repeating: nil,
+                count: State.debugEventCapacity
+            )
+            state.nextDebugEventSlot = 0
+            state.retainedCaptureID = captureID
+            state.overwrittenDebugEventCount = 0
+            state.retainedCaptureRejectedEventCount = 0
+        }
+
+        private static func incremented(_ value: Int) -> Int {
+            value == Int.max ? value : value + 1
+        }
+
+        private static func saturatedSum(_ lhs: Int, _ rhs: Int) -> Int {
+            let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+            return overflow ? Int.max : sum
         }
     #endif
 }
