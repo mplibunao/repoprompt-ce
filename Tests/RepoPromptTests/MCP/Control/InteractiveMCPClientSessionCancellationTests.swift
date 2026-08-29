@@ -43,7 +43,7 @@ import XCTest
             }
         }
 
-        func testPromptContextExportsDefaultToNoClientDeadline() async {
+        func testPromptContextExportsRetain300SecondClientDeadline() async {
             let session = makeUnconnectedSession()
             let cases: [(toolName: String, operation: String)] = [
                 ("prompt", "export"),
@@ -58,9 +58,10 @@ import XCTest
                     arguments: ["op": .string(testCase.operation)]
                 )
 
-                XCTAssertNil(
+                XCTAssertEqual(
                     timeout,
-                    "Expected unbounded export for \(testCase.toolName) op=\(testCase.operation.debugDescription)"
+                    MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds,
+                    "Unexpected export timeout for \(testCase.toolName) op=\(testCase.operation.debugDescription)"
                 )
             }
         }
@@ -216,6 +217,46 @@ import XCTest
                     }
                     XCTAssertEqual(toolName, "slow_tool")
                     XCTAssertEqual(seconds, 42)
+                }
+
+                let cancellationDelivered = await cancellationDeliveryFinished.isSignalled()
+                XCTAssertTrue(cancellationDelivered)
+                await fixture.handlerCancelled.wait()
+                await fixture.cleanup()
+            } catch {
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
+        func testPromptExportImplicitTimeoutDeliversCancellationWithoutIndefiniteWait() async throws {
+            let cancellationDeliveryFinished = CLIAsyncSignal()
+            let fixture = try await makeFixture(
+                cancellationBehavior: .ignoreUntilReleased,
+                cancellationDeliveryOverride: { client, requestID, reason in
+                    try? await client.cancelRequest(requestID, reason: reason)
+                    await cancellationDeliveryFinished.signal()
+                },
+                timeoutSleep: { _ in }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "prompt",
+                        arguments: ["op": .string("export")]
+                    )
+                }
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected prompt export timeout")
+                } catch let error as InteractiveSessionError {
+                    guard case let .toolCallTimeout(toolName, seconds) = error else {
+                        XCTFail("Expected tool timeout, got \(error)")
+                        await fixture.cleanup()
+                        return
+                    }
+                    XCTAssertEqual(toolName, "prompt")
+                    XCTAssertEqual(seconds, MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds)
                 }
 
                 let cancellationDelivered = await cancellationDeliveryFinished.isSignalled()
