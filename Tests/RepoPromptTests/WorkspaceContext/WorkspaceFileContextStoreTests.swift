@@ -7728,6 +7728,306 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
+        func testFreshnessRootSnapshotsRequireCurrentAcceptedReadFileCapture() async throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            let root = try makeTemporaryRoot(name: "ReadFreshnessCaptureAdmission")
+            let fileURL = root.appendingPathComponent("A.swift")
+            try write("capture-admission\n", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let rootRecord = try await store.loadRoot(path: root.path)
+            let rootRef = WorkspaceRootRef(
+                id: rootRecord.id,
+                name: rootRecord.name,
+                fullPath: rootRecord.standardizedFullPath
+            )
+            let loadedFile = await store.file(rootID: rootRecord.id, relativePath: "A.swift")
+            let file = try XCTUnwrap(loadedFile)
+            let service = WorkspaceReadableFileService(store: store)
+
+            let defaults = UserDefaults.standard
+            let perfKey = "editFlowPerfEnabled"
+            let previousPerfValue = defaults.object(forKey: perfKey)
+            defaults.set(true, forKey: perfKey)
+            let capturelessCorrelation = try XCTUnwrap(
+                EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file")
+            )
+            if let previousPerfValue {
+                defaults.set(previousPerfValue, forKey: perfKey)
+            } else {
+                defaults.removeObject(forKey: perfKey)
+            }
+
+            switch EditFlowPerf.beginDebugCapture(
+                label: "freshness-root-snapshot-closed-epoch",
+                maxSamples: 100,
+                toolFilter: .readFile
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Closed-epoch capture should start.")
+            }
+            let closedEpochCorrelation = try XCTUnwrap(
+                EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file")
+            )
+            _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            EditFlowPerf.resetDebugCaptureForTesting()
+
+            switch EditFlowPerf.beginDebugCapture(
+                label: "freshness-root-snapshot-current-epoch",
+                maxSamples: 100,
+                toolFilter: .readFile
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Current-epoch capture should start.")
+            }
+            let acceptedCorrelation = try XCTUnwrap(
+                EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file")
+            )
+            let cases: [(label: String, correlation: EditFlowPerf.LifecycleCorrelation?, accepted: Bool)] = [
+                ("nil", nil, false),
+                ("captureless_general_perf", capturelessCorrelation, false),
+                ("closed_epoch", closedEpochCorrelation, false),
+                ("accepted_current", acceptedCorrelation, true)
+            ]
+
+            for testCase in cases {
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(testCase.correlation) {
+                    let before = await store.readFileRootDiagnosticSnapshotCallCountForTesting()
+                    try await service.awaitFreshnessForExplicitRequest(
+                        fileURL.path,
+                        rootRefs: [rootRef],
+                        timeout: .seconds(1)
+                    )
+                    let afterExplicit = await store.readFileRootDiagnosticSnapshotCallCountForTesting()
+                    let interactiveSnapshot = try await store.interactiveReadSnapshot(for: file)
+                    XCTAssertNotNil(interactiveSnapshot, testCase.label)
+                    let afterInteractive = await store.readFileRootDiagnosticSnapshotCallCountForTesting()
+
+                    if testCase.accepted {
+                        XCTAssertGreaterThan(afterExplicit, before, "\(testCase.label): explicit freshness")
+                        XCTAssertGreaterThan(afterInteractive, afterExplicit, "\(testCase.label): interactive freshness")
+                    } else {
+                        XCTAssertEqual(afterExplicit, before, "\(testCase.label): explicit freshness")
+                        XCTAssertEqual(afterInteractive, afterExplicit, "\(testCase.label): interactive freshness")
+                    }
+                }
+            }
+        }
+
+        func testFreshnessRootSnapshotSkipsPostIngressAfterCaptureEpochCloses() async throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            let root = try makeTemporaryRoot(name: "ReadFreshnessCaptureClosesDuringIngress")
+            let fileURL = root.appendingPathComponent("A.swift")
+            try write("capture-closes\n", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let rootRecord = try await store.loadRoot(path: root.path)
+            let rootRef = WorkspaceRootRef(
+                id: rootRecord.id,
+                name: rootRecord.name,
+                fullPath: rootRecord.standardizedFullPath
+            )
+            let service = WorkspaceReadableFileService(store: store)
+            switch EditFlowPerf.beginDebugCapture(
+                label: "freshness-root-snapshot-closes-during-ingress",
+                maxSamples: 100,
+                toolFilter: .readFile
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Capture should start.")
+            }
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file"))
+            let snapshotsAtEpochClose = LockedInvocationCounter()
+            await store.setScopedIngressBarrierWillFlushHandler { observedRootID in
+                guard observedRootID == rootRecord.id else { return }
+                await snapshotsAtEpochClose.set(
+                    store.readFileRootDiagnosticSnapshotCallCountForTesting()
+                )
+                _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            }
+            let before = await store.readFileRootDiagnosticSnapshotCallCountForTesting()
+            try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                try await service.awaitFreshnessForExplicitRequest(
+                    fileURL.path,
+                    rootRefs: [rootRef],
+                    timeout: .seconds(1)
+                )
+            }
+            let after = await store.readFileRootDiagnosticSnapshotCallCountForTesting()
+            let atEpochClose = snapshotsAtEpochClose.value
+            XCTAssertGreaterThan(atEpochClose, before, "Accepted capture should construct pre-ingress evidence.")
+            XCTAssertEqual(after, atEpochClose, "Capture closure must suppress every post-ingress snapshot.")
+            await store.setScopedIngressBarrierWillFlushHandler(nil)
+        }
+
+        func testInteractiveReadWithoutCaptureSkipsDiagnosticTokenAndUTF8ByteCountConstruction() async throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            let root = try makeTemporaryRoot(name: "InteractiveReadInactiveCapture")
+            let content = String(repeating: "inactive-capture-large-file\n", count: 40000)
+            try write(content, to: root.appendingPathComponent("A.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let rootRecord = try await store.loadRoot(path: root.path)
+            let loadedFile = await store.file(rootID: rootRecord.id, relativePath: "A.swift")
+            let file = try XCTUnwrap(loadedFile)
+            let utf8ConstructionCounter = LockedInvocationCounter()
+            await store.setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting {
+                utf8ConstructionCounter.increment()
+            }
+            let before = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+
+            let snapshot = try await store.interactiveReadSnapshot(for: file)
+            let after = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+
+            XCTAssertNotNil(snapshot)
+            XCTAssertEqual(after, before)
+            XCTAssertEqual(utf8ConstructionCounter.value, 0)
+        }
+
+        func testInteractiveReadClosedOrReplacedCaptureSkipsSuspendedDiagnosticConstruction() async throws {
+            enum ClosureKind: String {
+                case finish
+                case reset
+                case replacement
+            }
+            enum TestFailure: Error {
+                case replacementCaptureBusy
+            }
+
+            for closureKind in [ClosureKind.finish, .reset, .replacement] {
+                EditFlowPerf.resetDebugCaptureForTesting()
+                let root = try makeTemporaryRoot(name: "InteractiveReadStaleCapture-\(closureKind.rawValue)")
+                let content = String(repeating: "stale-capture-large-file\n", count: 40000)
+                try write(content, to: root.appendingPathComponent("A.swift"))
+
+                let store = WorkspaceFileContextStore()
+                let rootRecord = try await store.loadRoot(path: root.path)
+                let loadedFile = await store.file(rootID: rootRecord.id, relativePath: "A.swift")
+                let file = try XCTUnwrap(loadedFile)
+                let constructionGate = SynchronousDiagnosticConstructionGate()
+                let utf8ConstructionCounter = LockedInvocationCounter()
+                await store.setReadFileDiagnosticConstructionWillBeginHookForTesting { stage in
+                    if stage == "fingerprint" {
+                        constructionGate.enterAndWait()
+                    }
+                }
+                await store.setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting {
+                    utf8ConstructionCounter.increment()
+                }
+                let tokenCountBefore = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+                switch EditFlowPerf.beginDebugCapture(
+                    label: "interactive-read-stale-\(closureKind.rawValue)",
+                    maxSamples: 100,
+                    toolFilter: .readFile
+                ) {
+                case .started:
+                    break
+                case .busy:
+                    return XCTFail("Read-file capture should start for \(closureKind.rawValue)")
+                }
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file"))
+                let readTask = Task {
+                    try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                        try await store.interactiveReadSnapshot(for: file)
+                    }
+                }
+
+                do {
+                    await constructionGate.waitUntilEntered()
+                    let oldLifecycleCount: Int
+                    switch closureKind {
+                    case .finish:
+                        oldLifecycleCount = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.count
+                    case .reset:
+                        oldLifecycleCount = EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.count
+                        EditFlowPerf.resetDebugCaptureForTesting()
+                    case .replacement:
+                        oldLifecycleCount = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.count
+                        switch EditFlowPerf.beginDebugCapture(
+                            label: "interactive-read-replacement",
+                            maxSamples: 100,
+                            toolFilter: .readFile
+                        ) {
+                        case .started:
+                            break
+                        case .busy:
+                            XCTFail("Replacement read-file capture should start")
+                            throw TestFailure.replacementCaptureBusy
+                        }
+                    }
+                    constructionGate.release()
+                    let snapshot = try await readTask.value
+                    let tokenCountAfter = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+                    let currentCapture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+
+                    XCTAssertNotNil(snapshot, closureKind.rawValue)
+                    XCTAssertEqual(tokenCountAfter, tokenCountBefore + 1, closureKind.rawValue)
+                    XCTAssertEqual(utf8ConstructionCounter.value, 0, closureKind.rawValue)
+                    switch closureKind {
+                    case .finish:
+                        XCTAssertEqual(currentCapture.lifecycleEvents.count, oldLifecycleCount, closureKind.rawValue)
+                    case .reset, .replacement:
+                        XCTAssertTrue(currentCapture.lifecycleEvents.isEmpty, closureKind.rawValue)
+                    }
+                    await store.setReadFileDiagnosticConstructionWillBeginHookForTesting(nil)
+                    await store.setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting(nil)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                } catch {
+                    constructionGate.release()
+                    readTask.cancel()
+                    _ = try? await readTask.value
+                    await store.setReadFileDiagnosticConstructionWillBeginHookForTesting(nil)
+                    await store.setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting(nil)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                    throw error
+                }
+            }
+        }
+
+        func testInteractiveReadAcceptedCaptureConstructsUTF8ByteCountExactlyOnce() async throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            let root = try makeTemporaryRoot(name: "InteractiveReadAcceptedCapture")
+            let content = String(repeating: "accepted-capture-large-file\n", count: 40000)
+            try write(content, to: root.appendingPathComponent("A.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let rootRecord = try await store.loadRoot(path: root.path)
+            let loadedFile = await store.file(rootID: rootRecord.id, relativePath: "A.swift")
+            let file = try XCTUnwrap(loadedFile)
+            let utf8ConstructionCounter = LockedInvocationCounter()
+            await store.setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting {
+                utf8ConstructionCounter.increment()
+            }
+            switch EditFlowPerf.beginDebugCapture(
+                label: "interactive-read-accepted-capture",
+                maxSamples: 100,
+                toolFilter: .readFile
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Read-file capture should start")
+            }
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(toolName: "read_file"))
+            let tokenCountBefore = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+
+            let snapshot = try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                try await store.interactiveReadSnapshot(for: file)
+            }
+            let tokenCountAfter = await store.readFileDiagnosticTokenInputConstructionCountForTesting()
+
+            XCTAssertNotNil(snapshot)
+            XCTAssertEqual(tokenCountAfter, tokenCountBefore + 2)
+            XCTAssertEqual(utf8ConstructionCounter.value, 1)
+        }
+
         func testInteractiveReadCacheWarmRangeHitAvoidsDiskReadAndRepeatSplitting() async throws {
             let root = try makeTemporaryRoot(name: "InteractiveReadWarmHit")
             let content = (1 ... 200).map { "line-\($0)\r\n" }.joined()
@@ -8937,6 +9237,50 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
         }
 
+        private final class SynchronousDiagnosticConstructionGate: @unchecked Sendable {
+            private let lock = NSLock()
+            private let releaseSemaphore = DispatchSemaphore(value: 0)
+            private var entered = false
+            private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+            private var released = false
+
+            func enterAndWait() {
+                let waiters = lock.withLock {
+                    entered = true
+                    let waiters = entryWaiters
+                    entryWaiters.removeAll()
+                    return waiters
+                }
+                waiters.forEach { $0.resume() }
+                releaseSemaphore.wait()
+            }
+
+            func waitUntilEntered() async {
+                if lock.withLock({ entered }) { return }
+                await withCheckedContinuation { continuation in
+                    let resumeImmediately = lock.withLock {
+                        if entered { return true }
+                        entryWaiters.append(continuation)
+                        return false
+                    }
+                    if resumeImmediately {
+                        continuation.resume()
+                    }
+                }
+            }
+
+            func release() {
+                let shouldSignal = lock.withLock {
+                    guard !released else { return false }
+                    released = true
+                    return true
+                }
+                if shouldSignal {
+                    releaseSemaphore.signal()
+                }
+            }
+        }
+
         private actor CancellationAwareGate {
             private struct Waiter {
                 let id: UUID
@@ -9119,6 +9463,23 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
+        private final class LockedInvocationCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+
+            var value: Int {
+                lock.withLock { count }
+            }
+
+            func increment() {
+                lock.withLock { count += 1 }
+            }
+
+            func set(_ value: Int) {
+                lock.withLock { count = value }
+            }
+        }
+
         private final class LockedWorkspaceDiagnosticsClock: @unchecked Sendable {
             private let lock = NSLock()
             private var value: UInt64

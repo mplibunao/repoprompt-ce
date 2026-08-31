@@ -1,17 +1,17 @@
 import Foundation
 
-package enum MCPToolExecutionSettlement: String, Equatable, Sendable {
+package enum MCPToolExecutionSettlement: String, Equatable {
     case success
     case cancellation
     case error
 }
 
-package enum MCPToolExecutionCancellationOrigin: String, Equatable, Sendable {
+package enum MCPToolExecutionCancellationOrigin: String, Equatable {
     case watchdogDeadline = "watchdog_deadline"
     case requestCancellation = "request_cancellation"
 }
 
-package struct MCPToolExecutionCancelledError: Error, Equatable, LocalizedError, Sendable {
+package struct MCPToolExecutionCancelledError: Error, Equatable, LocalizedError {
     package init() {}
 
     package var errorDescription: String? {
@@ -23,7 +23,7 @@ package struct MCPToolExecutionCancelledError: Error, Equatable, LocalizedError,
     }
 }
 
-package enum MCPToolExecutionWatchdogEvent: Equatable, Sendable {
+package enum MCPToolExecutionWatchdogEvent: Equatable {
     case deadlineExpired
     case cancellationRequested(origin: MCPToolExecutionCancellationOrigin)
     case settledDuringGrace(
@@ -34,19 +34,19 @@ package enum MCPToolExecutionWatchdogEvent: Equatable, Sendable {
     case detachedForSettlement
 }
 
-package enum MCPToolExecutionWatchdogError: Error, Equatable, Sendable {
+package enum MCPToolExecutionWatchdogError: Error, Equatable {
     case executionTimedOut(settlement: MCPToolExecutionSettlement)
     case executionDetached
     case cleanupUnresponsive
 }
 
-package enum MCPToolExecutionWatchdogSchedulingPoint: Equatable, Sendable {
+package enum MCPToolExecutionWatchdogSchedulingPoint: Equatable {
     case operationCompleted
     case deadlineExpired
     case cleanupGraceExpired
 }
 
-package struct MCPToolExecutionWatchdogEnvironment: Sendable {
+package struct MCPToolExecutionWatchdogEnvironment {
     package let now: @Sendable () -> Duration
     package let sleep: @Sendable (Duration) async throws -> Void
     package let eventDidProduce: @Sendable (MCPToolExecutionWatchdogSchedulingPoint) async -> Void
@@ -234,6 +234,7 @@ package enum MCPToolExecutionWatchdog {
         cleanupDisposition: MCPToolExecutionCleanupDisposition = .forceDisconnect,
         settlementSlot: MCPCodeStructureSettlementRegistry.Slot? = nil,
         environment: MCPToolExecutionWatchdogEnvironment = .continuous(),
+        onDeadlineCancellationBoundary: @escaping @Sendable () -> Void = {},
         onEvent: @escaping @Sendable (MCPToolExecutionWatchdogEvent) async -> Void = { _ in },
         onSynchronousSettlement: @escaping @Sendable (MCPToolExecutionSettlement) async -> Void = { _ in },
         onDetachedSettlement: @escaping @Sendable (MCPToolExecutionSettlement) async -> Void = { _ in },
@@ -390,6 +391,9 @@ package enum MCPToolExecutionWatchdog {
                     }
                     guard !deadlineDidExpire else { continue }
                     deadlineDidExpire = true
+                    #if DEBUG
+                        onDeadlineCancellationBoundary()
+                    #endif
                     operationTask.cancel()
                     await environment.beforeCleanupGraceTaskRegistration()
                     let graceTask = Task {

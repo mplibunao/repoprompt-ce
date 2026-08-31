@@ -1147,6 +1147,34 @@ import XCTest
             }
         }
 
+        func testInactiveReadFileCaptureSkipsSettlementDiagnosticSnapshotEnumeration() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let manager = fixture.networkManager
+                EditFlowPerf.resetDebugCaptureForTesting()
+                let before = await manager.debugCodeStructureSettlementDiagnosticSnapshotCountForTesting()
+
+                do {
+                    let response = try await fixture.endpointA().callTool(
+                        name: MCPWindowToolName.readFile,
+                        arguments: [
+                            "path": fixture.contextA.fileURL.path,
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    let after = await manager.debugCodeStructureSettlementDiagnosticSnapshotCountForTesting()
+
+                    XCTAssertTrue(try Self.toolResultText(response).contains(fixture.contextA.sentinel))
+                    XCTAssertEqual(after, before)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testReadFileFilteredCaptureRetainsLifecycleFromRealDispatch() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -2526,6 +2554,171 @@ import XCTest
             XCTAssertEqual(explicit["window_id"], .int(explicitWindowID))
         }
 
+        func testReadFileCancellationCloseAfterDeadlineBoundarySuppressesSummaryWhenLifecycleTruncated() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let clock = ExecutionWatchdogManualClock()
+                let cancellationGate = MCPExecutionCooperativeCancellationGate()
+                let cancellationClosed = MCPQualifiedReadCompletionProbe()
+                let manager = fixture.networkManager
+                EditFlowPerf.resetDebugCaptureForTesting()
+                let captureID: UUID
+                switch EditFlowPerf.beginDebugCapture(
+                    label: "read-file-deadline-boundary",
+                    maxSamples: 200,
+                    expiryMilliseconds: 120_000,
+                    toolFilter: .readFile,
+                    prepare: { captureIdentity in
+                        MCPToolExecutionTracer.prepareDebugCapture(captureIdentity)
+                        MCPToolWorkCountDiagnostics.prepareDebugCapture(captureIdentity)
+                    }
+                ) {
+                case let .started(snapshot):
+                    captureID = try XCTUnwrap(snapshot.captureID)
+                case .busy:
+                    await fixture.cleanup()
+                    return XCTFail("Read-file watchdog capture should start")
+                }
+                await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment(
+                    beforeCleanupGraceTaskRegistration: {
+                        _ = try? await AsyncTestWait.waitUntil(
+                            "read-file inner span closed after cancellation",
+                            timeout: 10
+                        ) {
+                            await cancellationClosed.isCompleted()
+                        }
+                    }
+                ))
+                await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile) {
+                    let correlation = EditFlowPerf.currentLifecycleCorrelation
+                    EditFlowPerf.lifecycleEvent(
+                        EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                        correlation: correlation
+                    )
+                    do {
+                        try await cancellationGate.enterAndWait()
+                        return .null
+                    } catch {
+                        EditFlowPerf.lifecycleEvent(
+                            EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                            correlation: correlation,
+                            EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+                        )
+                        await cancellationClosed.markCompleted()
+                        throw error
+                    }
+                }
+                do {
+                    let endpoint = try fixture.endpointA()
+                    let fixtureTimelineGeneration = UInt64.max
+                    defer {
+                        MCPRequestTimelineRegistry.shared.removeConnection(
+                            connectionID: endpoint.connectionID.uuidString,
+                            connectionGeneration: fixtureTimelineGeneration
+                        )
+                    }
+                    let timelineFrame = try JSONSerialization.data(withJSONObject: [
+                        "jsonrpc": "2.0",
+                        "id": "read-file-deadline-boundary",
+                        "method": "tools/call",
+                        "params": [
+                            "name": MCPWindowToolName.readFile,
+                            "arguments": [:]
+                        ]
+                    ])
+                    _ = MCPRequestTimelineRegistry.shared.recordAcceptedFrame(
+                        timelineFrame,
+                        connectionID: endpoint.connectionID.uuidString,
+                        correlationConnectionID: endpoint.connectionID.uuidString,
+                        connectionGeneration: fixtureTimelineGeneration
+                    )
+                    let responseTask = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: [
+                                "path": fixture.contextA.fileURL.path,
+                                "context_id": fixture.contextA.tabID.uuidString,
+                                "_rawJSON": true
+                            ]
+                        )
+                    }
+                    try await clock.waitForSleeperCount(1)
+                    try await cancellationGate.waitUntilEntered()
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+
+                    let response = try await responseTask.value
+                    let payload = try Self.toolResultObject(response)
+                    XCTAssertEqual(payload["code"] as? String, "tool_execution_timeout")
+                    XCTAssertEqual(payload["cancellation_origin"] as? String, "watchdog_deadline")
+                    let observedCancellationCount = await cancellationGate.observedCancellationCount()
+                    XCTAssertEqual(observedCancellationCount, 1)
+
+                    let capture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+                    let trace = MCPToolExecutionTracer.debugEventSnapshot(captureID)
+                    let deadlineTrace = try XCTUnwrap(trace.events.first { $0.event.phase == .deadlineExpired })
+                    let packet = try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                        appInvocationID: deadlineTrace.event.invocationID,
+                        capture: capture,
+                        trace: trace,
+                        work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                        runtimeIdentity: MCPReadFileDiagnosticRuntimeIdentity(
+                            bundleIdentifier: "com.example.RepoPrompt.debug",
+                            marketingVersion: "1.2.3",
+                            buildNumber: "456",
+                            machOUUID: UUID(),
+                            executableSHA256: String(repeating: "a", count: 64),
+                            sourceBaseCommit: String(repeating: "b", count: 40),
+                            sourceTreeDirty: true,
+                            diagnosticPatchPresent: true,
+                            diagnosticPatchDigest: String(repeating: "c", count: 64),
+                            processStartID: UUID()
+                        )
+                    )
+                    XCTAssertTrue(packet.openInnerStagesAtWatchdogTerminal.isEmpty)
+                    XCTAssertNil(packet.longestClosedInnerStage)
+                    XCTAssertFalse(packet.requiredEvidenceComplete)
+                    XCTAssertTrue(packet.lifecycle.truncated)
+                    XCTAssertTrue(packet.missingRequiredEvidence.contains("lifecycle:truncated"))
+                    XCTAssertEqual(packet.freshnessAuthorityIngress.openSpanCount, 0)
+                    XCTAssertEqual(packet.freshnessAuthorityIngress.terminalIntegrity, "balanced")
+
+                    let lifecycle = capture.lifecycleEvents.filter {
+                        $0.requestIdentity?.appInvocationID == deadlineTrace.event.invocationID.uuidString
+                    }
+                    let boundary = try XCTUnwrap(lifecycle.first {
+                        $0.eventName == "ReadFile.SettlementTransition"
+                            && $0.sanitizedDimensions.contains("purpose=execution_deadline_cancellation_boundary")
+                    })
+                    let freshnessEnd = try XCTUnwrap(lifecycle.first {
+                        $0.eventName == String(describing: EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded)
+                    })
+                    let lateDeadlineObservation = try XCTUnwrap(lifecycle.first {
+                        $0.eventName == "ReadFile.SettlementTransition"
+                            && $0.sanitizedDimensions.contains("purpose=execution_deadline_expired")
+                    })
+                    XCTAssertLessThan(boundary.ordinal, freshnessEnd.ordinal)
+                    XCTAssertLessThan(freshnessEnd.ordinal, lateDeadlineObservation.ordinal)
+
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                    MCPToolExecutionTracer.resetDebugEvents()
+                    MCPToolWorkCountDiagnostics.resetForTesting()
+                    await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile, operation: nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    await fixture.cleanup()
+                } catch {
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                    MCPToolExecutionTracer.resetDebugEvents()
+                    MCPToolWorkCountDiagnostics.resetForTesting()
+                    await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile, operation: nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testUncooperativeFileReadsDetachFirstThenForceDisconnectCompetingExpiryAndFenceQueuedCall() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -2533,6 +2726,23 @@ import XCTest
                 let operationGate = MCPExecutionIgnoringCancellationGate()
                 let recorder = MCPExecutionTraceRecorder()
                 let manager = fixture.networkManager
+                EditFlowPerf.resetDebugCaptureForTesting()
+                let captureID: UUID
+                switch EditFlowPerf.beginDebugCapture(
+                    label: "read-file-watchdog-history",
+                    maxSamples: 500,
+                    expiryMilliseconds: 120_000,
+                    toolFilter: .readFile,
+                    prepare: { captureIdentity in
+                        MCPToolExecutionTracer.prepareDebugCapture(captureIdentity)
+                    }
+                ) {
+                case let .started(snapshot):
+                    captureID = try XCTUnwrap(snapshot.captureID)
+                case .busy:
+                    await fixture.cleanup()
+                    return XCTFail("Read-file watchdog capture should start")
+                }
                 MCPToolExecutionTracer.setTestSink { recorder.append($0) }
                 await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
                 await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile) {
@@ -2639,17 +2849,559 @@ import XCTest
                     XCTAssertEqual(events.count { $0.phase == .connectionForceDisconnectRequested }, 1)
 
                     await operationGate.release()
+                    let detachedSettlementDiagnosticArrived = await Self.waitUntil {
+                        EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.contains {
+                            $0.eventName == "ReadFile.SettlementTransition"
+                                && $0.sanitizedDimensions.contains("purpose=execution_detached_settled")
+                                && $0.sanitizedDimensions.contains("status=settled")
+                                && $0.sanitizedDimensions.contains("blocksAdmission=false")
+                                && $0.sanitizedDimensions.contains("isReleased=true")
+                        }
+                    }
+                    XCTAssertTrue(detachedSettlementDiagnosticArrived)
+                    let detachedSettlementTraceArrived = await Self.waitUntil {
+                        recorder.snapshot().contains { $0.phase == .detachedSettled }
+                    }
+                    XCTAssertTrue(detachedSettlementTraceArrived)
                     await manager.debugAwaitCodeStructureSettlementDrain(
                         windowID: fixture.contextA.window.windowID
                     )
+
+                    let retainedTrace = MCPToolExecutionTracer.debugEventSnapshot(captureID)
+                    let retainedPhases = retainedTrace.events.map(\.event.phase)
+                    XCTAssertTrue(retainedPhases.contains(.deadlineExpired))
+                    XCTAssertTrue(retainedPhases.contains(.cancellationRequested))
+                    XCTAssertTrue(retainedPhases.contains(.cleanupGraceExpired))
+                    XCTAssertTrue(retainedPhases.contains(.detachedForSettlement))
+                    XCTAssertTrue(retainedPhases.contains(.detachedSettled))
+                    XCTAssertTrue(retainedPhases.contains(.connectionForceDisconnectRequested))
+
+                    let lifecycleSnapshot = EditFlowPerf.debugCaptureSnapshot(finish: false)
+                    let settlementTransitions = lifecycleSnapshot.lifecycleEvents.filter {
+                        $0.eventName == "ReadFile.SettlementTransition"
+                    }
+                    let settlementHistory = settlementTransitions
+                        .map(\.sanitizedDimensions)
+                        .joined(separator: "\n")
+                    XCTAssertFalse(settlementHistory.contains("providerActive="), settlementHistory)
+                    XCTAssertFalse(settlementHistory.contains("permitActive="), settlementHistory)
+                    XCTAssertTrue(settlementTransitions.contains {
+                        $0.sanitizedDimensions.contains("purpose=admission")
+                            && $0.sanitizedDimensions.contains("status=reserved")
+                            && $0.sanitizedDimensions.contains("blocksAdmission=false")
+                            && $0.sanitizedDimensions.contains("isReleased=false")
+                    }, settlementHistory)
+                    XCTAssertTrue(settlementTransitions.contains {
+                        $0.sanitizedDimensions.contains("purpose=busy_admission")
+                            && $0.sanitizedDimensions.contains("outcome=detached")
+                    }, settlementHistory)
+                    XCTAssertTrue(settlementTransitions.contains {
+                        $0.sanitizedDimensions.contains("purpose=execution_detached_for_settlement")
+                            && $0.sanitizedDimensions.contains("status=detached")
+                            && $0.sanitizedDimensions.contains("blocksAdmission=true")
+                            && $0.sanitizedDimensions.contains("isReleased=false")
+                    }, settlementHistory)
+                    XCTAssertTrue(settlementTransitions.contains {
+                        $0.sanitizedDimensions.contains("purpose=execution_detached_settled")
+                            && $0.sanitizedDimensions.contains("status=settled")
+                            && $0.sanitizedDimensions.contains("blocksAdmission=false")
+                            && $0.sanitizedDimensions.contains("isReleased=true")
+                    }, settlementHistory)
+                    XCTAssertTrue(settlementTransitions.contains {
+                        $0.sanitizedDimensions.contains("purpose=connection_force_disconnect_requested")
+                    }, settlementHistory)
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
                     MCPToolExecutionTracer.setTestSink(nil)
                     await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile, operation: nil)
                     await manager.debugResetToolExecutionWatchdogEnvironment()
                     await fixture.cleanup()
                 } catch {
                     await operationGate.release()
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
                     MCPToolExecutionTracer.setTestSink(nil)
                     await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile, operation: nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testExpiredReadFileCaptureSkipsRecoveryAndDrainTransitionEnumerationBeforeLazyExpiry() throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            let clock = MCPDebugCaptureManualMonotonicClock(nowNanoseconds: 1000)
+            EditFlowPerf.setDebugCaptureMonotonicNowForTesting { clock.nowNanoseconds() }
+            var admittedCaptureIdentity: EditFlowPerf.DebugCaptureIdentity?
+            switch EditFlowPerf.beginDebugCapture(
+                label: "expired-read-file-settlement-observer",
+                maxSamples: 64,
+                expiryMilliseconds: 10000,
+                toolFilter: .readFile,
+                prepare: { admittedCaptureIdentity = $0 }
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Read-file settlement capture should start")
+            }
+            let captureIdentity = try XCTUnwrap(admittedCaptureIdentity)
+            let invocationID = UUID()
+            let connectionID = UUID()
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("expired-settlement-observer"),
+                connectionID: connectionID.uuidString,
+                connectionGeneration: 1,
+                appInvocationID: invocationID.uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: requestIdentity,
+                toolName: MCPWindowToolName.readFile
+            ))
+            let registry = MCPCodeStructureSettlementRegistry()
+            let originSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: connectionID,
+                invocationID: invocationID,
+                toolName: MCPWindowToolName.readFile,
+                now: .zero,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                originSlot = slot
+            case .busy:
+                return XCTFail("Initial read-file settlement lease should be admitted")
+            }
+            defer { _ = originSlot.recordCompletion(.success) }
+            let transitions = MCPSettlementTransitionEvidenceRecorder()
+            let captureAccepts = try XCTUnwrap(EditFlowPerf.debugCaptureAcceptancePredicate(captureIdentity))
+            originSlot.setDebugTransitionObserver(accepts: captureAccepts) { evidence in
+                transitions.append(evidence)
+                EditFlowPerf.lifecycleEvent(
+                    "ReadFile.SettlementTransition",
+                    correlation: correlation,
+                    .init(
+                        runPurpose: "recovery_released",
+                        status: evidence.state,
+                        outcome: "released_provider_limit",
+                        blocksAdmission: evidence.blocksAdmission,
+                        isReleased: evidence.isReleased
+                    )
+                )
+            }
+            XCTAssertEqual(originSlot.resolveGraceExpiry(now: .zero), .detach)
+            XCTAssertEqual(originSlot.activateDetach(), .activated)
+
+            let activeSnapshot = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            let enumerationCount = registry.debugTransitionEnumerationCountForTesting()
+            let transitionCount = transitions.snapshot().count
+            let lifecycleCount = activeSnapshot.lifecycleEvents.count
+            let expiryBoundaryNanoseconds: UInt64 = 10_000_001_000
+            clock.setNowNanoseconds(expiryBoundaryNanoseconds)
+            XCTAssertFalse(captureAccepts(), "Capture acceptance must expire at deadline equality")
+            clock.setNowNanoseconds(expiryBoundaryNanoseconds + 1)
+
+            let recoveredSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: UUID(),
+                invocationID: UUID(),
+                toolName: MCPWindowToolName.readFile,
+                now: MCPCodeStructureSettlementRegistry.recoveryHorizon,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                recoveredSlot = slot
+            case .busy:
+                return XCTFail("Recovery-horizon read-file lease should be admitted")
+            }
+            defer { _ = recoveredSlot.closeBeforeExecutionExit() }
+            XCTAssertEqual(recoveredSlot.closeBeforeExecutionExit(), .released)
+            XCTAssertEqual(originSlot.recordCompletion(.success), .settleDetached)
+
+            XCTAssertEqual(registry.debugTransitionEnumerationCountForTesting(), enumerationCount)
+            XCTAssertEqual(transitions.snapshot().count, transitionCount)
+            XCTAssertEqual(EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.count, lifecycleCount)
+        }
+
+        func testClosedReadFileCaptureSkipsRecoveryAndDrainTransitionEnumerationAndLifecycle() throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            var admittedCaptureIdentity: EditFlowPerf.DebugCaptureIdentity?
+            switch EditFlowPerf.beginDebugCapture(
+                label: "closed-read-file-settlement-observer",
+                maxSamples: 64,
+                toolFilter: .readFile,
+                prepare: { admittedCaptureIdentity = $0 }
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Read-file settlement capture should start")
+            }
+            let captureIdentity = try XCTUnwrap(admittedCaptureIdentity)
+            let invocationID = UUID()
+            let connectionID = UUID()
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("closed-settlement-observer"),
+                connectionID: connectionID.uuidString,
+                connectionGeneration: 1,
+                appInvocationID: invocationID.uuidString,
+                requestOrdinal: 1
+            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: requestIdentity,
+                toolName: MCPWindowToolName.readFile
+            ))
+            let registry = MCPCodeStructureSettlementRegistry()
+            let originSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: connectionID,
+                invocationID: invocationID,
+                toolName: MCPWindowToolName.readFile,
+                now: .zero,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                originSlot = slot
+            case .busy:
+                return XCTFail("Initial read-file settlement lease should be admitted")
+            }
+            let transitions = MCPSettlementTransitionEvidenceRecorder()
+            let captureAccepts = try XCTUnwrap(EditFlowPerf.debugCaptureAcceptancePredicate(captureIdentity))
+            originSlot.setDebugTransitionObserver(
+                accepts: captureAccepts
+            ) { evidence in
+                transitions.append(evidence)
+                EditFlowPerf.lifecycleEvent(
+                    "ReadFile.SettlementTransition",
+                    correlation: correlation,
+                    .init(
+                        runPurpose: evidence.kind == .recoveryReleased ? "recovery_released" : "admission",
+                        status: evidence.state,
+                        outcome: evidence.kind == .recoveryReleased ? "released_provider_limit" : "admitted",
+                        blocksAdmission: evidence.blocksAdmission,
+                        isReleased: evidence.isReleased
+                    )
+                )
+            }
+            XCTAssertEqual(originSlot.resolveGraceExpiry(now: .zero), .detach)
+            XCTAssertEqual(originSlot.activateDetach(), .activated)
+
+            let closedSnapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let enumerationCount = registry.debugTransitionEnumerationCountForTesting()
+            let transitionCount = transitions.snapshot().count
+            let lifecycleCount = closedSnapshot.lifecycleEvents.count
+
+            let recoveredSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: UUID(),
+                invocationID: UUID(),
+                toolName: MCPWindowToolName.readFile,
+                now: MCPCodeStructureSettlementRegistry.recoveryHorizon,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                recoveredSlot = slot
+            case .busy:
+                return XCTFail("Recovery-horizon read-file lease should be admitted")
+            }
+            XCTAssertEqual(recoveredSlot.closeBeforeExecutionExit(), .released)
+            XCTAssertEqual(originSlot.recordCompletion(.success), .settleDetached)
+
+            XCTAssertEqual(registry.debugTransitionEnumerationCountForTesting(), enumerationCount)
+            XCTAssertEqual(transitions.snapshot().count, transitionCount)
+            XCTAssertEqual(EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.count, lifecycleCount)
+        }
+
+        func testActiveReadFileCaptureEnumeratesRecoveryTransitionOnceWithDisplacedTruth() throws {
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            var admittedCaptureIdentity: EditFlowPerf.DebugCaptureIdentity?
+            switch EditFlowPerf.beginDebugCapture(
+                label: "active-read-file-settlement-observer",
+                maxSamples: 64,
+                toolFilter: .readFile,
+                prepare: { admittedCaptureIdentity = $0 }
+            ) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Read-file settlement capture should start")
+            }
+            let captureIdentity = try XCTUnwrap(admittedCaptureIdentity)
+            let invocationID = UUID()
+            let connectionID = UUID()
+            let registry = MCPCodeStructureSettlementRegistry()
+            let originSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: connectionID,
+                invocationID: invocationID,
+                toolName: MCPWindowToolName.readFile,
+                now: .zero,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                originSlot = slot
+            case .busy:
+                return XCTFail("Initial read-file settlement lease should be admitted")
+            }
+            let transitions = MCPSettlementTransitionEvidenceRecorder()
+            let captureAccepts = try XCTUnwrap(EditFlowPerf.debugCaptureAcceptancePredicate(captureIdentity))
+            originSlot.setDebugTransitionObserver(
+                accepts: captureAccepts
+            ) { evidence in
+                transitions.append(evidence)
+            }
+            XCTAssertEqual(originSlot.resolveGraceExpiry(now: .zero), .detach)
+            XCTAssertEqual(originSlot.activateDetach(), .activated)
+            let enumerationCount = registry.debugTransitionEnumerationCountForTesting()
+            let transitionCount = transitions.snapshot().count
+
+            let recoveredSlot: MCPCodeStructureSettlementRegistry.Slot
+            switch registry.admit(
+                windowID: 1,
+                connectionID: UUID(),
+                invocationID: UUID(),
+                toolName: MCPWindowToolName.readFile,
+                now: MCPCodeStructureSettlementRegistry.recoveryHorizon,
+                handlerPhase: { "executing" }
+            ) {
+            case let .admitted(slot):
+                recoveredSlot = slot
+            case .busy:
+                return XCTFail("Recovery-horizon read-file lease should be admitted")
+            }
+
+            XCTAssertEqual(registry.debugTransitionEnumerationCountForTesting(), enumerationCount + 1)
+            let recoveryTransitions = transitions.snapshot().dropFirst(transitionCount)
+            let recovery = try XCTUnwrap(recoveryTransitions.first)
+            XCTAssertEqual(recoveryTransitions.count, 1)
+            XCTAssertEqual(recovery.kind, .recoveryReleased)
+            XCTAssertEqual(recovery.invocationID, invocationID)
+            XCTAssertEqual(recovery.connectionID, connectionID)
+            XCTAssertFalse(recovery.blocksAdmission)
+            XCTAssertTrue(recovery.isReleased)
+
+            XCTAssertEqual(recoveredSlot.closeBeforeExecutionExit(), .released)
+            XCTAssertEqual(originSlot.recordCompletion(.success), .settleDetached)
+            _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+        }
+
+        func testReadFileSettlementTransitionsRetainDisplacedInvocationThroughRecoveryAndDrain() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let clock = ExecutionWatchdogManualClock()
+                let operationGate = MCPExecutionIgnoringCancellationGate()
+                let recorder = MCPExecutionTraceRecorder()
+                let manager = fixture.networkManager
+                EditFlowPerf.resetDebugCaptureForTesting()
+                let captureID: UUID
+                switch EditFlowPerf.beginDebugCapture(
+                    label: "read-file-settlement-transitions",
+                    maxSamples: 500,
+                    expiryMilliseconds: 120_000,
+                    toolFilter: .readFile,
+                    prepare: { captureIdentity in
+                        MCPToolExecutionTracer.prepareDebugCapture(captureIdentity)
+                    }
+                ) {
+                case let .started(snapshot):
+                    captureID = try XCTUnwrap(snapshot.captureID)
+                case .busy:
+                    await fixture.cleanup()
+                    return XCTFail("Read-file settlement capture should start")
+                }
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile) {
+                    await operationGate.enterAndWait()
+                    return .null
+                }
+                do {
+                    let endpoint = try fixture.endpointA()
+                    let fixtureTimelineGeneration = UInt64.max
+                    defer {
+                        MCPRequestTimelineRegistry.shared.removeConnection(
+                            connectionID: endpoint.connectionID.uuidString,
+                            connectionGeneration: fixtureTimelineGeneration
+                        )
+                    }
+                    let timelineFrame = try JSONSerialization.data(withJSONObject: [
+                        "jsonrpc": "2.0",
+                        "id": "read-file-settlement-transitions",
+                        "method": "tools/call",
+                        "params": [
+                            "name": MCPWindowToolName.readFile,
+                            "arguments": [:]
+                        ]
+                    ])
+                    _ = MCPRequestTimelineRegistry.shared.recordAcceptedFrame(
+                        timelineFrame,
+                        connectionID: endpoint.connectionID.uuidString,
+                        correlationConnectionID: endpoint.connectionID.uuidString,
+                        connectionGeneration: fixtureTimelineGeneration
+                    )
+                    let arguments: [String: Any] = [
+                        "path": fixture.contextA.fileURL.path,
+                        "context_id": fixture.contextA.tabID.uuidString,
+                        "_rawJSON": true
+                    ]
+                    let detachedCall = Task {
+                        try await endpoint.callTool(name: MCPWindowToolName.readFile, arguments: arguments)
+                    }
+                    try await clock.waitForSleeperCount(1)
+                    try await operationGate.waitUntilEntered(count: 1)
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+                    try await clock.waitForSleeperCount(1)
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace)
+
+                    let timeoutPayload = try await Self.toolResultObject(detachedCall.value)
+                    XCTAssertEqual(timeoutPayload["code"] as? String, "tool_execution_timeout")
+                    XCTAssertEqual(timeoutPayload["settlement"] as? String, "detached")
+                    let origin = try XCTUnwrap(Self.detachedReadFileOrigin(
+                        in: recorder.snapshot(),
+                        connectionID: endpoint.connectionID
+                    ))
+                    let recoveryReleasedTransition = expectation(
+                        description: "displaced read-file invocation recovery release"
+                    )
+                    recoveryReleasedTransition.assertForOverFulfill = true
+                    let detachedSettledTransition = expectation(
+                        description: "displaced read-file invocation detached settlement"
+                    )
+                    detachedSettledTransition.assertForOverFulfill = true
+                    MCPToolExecutionTracer.setTestSink { event in
+                        recorder.append(event)
+                        guard event.invocationID == origin.invocationID,
+                              event.phase == .detachedSettled,
+                              EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.contains(where: {
+                                  $0.requestIdentity?.appInvocationID == origin.invocationID.uuidString
+                                      && $0.eventName == "ReadFile.SettlementTransition"
+                                      && $0.sanitizedDimensions.contains("purpose=execution_detached_settled")
+                                      && $0.sanitizedDimensions.contains("status=settled")
+                                      && $0.sanitizedDimensions.contains("blocksAdmission=false")
+                                      && $0.sanitizedDimensions.contains("isReleased=true")
+                              })
+                        else { return }
+                        detachedSettledTransition.fulfill()
+                    }
+
+                    try await clock.advanceWithoutSleepers(
+                        by: MCPCodeStructureSettlementRegistry.recoveryHorizon
+                    )
+                    await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile) {
+                        if EditFlowPerf.debugCaptureSnapshot(finish: false).lifecycleEvents.contains(where: {
+                            $0.requestIdentity?.appInvocationID == origin.invocationID.uuidString
+                                && $0.eventName == "ReadFile.SettlementTransition"
+                                && $0.sanitizedDimensions.contains("purpose=recovery_released")
+                                && $0.sanitizedDimensions.contains("status=detached")
+                                && $0.sanitizedDimensions.contains("blocksAdmission=false")
+                                && $0.sanitizedDimensions.contains("isReleased=true")
+                        }) {
+                            recoveryReleasedTransition.fulfill()
+                        }
+                        return .null
+                    }
+                    let recoveredEndpoint = try await fixture.makeAdditionalEndpoint(
+                        label: "read-file-settlement-recovery"
+                    )
+                    _ = try await recoveredEndpoint.callTool(
+                        name: MCPWindowToolName.readFile,
+                        arguments: arguments
+                    )
+                    await fulfillment(of: [recoveryReleasedTransition], timeout: 5)
+
+                    await operationGate.release()
+                    await fulfillment(of: [detachedSettledTransition], timeout: 5)
+                    await manager.debugAwaitCodeStructureSettlementDrain(
+                        windowID: fixture.contextA.window.windowID
+                    )
+
+                    let capture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+                    let originTransitions = capture.lifecycleEvents.filter {
+                        $0.requestIdentity?.appInvocationID == origin.invocationID.uuidString
+                            && $0.eventName == "ReadFile.SettlementTransition"
+                    }
+                    let rawHistory = originTransitions.map(\.sanitizedDimensions).joined(separator: "\n")
+                    XCTAssertFalse(rawHistory.contains("providerActive="), rawHistory)
+                    XCTAssertFalse(rawHistory.contains("permitActive="), rawHistory)
+                    for expected in [
+                        (purpose: "admission", status: "reserved", outcome: "admitted"),
+                        (purpose: "execution_detached_for_settlement", status: "detached", outcome: "detached"),
+                        (purpose: "recovery_released", status: "detached", outcome: "released_provider_limit"),
+                        (purpose: "execution_detached_settled", status: "settled", outcome: "success")
+                    ] {
+                        XCTAssertTrue(originTransitions.contains {
+                            $0.sanitizedDimensions.contains("purpose=\(expected.purpose)")
+                                && $0.sanitizedDimensions.contains("status=\(expected.status)")
+                                && $0.sanitizedDimensions.contains("outcome=\(expected.outcome)")
+                        }, rawHistory)
+                    }
+
+                    let trace = MCPToolExecutionTracer.debugEventSnapshot(captureID)
+                    let packet = try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                        appInvocationID: origin.invocationID,
+                        capture: capture,
+                        trace: trace,
+                        work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                        runtimeIdentity: MCPReadFileDiagnosticRuntimeIdentity(
+                            bundleIdentifier: "com.example.RepoPrompt.debug",
+                            marketingVersion: "1.2.3",
+                            buildNumber: "456",
+                            machOUUID: UUID(),
+                            executableSHA256: String(repeating: "a", count: 64),
+                            sourceBaseCommit: String(repeating: "b", count: 40),
+                            sourceTreeDirty: true,
+                            diagnosticPatchPresent: true,
+                            diagnosticPatchDigest: String(repeating: "c", count: 64),
+                            processStartID: UUID()
+                        )
+                    )
+                    let packetHistory = packet.settlement.entries.map { entry in
+                        entry.dimensions
+                            .sorted { $0.key < $1.key }
+                            .map { "\($0.key)=\($0.value)" }
+                            .joined(separator: " ")
+                    }.joined(separator: "\n")
+                    for purpose in [
+                        "admission", "execution_detached_for_settlement", "recovery_released",
+                        "execution_detached_settled"
+                    ] {
+                        XCTAssertTrue(packetHistory.contains("purpose=\(purpose)"), packetHistory)
+                    }
+                    XCTAssertFalse(packetHistory.contains("providerActive="), packetHistory)
+                    XCTAssertFalse(packetHistory.contains("permitActive="), packetHistory)
+
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    MCPToolExecutionTracer.resetDebugEvents()
+                    MCPToolWorkCountDiagnostics.resetForTesting()
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.readFile,
+                        operation: nil
+                    )
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    await fixture.cleanup()
+                } catch {
+                    await operationGate.release()
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                    EditFlowPerf.resetDebugCaptureForTesting()
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    MCPToolExecutionTracer.resetDebugEvents()
+                    MCPToolWorkCountDiagnostics.resetForTesting()
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.readFile,
+                        operation: nil
+                    )
                     await manager.debugResetToolExecutionWatchdogEnvironment()
                     await fixture.cleanup()
                     throw error
@@ -3114,6 +3866,14 @@ import XCTest
                     try await provider.waitUntilEntered(count: 2)
                     let competingSleeperDrained = await Self.waitUntil { await clock.sleeperCount() == 1 }
                     XCTAssertTrue(competingSleeperDrained)
+                    let reservedDiagnostic = await manager.debugCodeStructureSettlementDiagnosticSnapshot(
+                        windowID: windowID,
+                        now: clock.currentTime()
+                    )
+                    let reservedLease = try XCTUnwrap(reservedDiagnostic.leases.first)
+                    XCTAssertEqual(reservedLease.state, "reserved")
+                    XCTAssertFalse(reservedLease.blocksAdmission)
+                    XCTAssertFalse(reservedLease.isReleased)
 
                     try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
                     try await clock.waitForSleeperCount(1)
@@ -3134,6 +3894,14 @@ import XCTest
 
                     let detachedSnapshot = await manager.debugCodeStructureSettlementSnapshot(windowID: windowID)
                     XCTAssertEqual(detachedSnapshot, .init(activeCount: 1, detachedCount: 1))
+                    let detachedDiagnostic = await manager.debugCodeStructureSettlementDiagnosticSnapshot(
+                        windowID: windowID,
+                        now: clock.currentTime()
+                    )
+                    let detachedLease = try XCTUnwrap(detachedDiagnostic.leases.first)
+                    XCTAssertEqual(detachedLease.state, "detached")
+                    XCTAssertTrue(detachedLease.blocksAdmission)
+                    XCTAssertFalse(detachedLease.isReleased)
                     let terminal = await manager.debugIsExecutionWatchdogTerminal(connectionID: endpoint.connectionID)
                     XCTAssertFalse(terminal)
 
@@ -3225,6 +3993,14 @@ import XCTest
                         recoveredSnapshot,
                         .init(activeCount: 1, detachedCount: 1, releasedCount: 1)
                     )
+                    let releasedDiagnostic = await manager.debugCodeStructureSettlementDiagnosticSnapshot(
+                        windowID: windowID,
+                        now: clock.currentTime()
+                    )
+                    let releasedLease = try XCTUnwrap(releasedDiagnostic.leases.first)
+                    XCTAssertEqual(releasedLease.state, "detached")
+                    XCTAssertFalse(releasedLease.blocksAdmission)
+                    XCTAssertTrue(releasedLease.isReleased)
 
                     // A second escaped provider exhausts the window-scoped recovery budget.
                     await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.getCodeStructure) {
@@ -3302,7 +4078,6 @@ import XCTest
 
                     await provider.releaseFirst()
                     await repeatedEscapeGate.release()
-                    await manager.debugAwaitCodeStructureSettlementDrain(windowID: windowID)
                     let lateTraceArrived = await Self.waitUntil {
                         recorder.snapshot().contains {
                             $0.invocationID == detachedEvent.invocationID && $0.phase == .detachedSettled
@@ -3321,6 +4096,7 @@ import XCTest
                         }
                     }
                     XCTAssertTrue(ownershipStateArrived)
+                    await manager.debugAwaitCodeStructureSettlementDrain(windowID: windowID)
 
                     let finalEvents = recorder.snapshot().filter { $0.invocationID == detachedEvent.invocationID }
                     let settledEvent = try XCTUnwrap(finalEvents.first { $0.phase == .detachedSettled })
@@ -3355,6 +4131,11 @@ import XCTest
                         drainedSnapshot,
                         .init(activeCount: 0, detachedCount: 0)
                     )
+                    let lateSettledDiagnostic = await manager.debugCodeStructureSettlementDiagnosticSnapshot(
+                        windowID: windowID,
+                        now: clock.currentTime()
+                    )
+                    XCTAssertTrue(lateSettledDiagnostic.leases.isEmpty)
                     let sleeperCountAfterDrain = await clock.sleeperCount()
                     XCTAssertEqual(sleeperCountAfterDrain, 0)
 
@@ -3496,6 +4277,17 @@ import XCTest
             return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         }
 
+        private static func detachedReadFileOrigin(
+            in events: [MCPToolExecutionTraceEvent],
+            connectionID: UUID
+        ) -> MCPToolExecutionTraceEvent? {
+            events.first {
+                $0.connectionID == connectionID
+                    && $0.toolName == MCPWindowToolName.readFile
+                    && $0.phase == .detachedForSettlement
+            }
+        }
+
         private static func assertSocketClosed(
             _ task: Task<PersistentMCPTestRPCResponse, Error>,
             request: String = "request"
@@ -3590,6 +4382,40 @@ import XCTest
             lock.lock()
             defer { lock.unlock() }
             return events
+        }
+    }
+
+    private final class MCPSettlementTransitionEvidenceRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var transitions: [MCPCodeStructureSettlementRegistry.DebugTransitionEvidence] = []
+
+        func append(_ evidence: MCPCodeStructureSettlementRegistry.DebugTransitionEvidence) {
+            lock.withLock {
+                transitions.append(evidence)
+            }
+        }
+
+        func snapshot() -> [MCPCodeStructureSettlementRegistry.DebugTransitionEvidence] {
+            lock.withLock { transitions }
+        }
+    }
+
+    private final class MCPDebugCaptureManualMonotonicClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64
+
+        init(nowNanoseconds: UInt64) {
+            value = nowNanoseconds
+        }
+
+        func nowNanoseconds() -> UInt64 {
+            lock.withLock { value }
+        }
+
+        func setNowNanoseconds(_ value: UInt64) {
+            lock.withLock {
+                self.value = value
+            }
         }
     }
 

@@ -275,6 +275,15 @@ actor WorkspaceFileContextStore {
             let fullCrawlCount: Int
         }
 
+        struct ReadFileRootDiagnosticSnapshot: Equatable {
+            let rootToken: UUID
+            let authorityState: String
+            let activeMutationDepth: Int
+            let authorityWaiterCount: Int
+            let ingress: WorkspaceFileSystemIngressCoordinator.DebugSnapshot
+            let barrier: ScopedIngressBarrierDebugSnapshot
+        }
+
         struct ReadSearchRootDiagnosticsSnapshot: Equatable {
             let rootID: UUID
             let rootToken: UUID
@@ -1269,6 +1278,10 @@ actor WorkspaceFileContextStore {
         private var scopedIngressBarrierCoalescedSuccessorCountsByRootID: [UUID: Int] = [:]
         private var scopedIngressBarrierCompletionCountsByRootID: [UUID: Int] = [:]
         private var scopedIngressBarrierNoopCountsByRootID: [UUID: Int] = [:]
+        private var readFileDiagnosticTokenInputConstructionCount = 0
+        private var readFileRootDiagnosticSnapshotCallCount = 0
+        private var readFileDiagnosticConstructionWillBeginHookForTesting: (@Sendable (String) -> Void)?
+        private var readFileDiagnosticUTF8ByteCountConstructionHookForTesting: (@Sendable () -> Void)?
         private var scopedIngressBarrierTotalWaitMillisecondsByRootID: [UUID: UInt64] = [:]
         private var scopedIngressBarrierMaxWaitMillisecondsByRootID: [UUID: UInt64] = [:]
         private var lastCompletedScopedIngressBarrierByRootID: [UUID: ScopedIngressBarrierDebugSnapshot.Completed] = [:]
@@ -2074,6 +2087,29 @@ actor WorkspaceFileContextStore {
             publishedSeededAuthorityIsQueryable(rootID: rootID)
         }
 
+        func readFileRootDiagnosticSnapshot(rootID: UUID) -> ReadFileRootDiagnosticSnapshot? {
+            readFileRootDiagnosticSnapshotCallCount += 1
+            guard let root = rootStatesByID[rootID] else { return nil }
+            let authority = publishedSeededAuthorityStatesByRootID[rootID]
+            let authorityState = if publishedSeededAuthorityFencesByRootID[rootID] == nil {
+                "no_fence"
+            } else if authority?.reconciliationFailed == true {
+                "reconciliation_failed"
+            } else if authority?.isBlocked == true || authority?.isReconciling == true {
+                "blocked_reconciling"
+            } else {
+                "queryable"
+            }
+            return ReadFileRootDiagnosticSnapshot(
+                rootToken: root.service.diagnosticRootToken,
+                authorityState: authorityState,
+                activeMutationDepth: authority?.activeMutationDepth ?? 0,
+                authorityWaiterCount: publishedSeededAuthorityWaitersByRootID[rootID]?.count ?? 0,
+                ingress: publisherIngressCoordinator.debugSnapshot(rootID: rootID),
+                barrier: scopedIngressBarrierDebugSnapshot(rootID: rootID)
+            )
+        }
+
         func waitForPublishedSeededAuthorityReconciliationForTesting(rootID: UUID) async {
             while let task = seededAuthorityReconciliationTasksByRootID[rootID] {
                 await task.value
@@ -2109,6 +2145,26 @@ actor WorkspaceFileContextStore {
             scopedIngressBarrierFlightStatesByRootID.values.reduce(0) { count, state in
                 count + (state.active == nil ? 0 : 1) + (state.pending == nil ? 0 : 1)
             }
+        }
+
+        func readFileDiagnosticTokenInputConstructionCountForTesting() -> Int {
+            readFileDiagnosticTokenInputConstructionCount
+        }
+
+        func readFileRootDiagnosticSnapshotCallCountForTesting() -> Int {
+            readFileRootDiagnosticSnapshotCallCount
+        }
+
+        func setReadFileDiagnosticUTF8ByteCountConstructionHookForTesting(
+            _ hook: (@Sendable () -> Void)?
+        ) {
+            readFileDiagnosticUTF8ByteCountConstructionHookForTesting = hook
+        }
+
+        func setReadFileDiagnosticConstructionWillBeginHookForTesting(
+            _ hook: (@Sendable (String) -> Void)?
+        ) {
+            readFileDiagnosticConstructionWillBeginHookForTesting = hook
         }
 
         func resetScopedIngressBarrierDiagnosticsForTesting(rootID: UUID) {
@@ -8710,6 +8766,150 @@ actor WorkspaceFileContextStore {
         return .cachedMetadata
     }
 
+    #if DEBUG
+        private func recordReadFileRootDiagnostic(
+            rootID: UUID,
+            callSite: String,
+            status: String
+        ) {
+            guard let correlation = EditFlowPerf.currentLifecycleCorrelation,
+                  Self.acceptedReadFileCaptureIdentity(correlation: correlation) != nil,
+                  let snapshot = readFileRootDiagnosticSnapshot(rootID: rootID)
+            else { return }
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.FreshnessRootSnapshot",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: callSite,
+                    status: status,
+                    outcome: snapshot.authorityState,
+                    taskCount: snapshot.ingress.waiterCount,
+                    workerCount: snapshot.ingress.applyingPublicationCount,
+                    activeCount: snapshot.activeMutationDepth,
+                    pendingRawEventCount: snapshot.ingress.outstandingPublicationCount,
+                    rootToken: snapshot.rootToken.uuidString,
+                    queueDepth: snapshot.ingress.queuedPublicationCount,
+                    waiterCount: snapshot.authorityWaiterCount,
+                    ingressSequence: snapshot.ingress.acceptedServicePublicationSequence,
+                    barrierSequence: snapshot.ingress.appliedServicePublicationSequence,
+                    observerToken: String(snapshot.ingress.appliedWatcherWatermark),
+                    serialPosition: Int(clamping: snapshot.ingress.acceptedAppliedSequenceGap),
+                    durationMicroseconds: snapshot.ingress.oldestOutstandingPublicationAgeMilliseconds.map {
+                        Int(clamping: min($0, UInt64(Int.max) / 1000) * 1000)
+                    },
+                    providerActive: snapshot.ingress.isOpen,
+                    permitActive: snapshot.barrier.active != nil,
+                    publicationPending: snapshot.barrier.pending != nil
+                )
+            )
+        }
+
+        private static func recordReadFileInteractiveStage(
+            _ stage: String,
+            status: String,
+            outcome: String? = nil,
+            rootToken: UUID,
+            attempt: Int,
+            fingerprintToken: String? = nil,
+            cacheKeyToken: String? = nil,
+            fileBytes: Int? = nil,
+            cacheHit: Bool? = nil
+        ) {
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.InteractiveStage",
+                correlation: EditFlowPerf.currentLifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: stage,
+                    status: status,
+                    outcome: outcome,
+                    fileBytes: fileBytes,
+                    cacheHit: cacheHit,
+                    rootToken: rootToken.uuidString,
+                    serialPosition: attempt,
+                    bindingFingerprintToken: cacheKeyToken,
+                    visibleRootFingerprintToken: fingerprintToken
+                )
+            )
+        }
+
+        private static func acceptedReadFileCaptureIdentity() -> EditFlowPerf.DebugCaptureIdentity? {
+            acceptedReadFileCaptureIdentity(correlation: EditFlowPerf.currentLifecycleCorrelation)
+        }
+
+        private static func acceptedReadFileCaptureIdentity(
+            correlation: EditFlowPerf.LifecycleCorrelation?
+        ) -> EditFlowPerf.DebugCaptureIdentity? {
+            guard let correlation,
+                  let captureID = correlation.captureID,
+                  let epoch = correlation.captureEpoch
+            else { return nil }
+            let identity = EditFlowPerf.DebugCaptureIdentity(captureID: captureID, epoch: epoch)
+            return EditFlowPerf.performIfDebugCaptureAccepted(identity) {} ? identity : nil
+        }
+
+        private nonisolated static func constructReadFileDiagnosticValueIfAccepted<Value>(
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity?,
+            acceptancePredicate: (@Sendable () -> Bool)?,
+            _ construct: (EditFlowPerf.DebugCaptureIdentity) -> Value?
+        ) -> Value? {
+            guard let captureIdentity,
+                  let acceptancePredicate,
+                  acceptancePredicate()
+            else { return nil }
+            return construct(captureIdentity)
+        }
+
+        private static func readFileDiagnosticToken(
+            _ value: String,
+            domain: EditFlowPerf.DebugCaptureTokenDomain,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity
+        ) -> String? {
+            EditFlowPerf.debugCaptureToken(value, domain: domain, captureIdentity: captureIdentity)
+        }
+
+        private func requireReadFilePublishedSeededAuthorityFresh(
+            rootID: UUID,
+            callSite: String
+        ) async throws {
+            guard Self.acceptedReadFileCaptureIdentity() != nil,
+                  let correlation = EditFlowPerf.currentLifecycleCorrelation
+            else {
+                try await requirePublishedSeededAuthorityFresh(rootID: rootID)
+                return
+            }
+            let rootToken = readFileRootDiagnosticSnapshot(rootID: rootID)?.rootToken.uuidString
+            recordReadFileRootDiagnostic(rootID: rootID, callSite: callSite, status: "before")
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SeededAuthorityWaitBegan",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: callSite, rootToken: rootToken)
+            )
+            var outcome = "failed_other"
+            defer {
+                EditFlowPerf.lifecycleEvent(
+                    "ReadFile.SeededAuthorityWaitEnded",
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: callSite,
+                        outcome: outcome,
+                        rootToken: rootToken
+                    )
+                )
+                recordReadFileRootDiagnostic(rootID: rootID, callSite: callSite, status: "after")
+            }
+            do {
+                try await requirePublishedSeededAuthorityFresh(rootID: rootID)
+                outcome = "completed"
+            } catch is CancellationError {
+                outcome = "cancelled"
+                throw CancellationError()
+            } catch {
+                outcome = "failed_unavailable"
+                throw error
+            }
+        }
+    #endif
+
     /// Resolves the narrowest safe workspace freshness scope for an explicit request.
     /// Absolute paths await only their containing loaded root. Absolute paths outside all
     /// loaded roots (including always-readable support files) do not pay a workspace barrier.
@@ -8870,13 +9070,31 @@ actor WorkspaceFileContextStore {
                     guard let target = targetsByRootID[rootID] else { continue }
                     group.addTask { [weak self] in
                         guard !Task.isCancelled, let self else { return (index, nil) }
-                        guard await (try? requirePublishedSeededAuthorityFresh(rootID: rootID)) != nil else {
-                            return (index, nil)
-                        }
+                        #if DEBUG
+                            guard await (try? requireReadFilePublishedSeededAuthorityFresh(
+                                rootID: rootID,
+                                callSite: "explicit_freshness_pre"
+                            )) != nil else {
+                                return (index, nil)
+                            }
+                        #else
+                            guard await (try? requirePublishedSeededAuthorityFresh(rootID: rootID)) != nil else {
+                                return (index, nil)
+                            }
+                        #endif
                         let sample = await awaitAppliedIngress(rootID: rootID, target: target)
-                        guard await (try? requirePublishedSeededAuthorityFresh(rootID: rootID)) != nil else {
-                            return (index, nil)
-                        }
+                        #if DEBUG
+                            guard await (try? requireReadFilePublishedSeededAuthorityFresh(
+                                rootID: rootID,
+                                callSite: "explicit_freshness_post"
+                            )) != nil else {
+                                return (index, nil)
+                            }
+                        #else
+                            guard await (try? requirePublishedSeededAuthorityFresh(rootID: rootID)) != nil else {
+                                return (index, nil)
+                            }
+                        #endif
                         return (index, sample)
                     }
                 }
@@ -8893,6 +9111,38 @@ actor WorkspaceFileContextStore {
         target: ScopedIngressBarrierTarget
     ) async -> WorkspaceIngressBarrierSample? {
         guard !Task.isCancelled, let state = rootStatesByID[rootID] else { return nil }
+        #if DEBUG
+            let lifecycleCorrelation = EditFlowPerf.currentLifecycleCorrelation
+            let diagnosticRootToken = state.service.diagnosticRootToken.uuidString
+            var ingressBarrierOutcome = "cancelled_or_unavailable"
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.IngressBarrierBegan",
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    rootToken: diagnosticRootToken,
+                    ingressSequence: target.acceptedServicePublicationSequence,
+                    observerToken: String(target.watcherAcceptedWatermark.rawValue)
+                )
+            )
+            defer {
+                EditFlowPerf.lifecycleEvent(
+                    "ReadFile.IngressBarrierEnded",
+                    correlation: lifecycleCorrelation,
+                    EditFlowPerf.Dimensions(
+                        outcome: ingressBarrierOutcome,
+                        rootToken: diagnosticRootToken,
+                        ingressSequence: target.acceptedServicePublicationSequence,
+                        observerToken: String(target.watcherAcceptedWatermark.rawValue)
+                    )
+                )
+                recordReadFileRootDiagnostic(
+                    rootID: rootID,
+                    callSite: "explicit_ingress",
+                    status: "after"
+                )
+            }
+            recordReadFileRootDiagnostic(rootID: rootID, callSite: "explicit_ingress", status: "before")
+        #endif
         if completedScopedIngressBarrierCutsByRootID[rootID] != nil {
             let applied = publisherIngressCoordinator.appliedSnapshot(rootID: rootID)
             if applied.appliedWatcherWatermark >= target.watcherAcceptedWatermark,
@@ -8900,6 +9150,7 @@ actor WorkspaceFileContextStore {
             {
                 #if DEBUG
                     scopedIngressBarrierNoopCountsByRootID[rootID, default: 0] += 1
+                    ingressBarrierOutcome = "no_op"
                 #endif
                 return WorkspaceIngressBarrierSample(
                     rootID: rootID,
@@ -8918,8 +9169,17 @@ actor WorkspaceFileContextStore {
         if let active = flightState.active, active.target.covers(target) {
             #if DEBUG
                 scopedIngressBarrierJoinCountsByRootID[rootID, default: 0] += 1
+                ingressBarrierOutcome = "joined"
             #endif
-            guard let output = await active.join.value() else { return nil }
+            guard let output = await active.join.value() else {
+                #if DEBUG
+                    ingressBarrierOutcome = "joined_cancelled"
+                #endif
+                return nil
+            }
+            #if DEBUG
+                ingressBarrierOutcome = "joined_completed"
+            #endif
             return scopedIngressBarrierSample(from: output)
         }
 
@@ -8927,8 +9187,17 @@ actor WorkspaceFileContextStore {
             #if DEBUG
                 scopedIngressBarrierJoinCountsByRootID[rootID, default: 0] += 1
                 scopedIngressBarrierCoalescedSuccessorCountsByRootID[rootID, default: 0] += 1
+                ingressBarrierOutcome = "coalesced_successor"
             #endif
-            guard let output = await pending.join.value() else { return nil }
+            guard let output = await pending.join.value() else {
+                #if DEBUG
+                    ingressBarrierOutcome = "coalesced_successor_cancelled"
+                #endif
+                return nil
+            }
+            #if DEBUG
+                ingressBarrierOutcome = "coalesced_successor_completed"
+            #endif
             return scopedIngressBarrierSample(from: output)
         }
 
@@ -8937,8 +9206,17 @@ actor WorkspaceFileContextStore {
             #if DEBUG
                 scopedIngressBarrierJoinCountsByRootID[rootID, default: 0] += 1
                 scopedIngressBarrierCoalescedSuccessorCountsByRootID[rootID, default: 0] += 1
+                ingressBarrierOutcome = "coalesced_successor"
             #endif
-            guard let output = await pending.join.value() else { return nil }
+            guard let output = await pending.join.value() else {
+                #if DEBUG
+                    ingressBarrierOutcome = "coalesced_successor_cancelled"
+                #endif
+                return nil
+            }
+            #if DEBUG
+                ingressBarrierOutcome = "coalesced_successor_completed"
+            #endif
             return scopedIngressBarrierSample(from: output)
         }
 
@@ -8947,6 +9225,7 @@ actor WorkspaceFileContextStore {
             #if DEBUG
                 let enqueuedAtNanoseconds = debugNowNanoseconds()
                 scopedIngressBarrierSuccessorCountsByRootID[rootID, default: 0] += 1
+                ingressBarrierOutcome = "successor"
             #else
                 let enqueuedAtNanoseconds: UInt64 = 0
             #endif
@@ -8956,18 +9235,37 @@ actor WorkspaceFileContextStore {
                 enqueuedAtNanoseconds: enqueuedAtNanoseconds
             )
             scopedIngressBarrierFlightStatesByRootID[rootID] = flightState
-            guard let output = await join.value() else { return nil }
+            guard let output = await join.value() else {
+                #if DEBUG
+                    ingressBarrierOutcome = "successor_cancelled"
+                #endif
+                return nil
+            }
+            #if DEBUG
+                ingressBarrierOutcome = "successor_completed"
+            #endif
             return scopedIngressBarrierSample(from: output)
         }
 
         let join = ScopedIngressBarrierJoin()
+        #if DEBUG
+            ingressBarrierOutcome = "launched"
+        #endif
         launchScopedIngressBarrier(
             rootID: rootID,
             target: target,
             join: join,
             flightState: flightState
         )
-        guard let output = await join.value() else { return nil }
+        guard let output = await join.value() else {
+            #if DEBUG
+                ingressBarrierOutcome = "launched_cancelled"
+            #endif
+            return nil
+        }
+        #if DEBUG
+            ingressBarrierOutcome = "launched_completed"
+        #endif
         return scopedIngressBarrierSample(from: output)
     }
 
@@ -11241,7 +11539,14 @@ actor WorkspaceFileContextStore {
     private func interactiveReadSnapshotWithinForegroundActivity(
         for expectedRecord: WorkspaceFileRecord
     ) async throws -> WorkspaceInteractiveReadSnapshot? {
-        try await requirePublishedSeededAuthorityFresh(rootID: expectedRecord.rootID)
+        #if DEBUG
+            try await requireReadFilePublishedSeededAuthorityFresh(
+                rootID: expectedRecord.rootID,
+                callSite: "interactive_pre"
+            )
+        #else
+            try await requirePublishedSeededAuthorityFresh(rootID: expectedRecord.rootID)
+        #endif
         for attempt in 0 ..< 2 {
             try Task.checkCancellation()
             guard let state = rootStatesByID[expectedRecord.rootID],
@@ -11255,6 +11560,31 @@ actor WorkspaceFileContextStore {
             }
 
             let service = state.service
+            #if DEBUG
+                let rootToken = service.diagnosticRootToken
+                let readFileCaptureIdentity = Self.acceptedReadFileCaptureIdentity()
+                let readFileCaptureAccepts = readFileCaptureIdentity.flatMap {
+                    EditFlowPerf.debugCaptureAcceptancePredicate($0)
+                }
+                let diagnosticConstructionWillBeginHook = readFileDiagnosticConstructionWillBeginHookForTesting
+                let utf8ByteCountConstructionHook = readFileDiagnosticUTF8ByteCountConstructionHookForTesting
+                var attemptOutcome = "failed_other"
+                Self.recordReadFileInteractiveStage(
+                    "attempt",
+                    status: "began",
+                    rootToken: rootToken,
+                    attempt: attempt
+                )
+                defer {
+                    Self.recordReadFileInteractiveStage(
+                        "attempt",
+                        status: "ended",
+                        outcome: attemptOutcome,
+                        rootToken: rootToken,
+                        attempt: attempt
+                    )
+                }
+            #endif
             let epoch = searchContentInvalidationEpochsByFileID[current.id] ?? 0
             let cacheKey = WorkspaceInteractiveReadCacheKey(
                 rootID: current.rootID,
@@ -11262,24 +11592,156 @@ actor WorkspaceFileContextStore {
                 fileID: current.id,
                 standardizedRelativePath: current.standardizedRelativePath
             )
+            #if DEBUG
+                diagnosticConstructionWillBeginHook?("cache_key")
+                let cacheKeyToken = Self.constructReadFileDiagnosticValueIfAccepted(
+                    captureIdentity: readFileCaptureIdentity,
+                    acceptancePredicate: readFileCaptureAccepts
+                ) { captureIdentity in
+                    readFileDiagnosticTokenInputConstructionCount += 1
+                    return Self.readFileDiagnosticToken(
+                        "\(cacheKey.rootID.uuidString)|\(cacheKey.rootLifetimeID.uuidString)|\(cacheKey.fileID.uuidString)|\(cacheKey.standardizedRelativePath)",
+                        domain: .cacheKey,
+                        captureIdentity: captureIdentity
+                    )
+                }
+                Self.recordReadFileInteractiveStage(
+                    "fingerprint",
+                    status: "began",
+                    rootToken: rootToken,
+                    attempt: attempt,
+                    cacheKeyToken: cacheKeyToken
+                )
+            #endif
             let fingerprint: FileContentFingerprint
             do {
                 fingerprint = try await service.contentFingerprint(
                     ofRelativePath: current.standardizedRelativePath
                 )
+                #if DEBUG
+                    Self.recordReadFileInteractiveStage(
+                        "fingerprint",
+                        status: "ended",
+                        outcome: "completed",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        cacheKeyToken: cacheKeyToken,
+                        fileBytes: Int(clamping: fingerprint.byteSize)
+                    )
+                #endif
             } catch is CancellationError {
+                #if DEBUG
+                    attemptOutcome = "cancelled_fingerprint"
+                    Self.recordReadFileInteractiveStage(
+                        "fingerprint",
+                        status: "ended",
+                        outcome: "cancelled",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        cacheKeyToken: cacheKeyToken
+                    )
+                #endif
                 throw CancellationError()
             } catch FileSystemError.fileNotFound {
+                #if DEBUG
+                    attemptOutcome = "missing_fingerprint"
+                    Self.recordReadFileInteractiveStage(
+                        "fingerprint",
+                        status: "ended",
+                        outcome: "missing",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        cacheKeyToken: cacheKeyToken
+                    )
+                #endif
                 await pruneCatalogFileIfStillCurrent(current)
                 return nil
             } catch {
+                #if DEBUG
+                    attemptOutcome = "failed_fingerprint"
+                    Self.recordReadFileInteractiveStage(
+                        "fingerprint",
+                        status: "ended",
+                        outcome: "failed_other",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        cacheKeyToken: cacheKeyToken
+                    )
+                #endif
                 return nil
             }
 
+            #if DEBUG
+                diagnosticConstructionWillBeginHook?("fingerprint")
+                let fingerprintToken = Self.constructReadFileDiagnosticValueIfAccepted(
+                    captureIdentity: readFileCaptureIdentity,
+                    acceptancePredicate: readFileCaptureAccepts
+                ) { captureIdentity in
+                    readFileDiagnosticTokenInputConstructionCount += 1
+                    return Self.readFileDiagnosticToken(
+                        "\(fingerprint.deviceID)|\(fingerprint.fileNumber)|\(fingerprint.byteSize)|\(fingerprint.modificationSeconds)|\(fingerprint.modificationNanoseconds)|\(fingerprint.statusChangeSeconds)|\(fingerprint.statusChangeNanoseconds)",
+                        domain: .fileSystemFingerprint,
+                        captureIdentity: captureIdentity
+                    )
+                }
+                Self.recordReadFileInteractiveStage(
+                    "catalog_revalidation",
+                    status: "began",
+                    rootToken: rootToken,
+                    attempt: attempt,
+                    fingerprintToken: fingerprintToken,
+                    cacheKeyToken: cacheKeyToken
+                )
+            #endif
             guard searchContentRecordIsCurrent(current, invalidationEpoch: epoch) else {
+                #if DEBUG
+                    attemptOutcome = attempt == 0 ? "retry_record_changed" : "failed_record_changed"
+                    Self.recordReadFileInteractiveStage(
+                        "catalog_revalidation",
+                        status: "ended",
+                        outcome: "stale",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        fingerprintToken: fingerprintToken,
+                        cacheKeyToken: cacheKeyToken
+                    )
+                #endif
                 if attempt == 0 { continue }
                 return nil
             }
+            #if DEBUG
+                Self.recordReadFileInteractiveStage(
+                    "catalog_revalidation",
+                    status: "ended",
+                    outcome: "current",
+                    rootToken: rootToken,
+                    attempt: attempt,
+                    fingerprintToken: fingerprintToken,
+                    cacheKeyToken: cacheKeyToken
+                )
+                var cacheOutcome = "failed_other"
+                var observedCacheHit: Bool?
+                Self.recordReadFileInteractiveStage(
+                    "cache_snapshot",
+                    status: "began",
+                    rootToken: rootToken,
+                    attempt: attempt,
+                    fingerprintToken: fingerprintToken,
+                    cacheKeyToken: cacheKeyToken
+                )
+                defer {
+                    Self.recordReadFileInteractiveStage(
+                        "cache_snapshot",
+                        status: "ended",
+                        outcome: cacheOutcome,
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        fingerprintToken: fingerprintToken,
+                        cacheKeyToken: cacheKeyToken,
+                        cacheHit: observedCacheHit
+                    )
+                }
+            #endif
 
             let schedulerOwnerID = interactiveReadSchedulerOwnerID
             do {
@@ -11288,45 +11750,176 @@ actor WorkspaceFileContextStore {
                     fingerprint: fingerprint,
                     invalidationEpoch: epoch
                 ) {
+                    #if DEBUG
+                        var contentLoadOutcome = "failed_other"
+                        Self.recordReadFileInteractiveStage(
+                            "content_load",
+                            status: "began",
+                            rootToken: rootToken,
+                            attempt: attempt,
+                            fingerprintToken: fingerprintToken,
+                            cacheKeyToken: cacheKeyToken
+                        )
+                        defer {
+                            Self.recordReadFileInteractiveStage(
+                                "content_load",
+                                status: "ended",
+                                outcome: contentLoadOutcome,
+                                rootToken: rootToken,
+                                attempt: attempt,
+                                fingerprintToken: fingerprintToken,
+                                cacheKeyToken: cacheKeyToken
+                            )
+                        }
+                    #endif
                     let loaded = try await service.loadValidatedContent(
                         ofRelativePath: current.standardizedRelativePath,
                         expectedFingerprint: fingerprint,
                         workloadClass: .interactiveRead,
                         schedulerOwnerID: schedulerOwnerID
                     )
-                    guard let content = loaded.content else { return nil }
-                    return await WorkspaceInteractiveReadProcessor.prepareOffActor(content)
+                    guard let content = loaded.content else {
+                        #if DEBUG
+                            contentLoadOutcome = "no_content"
+                        #endif
+                        return nil
+                    }
+                    #if DEBUG
+                        diagnosticConstructionWillBeginHook?("utf8_byte_count")
+                        let diagnosticFileBytes = Self.constructReadFileDiagnosticValueIfAccepted(
+                            captureIdentity: readFileCaptureIdentity,
+                            acceptancePredicate: readFileCaptureAccepts
+                        ) { _ in
+                            utf8ByteCountConstructionHook?()
+                            return content.utf8.count
+                        }
+                        Self.recordReadFileInteractiveStage(
+                            "off_actor_preparation",
+                            status: "began",
+                            rootToken: rootToken,
+                            attempt: attempt,
+                            fingerprintToken: fingerprintToken,
+                            cacheKeyToken: cacheKeyToken,
+                            fileBytes: diagnosticFileBytes
+                        )
+                    #endif
+                    let prepared = await WorkspaceInteractiveReadProcessor.prepareOffActor(content)
+                    #if DEBUG
+                        Self.recordReadFileInteractiveStage(
+                            "off_actor_preparation",
+                            status: "ended",
+                            outcome: "completed",
+                            rootToken: rootToken,
+                            attempt: attempt,
+                            fingerprintToken: fingerprintToken,
+                            cacheKeyToken: cacheKeyToken,
+                            fileBytes: diagnosticFileBytes
+                        )
+                        contentLoadOutcome = "completed"
+                    #endif
+                    return prepared
                 }
+                #if DEBUG
+                    observedCacheHit = cached.cacheHit
+                    cacheOutcome = cached.cacheHit ? "hit" : "miss_loaded"
+                #endif
                 guard let preparedContent = cached.preparedContent else {
+                    #if DEBUG
+                        attemptOutcome = attempt == 0 ? "retry_no_content" : "failed_no_content"
+                    #endif
                     if attempt == 0 { continue }
                     return nil
                 }
+                #if DEBUG
+                    Self.recordReadFileInteractiveStage(
+                        "record_revalidation",
+                        status: "began",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        fingerprintToken: fingerprintToken,
+                        cacheKeyToken: cacheKeyToken,
+                        cacheHit: cached.cacheHit
+                    )
+                #endif
                 guard searchContentRecordIsCurrent(current, invalidationEpoch: epoch) else {
+                    #if DEBUG
+                        attemptOutcome = attempt == 0 ? "retry_record_changed" : "failed_record_changed"
+                        Self.recordReadFileInteractiveStage(
+                            "record_revalidation",
+                            status: "ended",
+                            outcome: "stale",
+                            rootToken: rootToken,
+                            attempt: attempt,
+                            fingerprintToken: fingerprintToken,
+                            cacheKeyToken: cacheKeyToken,
+                            cacheHit: cached.cacheHit
+                        )
+                    #endif
                     if attempt == 0 { continue }
                     return nil
                 }
+                #if DEBUG
+                    Self.recordReadFileInteractiveStage(
+                        "record_revalidation",
+                        status: "ended",
+                        outcome: "current",
+                        rootToken: rootToken,
+                        attempt: attempt,
+                        fingerprintToken: fingerprintToken,
+                        cacheKeyToken: cacheKeyToken,
+                        cacheHit: cached.cacheHit
+                    )
+                #endif
                 retainSliceRebaseSource(
                     content: preparedContent.linesWithEndings.joined(),
                     modificationDate: fingerprint.modificationDate,
                     file: current,
                     rootLifetimeID: state.lifetimeID
                 )
-                try await requirePublishedSeededAuthorityFresh(rootID: current.rootID)
+                #if DEBUG
+                    try await requireReadFilePublishedSeededAuthorityFresh(
+                        rootID: current.rootID,
+                        callSite: "interactive_post"
+                    )
+                    attemptOutcome = "completed"
+                #else
+                    try await requirePublishedSeededAuthorityFresh(rootID: current.rootID)
+                #endif
                 return WorkspaceInteractiveReadSnapshot(
                     preparedContent: preparedContent,
                     cacheHit: cached.cacheHit
                 )
             } catch is CancellationError {
+                #if DEBUG
+                    cacheOutcome = "cancelled"
+                    attemptOutcome = "cancelled_cache_or_load"
+                #endif
                 throw CancellationError()
             } catch let error as ContentReadSchedulerError {
+                #if DEBUG
+                    cacheOutcome = "scheduler_error"
+                    attemptOutcome = "failed_scheduler"
+                #endif
                 throw error
             } catch FileContentValidationError.fingerprintChanged {
+                #if DEBUG
+                    cacheOutcome = "fingerprint_changed"
+                    attemptOutcome = attempt == 0 ? "retry_fingerprint_changed" : "failed_fingerprint_changed"
+                #endif
                 if attempt == 0 { continue }
                 return nil
             } catch FileSystemError.fileNotFound {
+                #if DEBUG
+                    cacheOutcome = "missing"
+                    attemptOutcome = "missing_content"
+                #endif
                 await pruneCatalogFileIfStillCurrent(current)
                 return nil
             } catch {
+                #if DEBUG
+                    cacheOutcome = "failed_other"
+                    attemptOutcome = "failed_other"
+                #endif
                 return nil
             }
         }

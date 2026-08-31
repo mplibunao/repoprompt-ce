@@ -6139,6 +6139,107 @@ actor ServerNetworkManager {
         #endif
     }
 
+    #if DEBUG
+        private static func recordReadFileDeadlineCancellationBoundary(
+            toolName: String,
+            correlation: EditFlowPerf.LifecycleCorrelation?,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity?
+        ) {
+            guard toolName == MCPWindowToolName.readFile,
+                  let captureIdentity,
+                  EditFlowPerf.performIfDebugCaptureAccepted(captureIdentity, {})
+            else { return }
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+        }
+
+        private static func recordReadFileSettlementDiagnostic(
+            toolName: String,
+            windowID: Int,
+            correlation: EditFlowPerf.LifecycleCorrelation?,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity?,
+            transitionPoint: String,
+            status: String? = nil,
+            outcome: String,
+            activeCount: Int? = nil,
+            detachedCount: Int? = nil,
+            releasedCount: Int? = nil,
+            blocksAdmission: Bool? = nil,
+            isReleased: Bool? = nil
+        ) {
+            guard toolName == MCPWindowToolName.readFile,
+                  let captureIdentity,
+                  EditFlowPerf.performIfDebugCaptureAccepted(captureIdentity, {})
+            else { return }
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: transitionPoint,
+                    status: status,
+                    outcome: outcome,
+                    workerCount: detachedCount,
+                    activeCount: activeCount,
+                    errorCount: releasedCount,
+                    windowID: windowID,
+                    blocksAdmission: blocksAdmission,
+                    isReleased: isReleased
+                )
+            )
+        }
+
+        private static func recordReadFileSettlementTransition(
+            _ evidence: MCPCodeStructureSettlementRegistry.DebugTransitionEvidence,
+            correlation: EditFlowPerf.LifecycleCorrelation?,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity?
+        ) {
+            let transition: (purpose: String, outcome: String) = switch evidence.kind {
+            case .reserved:
+                ("admission", "admitted")
+            case .detached:
+                ("execution_detached_for_settlement", "detached")
+            case .recoveryReleased:
+                ("recovery_released", "released_provider_limit")
+            case let .drained(settlement):
+                ("execution_detached_settled", settlement.rawValue)
+            case .earlyExitReleased:
+                ("execution_exit", "released")
+            }
+            recordReadFileSettlementDiagnostic(
+                toolName: evidence.toolName,
+                windowID: evidence.windowID,
+                correlation: correlation,
+                captureIdentity: captureIdentity,
+                transitionPoint: transition.purpose,
+                status: evidence.state,
+                outcome: transition.outcome,
+                activeCount: evidence.activeCount,
+                detachedCount: evidence.detachedCount,
+                releasedCount: evidence.releasedCount,
+                blocksAdmission: evidence.blocksAdmission,
+                isReleased: evidence.isReleased
+            )
+        }
+
+        private static func settlementBusyOutcome(
+            _ reason: MCPCodeStructureSettlementRegistry.BusyReason
+        ) -> String {
+            switch reason {
+            case .detached:
+                "detached"
+            case .abandoned:
+                "abandoned"
+            case .settling:
+                "settling"
+            case .releasedProviderLimitReached:
+                "released_provider_limit"
+            }
+        }
+    #endif
+
     private func abortConnectionForExecutionWatchdog(
         _ id: UUID,
         toolName: String,
@@ -9371,6 +9472,17 @@ actor ServerNetworkManager {
                 codeStructureSettlementRegistry.snapshot(windowID: windowID)
             }
 
+            func debugCodeStructureSettlementDiagnosticSnapshotCountForTesting() -> Int {
+                codeStructureSettlementRegistry.debugSnapshotEnumerationCountForTesting()
+            }
+
+            func debugCodeStructureSettlementDiagnosticSnapshot(
+                windowID: Int,
+                now: Duration
+            ) -> MCPCodeStructureSettlementRegistry.DebugSnapshot {
+                codeStructureSettlementRegistry.debugSnapshot(windowID: windowID, now: now)
+            }
+
             func debugAwaitCodeStructureSettlementDrain(windowID: Int) async {
                 await codeStructureSettlementRegistry.awaitDrained(windowID: windowID)
             }
@@ -11933,6 +12045,9 @@ actor ServerNetworkManager {
                                 )
                                 let executionWatchdogEnvironment = await self.toolExecutionWatchdogEnvironment
                                 let executionTraceOrigin = executionWatchdogEnvironment.now()
+                                #if DEBUG
+                                    let executionTraceCaptureIdentity = EditFlowPerf.debugCaptureIdentity(toolName: toolName)
+                                #endif
                                 let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
                                     origin: executionTraceOrigin,
                                     now: { executionWatchdogEnvironment.now() }
@@ -11949,7 +12064,7 @@ actor ServerNetworkManager {
                                         using: handlerPhaseRecorder
                                     )
                                     let now = executionWatchdogEnvironment.now()
-                                    MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                    let traceEvent = MCPToolExecutionTraceEvent(
                                         toolName: toolName,
                                         operationIdentity: evidenceOperationIdentity,
                                         connectionID: connectionID,
@@ -11977,7 +12092,15 @@ actor ServerNetworkManager {
                                             now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds
                                                 - snapshot.elapsedMilliseconds
                                         )
-                                    ))
+                                    )
+                                    #if DEBUG
+                                        MCPToolExecutionTracer.emit(
+                                            traceEvent,
+                                            captureIdentity: executionTraceCaptureIdentity
+                                        )
+                                    #else
+                                        MCPToolExecutionTracer.emit(traceEvent)
+                                    #endif
                                 }
 
                                 @Sendable func dispatchResolvedProvider(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
@@ -12022,8 +12145,35 @@ actor ServerNetworkManager {
                                             }
                                         ) {
                                         case let .admitted(slot):
+                                            #if DEBUG
+                                                if let executionTraceCaptureIdentity,
+                                                   let captureAccepts = EditFlowPerf.debugCaptureAcceptancePredicate(
+                                                       executionTraceCaptureIdentity
+                                                   )
+                                                {
+                                                    slot.setDebugTransitionObserver(
+                                                        accepts: captureAccepts
+                                                    ) { evidence in
+                                                        Self.recordReadFileSettlementTransition(
+                                                            evidence,
+                                                            correlation: lifecycleCorrelation,
+                                                            captureIdentity: executionTraceCaptureIdentity
+                                                        )
+                                                    }
+                                                }
+                                            #endif
                                             settlementAdmission = (.detachAndSettle, slot)
                                         case let .busy(context):
+                                            #if DEBUG
+                                                Self.recordReadFileSettlementDiagnostic(
+                                                    toolName: toolName,
+                                                    windowID: windowID,
+                                                    correlation: lifecycleCorrelation,
+                                                    captureIdentity: executionTraceCaptureIdentity,
+                                                    transitionPoint: "busy_admission",
+                                                    outcome: Self.settlementBusyOutcome(context.reason)
+                                                )
+                                            #endif
                                             throw MCPToolExecutionDispatchError.structureSettlementBusy(
                                                 windowID: windowID,
                                                 context: context
@@ -12052,7 +12202,7 @@ actor ServerNetworkManager {
                                         let handlerPhaseAgeMilliseconds = handlerPhase.map {
                                             max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds - $0.elapsedMilliseconds)
                                         }
-                                        MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                        let traceEvent = MCPToolExecutionTraceEvent(
                                             toolName: toolName,
                                             operationIdentity: evidenceOperationIdentity,
                                             connectionID: connectionID,
@@ -12073,7 +12223,25 @@ actor ServerNetworkManager {
                                             escalationReason: escalationReason,
                                             handlerPhase: handlerPhase,
                                             handlerPhaseAgeMilliseconds: handlerPhaseAgeMilliseconds
-                                        ))
+                                        )
+                                        #if DEBUG
+                                            MCPToolExecutionTracer.emit(
+                                                traceEvent,
+                                                captureIdentity: executionTraceCaptureIdentity
+                                            )
+                                            if let slot = settlementAdmission.slot {
+                                                Self.recordReadFileSettlementDiagnostic(
+                                                    toolName: toolName,
+                                                    windowID: slot.windowID,
+                                                    correlation: lifecycleCorrelation,
+                                                    captureIdentity: executionTraceCaptureIdentity,
+                                                    transitionPoint: phase.rawValue,
+                                                    outcome: cancellationOutcome ?? settlement ?? graceOutcome ?? "observed"
+                                                )
+                                            }
+                                        #else
+                                            MCPToolExecutionTracer.emit(traceEvent)
+                                        #endif
                                     }
 
                                     await emitExecutionTrace(.contractSelected)
@@ -12237,6 +12405,15 @@ actor ServerNetworkManager {
                                                 cleanupDisposition: settlementAdmission.cleanupDisposition ?? .forceDisconnect,
                                                 settlementSlot: settlementAdmission.slot,
                                                 environment: executionWatchdogEnvironment,
+                                                onDeadlineCancellationBoundary: {
+                                                    #if DEBUG
+                                                        Self.recordReadFileDeadlineCancellationBoundary(
+                                                            toolName: toolName,
+                                                            correlation: lifecycleCorrelation,
+                                                            captureIdentity: executionTraceCaptureIdentity
+                                                        )
+                                                    #endif
+                                                },
                                                 onEvent: { event in
                                                     switch event {
                                                     case .deadlineExpired:

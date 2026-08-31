@@ -3889,6 +3889,9 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertEqual(root_cwd, state.paths.repo_root)
 
     def test_codex_packaging_environment_survives_client_snapshot_and_build_prepare(self) -> None:
+        provenance_base = "1" * 40
+        alternate_provenance_base = "2" * 40
+        unrelated_key = "REPOPROMPT_UNRELATED_BUILD_SETTING"
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             with mock.patch.dict(
@@ -3896,7 +3899,8 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 {
                     "REPOPROMPT_CODEX_ARCH": "all",
                     "REPOPROMPT_CODEX_CACHE_ROOT": "/tmp/repoprompt-codex-cache",
-                    "REPOPROMPT_UNRELATED_BUILD_SETTING": "discard-me",
+                    "REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT": provenance_base,
+                    unrelated_key: "discard-client",
                 },
                 clear=False,
             ):
@@ -3907,22 +3911,38 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 snapshot["REPOPROMPT_CODEX_CACHE_ROOT"],
                 "/tmp/repoprompt-codex-cache",
             )
-            self.assertNotIn("REPOPROMPT_UNRELATED_BUILD_SETTING", snapshot)
+            self.assertEqual(snapshot["REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT"], provenance_base)
+            self.assertNotIn(unrelated_key, snapshot)
 
-            _argv, _lanes, _cwd, env, _timeout = registry.prepare(
-                {
-                    "operation": "build",
-                    "args": {},
-                    "env": snapshot,
-                }
-            )
+            build_request = {
+                "operation": "build",
+                "args": {},
+                "env": {**snapshot, unrelated_key: "discard-request"},
+            }
+            daemon_snapshot = registry._request_env_snapshot(build_request)
+            self.assertEqual(daemon_snapshot["REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT"], provenance_base)
+            self.assertNotIn(unrelated_key, daemon_snapshot)
 
+            alternate_request = {
+                **build_request,
+                "env": {
+                    **build_request["env"],
+                    "REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT": alternate_provenance_base,
+                },
+            }
+            self.assertNotEqual(registry.fingerprint(build_request), registry.fingerprint(alternate_request))
+
+            _argv, _lanes, _cwd, env, _timeout = registry.prepare(build_request)
+
+        self.assertEqual(Path(_argv[0]).name, "package_app.sh")
+        self.assertEqual(_argv[1], "debug")
         self.assertEqual(env["REPOPROMPT_CODEX_ARCH"], "all")
         self.assertEqual(
             env["REPOPROMPT_CODEX_CACHE_ROOT"],
             "/tmp/repoprompt-codex-cache",
         )
-        self.assertNotIn("REPOPROMPT_UNRELATED_BUILD_SETTING", env)
+        self.assertEqual(env["REPOPROMPT_DEBUG_PROVENANCE_BASE_COMMIT"], provenance_base)
+        self.assertNotIn(unrelated_key, env)
 
     def test_codex_packaging_environment_reaches_release_package_prepare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,6 +2,7 @@ import Foundation
 import RepoPromptShared
 #if DEBUG
     import CryptoKit
+    import Darwin
     import Synchronization
 #endif
 #if DEBUG || EDIT_FLOW_PERF
@@ -134,6 +135,8 @@ package enum EditFlowPerf {
         var windowID: Int?
         var runID: String?
         var ownerResource: String?
+        var blocksAdmission: Bool?
+        var isReleased: Bool?
         var providerActive: Bool?
         var networkScopeActive: Bool?
         var permitActive: Bool?
@@ -256,6 +259,8 @@ package enum EditFlowPerf {
             windowID: Int? = nil,
             runID: String? = nil,
             ownerResource: String? = nil,
+            blocksAdmission: Bool? = nil,
+            isReleased: Bool? = nil,
             providerActive: Bool? = nil,
             networkScopeActive: Bool? = nil,
             permitActive: Bool? = nil,
@@ -377,6 +382,8 @@ package enum EditFlowPerf {
             self.windowID = Self.nonNegative(windowID)
             self.runID = Self.sanitizedLabel(runID)
             self.ownerResource = Self.sanitizedLabel(ownerResource)
+            self.blocksAdmission = blocksAdmission
+            self.isReleased = isReleased
             self.providerActive = providerActive
             self.networkScopeActive = networkScopeActive
             self.permitActive = permitActive
@@ -501,6 +508,8 @@ package enum EditFlowPerf {
             append("windowID", windowID, to: &parts)
             append("runID", runID, to: &parts)
             append("ownerResource", ownerResource, to: &parts)
+            append("blocksAdmission", blocksAdmission, to: &parts)
+            append("isReleased", isReleased, to: &parts)
             append("providerActive", providerActive, to: &parts)
             append("networkScopeActive", networkScopeActive, to: &parts)
             append("permitActive", permitActive, to: &parts)
@@ -1159,13 +1168,15 @@ package enum EditFlowPerf {
             let startNanoseconds: UInt64
         }
 
-        private final class DebugCaptureActiveHint {
+        private final class DebugCaptureActiveHint: @unchecked Sendable {
             @available(macOS 15.0, *)
             private final class AtomicStorage {
                 let value = Atomic(false)
             }
 
             private let storage: AnyObject?
+            private var acceptedEpoch: Int64 = 0
+            private var acceptedDeadlineNanoseconds: Int64 = 0
 
             package init() {
                 if #available(macOS 15.0, *) {
@@ -1187,6 +1198,38 @@ package enum EditFlowPerf {
                     storage.value.store(active, ordering: .releasing)
                 }
             }
+
+            package func storeAcceptedCapture(epoch: UInt64, deadlineNanoseconds: UInt64) {
+                atomicStore(deadlineNanoseconds, in: &acceptedDeadlineNanoseconds)
+                atomicStore(epoch, in: &acceptedEpoch)
+            }
+
+            package func clearAcceptedCapture() {
+                // Capture deadlines are strictly positive; zero is the closed/unpublished sentinel.
+                atomicStore(0, in: &acceptedEpoch)
+                atomicStore(0, in: &acceptedDeadlineNanoseconds)
+            }
+
+            package func accepts(epoch: UInt64, nowNanoseconds: UInt64) -> Bool {
+                guard atomicLoad(&acceptedEpoch) == epoch else { return false }
+                let deadlineNanoseconds = atomicLoad(&acceptedDeadlineNanoseconds)
+                guard deadlineNanoseconds != 0,
+                      nowNanoseconds < deadlineNanoseconds
+                else { return false }
+                return atomicLoad(&acceptedEpoch) == epoch
+            }
+
+            private func atomicLoad(_ storage: inout Int64) -> UInt64 {
+                UInt64(bitPattern: OSAtomicAdd64Barrier(0, &storage))
+            }
+
+            private func atomicStore(_ value: UInt64, in storage: inout Int64) {
+                let desired = Int64(bitPattern: value)
+                var current = OSAtomicAdd64Barrier(0, &storage)
+                while !OSAtomicCompareAndSwap64Barrier(current, desired, &storage) {
+                    current = OSAtomicAdd64Barrier(0, &storage)
+                }
+            }
         }
 
         private final class DebugCaptureRecorder {
@@ -1194,11 +1237,15 @@ package enum EditFlowPerf {
             private static let expiryMillisecondsRange = 10000 ... 900_000
             private static let lifecycleEventLimit = 20000
             private static let saltByteCount = 32
+            private static let defaultMonotonicNow: @Sendable () -> UInt64 = {
+                DispatchTime.now().uptimeNanoseconds
+            }
 
             private let lock = NSLock()
             private let contentionHookLock = NSLock()
             private let activeHint = DebugCaptureActiveHint()
             private var contentionHook: (@Sendable () -> Void)?
+            private var monotonicNow = defaultMonotonicNow
             private var active = false
             private var captureEpoch: UInt64 = 0
             private var captureID: UUID?
@@ -1265,9 +1312,14 @@ package enum EditFlowPerf {
                 startedAt = startDate
                 finishedAt = nil
                 expiresAt = startDate.addingTimeInterval(Double(self.expiryMilliseconds) / 1000)
-                let startNanoseconds = DispatchTime.now().uptimeNanoseconds
+                let startNanoseconds = monotonicNow()
                 captureStartNanoseconds = startNanoseconds
-                expiryDeadlineNanoseconds = startNanoseconds + UInt64(self.expiryMilliseconds) * 1_000_000
+                let expiryNanoseconds = UInt64(self.expiryMilliseconds).multipliedReportingOverflow(by: 1_000_000)
+                let deadline = startNanoseconds.addingReportingOverflow(expiryNanoseconds.partialValue)
+                let deadlineNanoseconds = expiryNanoseconds.overflow || deadline.overflow
+                    ? UInt64.max
+                    : deadline.partialValue
+                expiryDeadlineNanoseconds = deadlineNanoseconds
                 retainedSampleCount = 0
                 droppedSampleCount = 0
                 droppedClosedEpochEventCount = 0
@@ -1277,6 +1329,10 @@ package enum EditFlowPerf {
                 droppedLifecycleEventCount = 0
                 lifecycleEvents.removeAll(keepingCapacity: true)
                 // The recorder lock remains the publication barrier while producers queue behind it.
+                activeHint.storeAcceptedCapture(
+                    epoch: captureEpoch,
+                    deadlineNanoseconds: deadlineNanoseconds
+                )
                 activeHint.store(true)
                 prepare(identity)
                 return .started(snapshotLocked())
@@ -1310,6 +1366,7 @@ package enum EditFlowPerf {
             package func resetForTesting() {
                 acquireLock()
                 captureEpoch &+= 1
+                activeHint.clearAcceptedCapture()
                 active = false
                 activeHint.store(false)
                 captureID = nil
@@ -1333,6 +1390,7 @@ package enum EditFlowPerf {
                 retainedLifecycleEventCount = 0
                 droppedLifecycleEventCount = 0
                 lifecycleEvents.removeAll(keepingCapacity: false)
+                monotonicNow = Self.defaultMonotonicNow
                 lock.unlock()
             }
 
@@ -1349,7 +1407,7 @@ package enum EditFlowPerf {
                               && correlation?.captureEpoch == captureEpoch
                       )
                 else { return nil }
-                return DebugCaptureStart(epoch: captureEpoch, startNanoseconds: DispatchTime.now().uptimeNanoseconds)
+                return DebugCaptureStart(epoch: captureEpoch, startNanoseconds: monotonicNow())
             }
 
             package func activeIdentityIfActive(toolName: String?) -> DebugCaptureIdentity? {
@@ -1380,10 +1438,36 @@ package enum EditFlowPerf {
                 return true
             }
 
+            package func acceptancePredicate(
+                _ identity: DebugCaptureIdentity
+            ) -> (@Sendable () -> Bool)? {
+                acquireLock()
+                defer { lock.unlock() }
+                expireIfNeededLocked()
+                guard active,
+                      identity.captureID == captureID,
+                      identity.epoch == captureEpoch
+                else { return nil }
+                let monotonicNow = monotonicNow
+                return { [activeHint] in
+                    activeHint.accepts(
+                        epoch: identity.epoch,
+                        nowNanoseconds: monotonicNow()
+                    )
+                }
+            }
+
             package func setContentionHookForTesting(_ hook: (@Sendable () -> Void)?) {
                 contentionHookLock.withLock {
                     contentionHook = hook
                 }
+            }
+
+            package func setMonotonicNowForTesting(_ now: @escaping @Sendable () -> UInt64) {
+                acquireLock()
+                defer { lock.unlock() }
+                guard !active else { return }
+                monotonicNow = now
             }
 
             package func token(
@@ -1428,7 +1512,7 @@ package enum EditFlowPerf {
                 guard let correlationID = correlation.captureID,
                       let correlationEpoch = correlation.captureEpoch
                 else { return }
-                let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+                let nowNanoseconds = monotonicNow()
                 lock.lock()
                 defer { lock.unlock() }
                 expireIfNeededLocked(nowNanoseconds: nowNanoseconds)
@@ -1468,7 +1552,7 @@ package enum EditFlowPerf {
             }
 
             package func record(stageName: String, sanitizedDimensions: String, captureEpoch: UInt64, startNanoseconds: UInt64) {
-                let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startNanoseconds
+                let elapsedNanoseconds = monotonicNow() - startNanoseconds
                 let elapsedMS = Double(elapsedNanoseconds) / 1_000_000.0
                 lock.lock()
                 defer { lock.unlock() }
@@ -1533,8 +1617,9 @@ package enum EditFlowPerf {
             }
 
             private func expireIfNeededLocked(
-                nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+                nowNanoseconds: UInt64? = nil
             ) {
+                let nowNanoseconds = nowNanoseconds ?? monotonicNow()
                 guard active,
                       let expiryDeadlineNanoseconds,
                       nowNanoseconds >= expiryDeadlineNanoseconds
@@ -1543,6 +1628,7 @@ package enum EditFlowPerf {
             }
 
             private func closeLocked(state: DebugCaptureState) {
+                activeHint.clearAcceptedCapture()
                 active = false
                 activeHint.store(false)
                 captureState = state
@@ -1673,10 +1759,22 @@ package enum EditFlowPerf {
             debugCaptureRecorder.performIfAccepted(identity, operation)
         }
 
+        package static func debugCaptureAcceptancePredicate(
+            _ identity: DebugCaptureIdentity
+        ) -> (@Sendable () -> Bool)? {
+            debugCaptureRecorder.acceptancePredicate(identity)
+        }
+
         package static func setDebugCaptureLockContentionHookForTesting(
             _ hook: (@Sendable () -> Void)?
         ) {
             debugCaptureRecorder.setContentionHookForTesting(hook)
+        }
+
+        package static func setDebugCaptureMonotonicNowForTesting(
+            _ now: @escaping @Sendable () -> UInt64
+        ) {
+            debugCaptureRecorder.setMonotonicNowForTesting(now)
         }
 
         package static func debugCaptureToken(

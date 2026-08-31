@@ -116,10 +116,18 @@ struct WorkspaceReadableFileService {
 
     private func freshnessOutcome(for error: Error) -> String {
         if error is CancellationError {
-            return "cancelled"
+            #if DEBUG
+                return "other_cancellation"
+            #else
+                return "cancelled"
+            #endif
         }
         if (error as? WorkspaceAppliedIngressWaitError) == .timedOut {
-            return "timeout"
+            #if DEBUG
+                return "inner_timeout"
+            #else
+                return "timeout"
+            #endif
         }
         return "error"
     }

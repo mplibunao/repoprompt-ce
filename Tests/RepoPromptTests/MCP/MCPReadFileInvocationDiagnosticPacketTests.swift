@@ -47,13 +47,13 @@
                     EditFlowPerf.Dimensions(
                         usesWorktreeProjection: true,
                         rootCount: 2,
-                        bindingFingerprintToken: "binding_fingerprint:opaque",
+                        bindingFingerprintToken: "binding_fingerprint:\(String(repeating: "a", count: 64))",
                         hydrationState: "hydrated",
                         projectionSource: ordinal.isMultiple(of: 2) ? "cache_hit" : "newly_materialized",
                         lifetimeCurrentBefore: true,
                         lifetimeCurrentAfter: true,
-                        visibleRootFingerprintToken: "visible_root_fingerprint:before",
-                        visibleRootFingerprintTokenAfter: "visible_root_fingerprint:after"
+                        visibleRootFingerprintToken: "visible_root_fingerprint:\(String(repeating: "b", count: 64))",
+                        visibleRootFingerprintTokenAfter: "visible_root_fingerprint:\(String(repeating: "c", count: 64))"
                     )
                 )
                 EditFlowPerf.lifecycleEvent(
@@ -64,7 +64,16 @@
                         inputShape: ordinal == 0 ? "absolute" : "explicit_root",
                         translationRoute: testCase.3,
                         rootScopeKind: "validated_session_bound",
-                        physicalRootToken: "physical_root:opaque"
+                        physicalRootToken: "physical_root:\(String(repeating: "d", count: 64))"
+                    )
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.gitPreflightBegan,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(
+                        gitClassification: "ordinary",
+                        gitCapability: "absent",
+                        gitPreflightStatus: "open"
                     )
                 )
                 EditFlowPerf.lifecycleEvent(
@@ -126,6 +135,15 @@
                 )
             )
             EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.gitPreflightBegan,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    gitClassification: "ordinary",
+                    gitCapability: "absent",
+                    gitPreflightStatus: "open"
+                )
+            )
+            EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.ReadFile.gitPreflightEnded,
                 correlation: correlation,
                 EditFlowPerf.Dimensions(
@@ -148,11 +166,919 @@
             XCTAssertEqual(routingEntries.first?["lifetime_current_before"] as? String, "not_checked")
             XCTAssertEqual(routingEntries.first?["lifetime_current_after"] as? String, "not_checked")
             XCTAssertEqual(git["state"] as? String, "observed")
-            XCTAssertEqual(git["retained_count"] as? Int, 1)
+            XCTAssertEqual(git["retained_count"] as? Int, 2)
             XCTAssertEqual(lifecycle["omitted_count"] as? Int, 0)
             XCTAssertEqual(lifecycle["truncated"] as? Bool, false)
             XCTAssertEqual(packet["dropped_event_count"] as? Int, 0)
             XCTAssertNotEqual(packet["packet_state"] as? String, "truncated")
+        }
+
+        func testTerminalWatchdogWithMissingInnerEvidenceReportsExactPartialSummary() async throws {
+            _ = try startedCapture(label: "terminal-missing-inner")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "terminal-missing-inner"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored",
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["packet_state"] as? String, "partial")
+            XCTAssertEqual(packet["watchdog_terminal_observed"] as? Bool, true)
+            XCTAssertEqual(packet["required_evidence_complete"] as? Bool, false)
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("freshness_authority_ingress:missing"), "\(missing)")
+            XCTAssertTrue(missing.contains("exact_resolution:missing"), "\(missing)")
+            XCTAssertTrue(missing.contains("interactive_load:missing"), "\(missing)")
+            XCTAssertFalse(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+        }
+
+        func testLaterFreshnessEndDoesNotEraseOpenAtWatchdogTerminal() async throws {
+            _ = try startedCapture(label: "terminal-open-inner")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "terminal-open-inner"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored",
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["packet_state"] as? String, "partial")
+            XCTAssertEqual(packet["watchdog_terminal_observed"] as? Bool, true)
+            XCTAssertEqual(packet["required_evidence_complete"] as? Bool, false)
+            XCTAssertEqual(
+                packet["open_inner_stages_at_watchdog_terminal"] as? [String],
+                ["freshness_authority_ingress:ReadFile.ExplicitFreshness"]
+            )
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let freshness = try XCTUnwrap(packet["freshness_authority_ingress"] as? [String: Any])
+            XCTAssertEqual(freshness["open_span_count"] as? Int, 0)
+            XCTAssertEqual(freshness["terminal_integrity"] as? String, "balanced")
+            let freshnessEntries = try XCTUnwrap(freshness["entries"] as? [[String: Any]])
+            XCTAssertEqual(freshnessEntries.count, 2, "The post-deadline terminal must remain in packet history.")
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(
+                missing.contains("freshness_authority_ingress:open_at_watchdog_terminal"),
+                "\(missing)"
+            )
+            XCTAssertFalse(missing.contains("freshness_authority_ingress:open"), "\(missing)")
+        }
+
+        func testDuplicatePreciseDeadlineBoundariesSuppressAmbiguousPointInTimeSummary() async throws {
+            _ = try startedCapture(label: "duplicate-precise-deadline-boundaries")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "duplicate-precise-deadline-boundaries"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored",
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:ambiguous"), "\(missing)")
+            XCTAssertFalse(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+            let settlement = try XCTUnwrap(packet["settlement"] as? [String: Any])
+            let settlementEntries = try XCTUnwrap(settlement["entries"] as? [[String: Any]])
+            XCTAssertEqual(
+                settlementEntries.count { $0["purpose"] as? String == "execution_deadline_cancellation_boundary" },
+                2
+            )
+            let freshness = try XCTUnwrap(packet["freshness_authority_ingress"] as? [String: Any])
+            XCTAssertEqual((freshness["entries"] as? [[String: Any]])?.count, 2)
+        }
+
+        func testPreciseDeadlineBoundaryContradictedByNonCancelledGraceSuppressesSummary() async throws {
+            _ = try startedCapture(label: "precise-boundary-non-cancelled-grace")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "precise-boundary-non-cancelled-grace"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 0)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:ambiguous"), "\(missing)")
+            XCTAssertFalse(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+            let settlement = try XCTUnwrap(packet["settlement"] as? [String: Any])
+            XCTAssertEqual((settlement["entries"] as? [[String: Any]])?.count, 1)
+            let execution = try XCTUnwrap(packet["execution_trace"] as? [String: Any])
+            XCTAssertEqual((execution["entries"] as? [[String: Any]])?.count, 2)
+            let freshness = try XCTUnwrap(packet["freshness_authority_ingress"] as? [String: Any])
+            XCTAssertEqual((freshness["entries"] as? [[String: Any]])?.count, 2)
+        }
+
+        func testPreciseDeadlineBoundarySuppressesSummariesForEachSelectedEvidenceLoss() throws {
+            let cases: [(label: String, evidence: TruncatedDeadlineEvidenceSection, section: String)] = [
+                ("freshness evidence truncated", .freshness, "freshness_authority_ingress"),
+                ("exact-resolution evidence truncated", .exactResolution, "exact_resolution"),
+                ("interactive-load evidence truncated", .interactive, "interactive_load"),
+                ("settlement evidence truncated", .settlement, "settlement"),
+                ("lifecycle evidence truncated", .lifecycle, "lifecycle"),
+                ("execution evidence truncated", .execution, "execution_trace")
+            ]
+
+            for testCase in cases {
+                let packet = try preciseBoundaryPacket(truncating: testCase.evidence)
+                assertDeadlineSummarySuppressedBySelectedLoss(
+                    packet,
+                    section: testCase.section,
+                    label: testCase.label
+                )
+                EditFlowPerf.resetDebugCaptureForTesting()
+                MCPToolExecutionTracer.resetDebugEvents()
+            }
+        }
+
+        func testLostCancellationBoundaryDoesNotInferDeadlineStateFromLaterMarker() async throws {
+            _ = try startedCapture(label: "lost-cancellation-boundary")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "lost-cancellation-boundary"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .cancellationRequested,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: true,
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["watchdog_terminal_observed"] as? Bool, true)
+            XCTAssertEqual(packet["required_evidence_complete"] as? Bool, false)
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+            let freshness = try XCTUnwrap(packet["freshness_authority_ingress"] as? [String: Any])
+            let freshnessEntries = try XCTUnwrap(freshness["entries"] as? [[String: Any]])
+            XCTAssertEqual(freshnessEntries.count, 2, "The later inner terminal must remain in full history.")
+            let settlement = try XCTUnwrap(packet["settlement"] as? [String: Any])
+            let settlementEntries = try XCTUnwrap(settlement["entries"] as? [[String: Any]])
+            XCTAssertTrue(settlementEntries.contains {
+                $0["purpose"] as? String == "execution_deadline_expired"
+            }, "The later deadline marker must remain in full history.")
+        }
+
+        func testNonCancelledDeadlineCompletionRetainsLaterMarkerFallback() async throws {
+            _ = try startedCapture(label: "non-cancelled-deadline-fallback")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "non-cancelled-deadline-fallback"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["watchdog_terminal_observed"] as? Bool, true)
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            let longest = try XCTUnwrap(packet["longest_closed_inner_stage"] as? [String: Any])
+            XCTAssertEqual(longest["section"] as? String, "freshness_authority_ingress")
+            XCTAssertEqual(
+                longest["stage"] as? String,
+                "freshness_authority_ingress:ReadFile.ExplicitFreshness"
+            )
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertFalse(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+        }
+
+        func testDroppedExecutionEvidenceSuppressesLaterDeadlineFallback() throws {
+            _ = try startedCapture(label: "dropped-execution-fallback")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "dropped-execution-fallback"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            let captureID = try XCTUnwrap(capture.captureID)
+            let retainedTrace = MCPToolExecutionTracer.debugEventSnapshot(captureID)
+            let lossyTrace = MCPToolExecutionTracer.DebugEventSnapshot(
+                captureID: retainedTrace.captureID,
+                retainedCaptureID: retainedTrace.retainedCaptureID,
+                maxEventCount: retainedTrace.maxEventCount,
+                retainedEventCount: retainedTrace.retainedEventCount,
+                droppedEventCount: 1,
+                events: retainedTrace.events
+            )
+            let packet = try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                trace: lossyTrace,
+                work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                runtimeIdentity: Self.completeRuntimeIdentityValue()
+            )
+            XCTAssertTrue(packet.executionTrace.truncated == false)
+            XCTAssertEqual(packet.executionTrace.captureWideOmittedCount, 1)
+            XCTAssertTrue(packet.openInnerStagesAtWatchdogTerminal.isEmpty)
+            XCTAssertNil(packet.longestClosedInnerStage)
+            XCTAssertTrue(packet.missingRequiredEvidence.contains("watchdog_terminal_boundary:missing"))
+            XCTAssertFalse(packet.requiredEvidenceComplete)
+        }
+
+        func testMixedNonCancelledSettlementAndCancellationSuppressesLaterDeadlineFallback() async throws {
+            _ = try startedCapture(label: "mixed-cancellation-fallback")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "mixed-cancellation-fallback"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .cancellationRequested,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: true,
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+
+            let response = try await packetResponse(appInvocationID: appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            XCTAssertEqual(packet["required_evidence_complete"] as? Bool, false)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+        }
+
+        func testDuplicateNonCancelledGraceTerminalsSuppressLaterDeadlineFallback() async throws {
+            let fixture = try closedFreshnessFallbackFixture(label: "duplicate-grace-terminals")
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+            for outcome in ["success", "error"] {
+                MCPToolExecutionTracer.emit(
+                    Self.makeTraceEvent(
+                        appInvocationID: fixture.appInvocationID,
+                        connectionID: fixture.connectionID,
+                        requestIdentity: fixture.identity,
+                        phase: .settledDuringGrace,
+                        freeFormCanary: "ignored",
+                        cancellationRequested: false,
+                        cancellationOutcome: outcome,
+                        graceOutcome: "late_completion"
+                    ),
+                    captureIdentity: fixture.captureIdentity
+                )
+            }
+
+            let response = try await packetResponse(appInvocationID: fixture.appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertEqual(packet["open_inner_stages_at_watchdog_terminal"] as? [String], [])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            XCTAssertEqual(packet["required_evidence_complete"] as? Bool, false)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+            let execution = try XCTUnwrap(packet["execution_trace"] as? [String: Any])
+            XCTAssertEqual(execution["retained_count"] as? Int, 3)
+        }
+
+        func testLifecycleCaptureLossSuppressesLaterDeadlineFallback() throws {
+            let fixture = try closedFreshnessFallbackFixture(label: "lifecycle-loss-fallback")
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+
+            let initialCapture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            for _ in 0 ... initialCapture.maxLifecycleEvents {
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.MCPToolCall.received,
+                    correlation: fixture.correlation,
+                    EditFlowPerf.Dimensions(toolName: "read_file")
+                )
+            }
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: fixture.correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: fixture.correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: fixture.correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+            let lossyCapture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            let captureID = try XCTUnwrap(lossyCapture.captureID)
+            XCTAssertGreaterThan(lossyCapture.droppedLifecycleEventCount, 0)
+            let packet = try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                appInvocationID: fixture.appInvocationID,
+                capture: lossyCapture,
+                trace: MCPToolExecutionTracer.debugEventSnapshot(captureID),
+                work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                runtimeIdentity: Self.completeRuntimeIdentityValue()
+            )
+            XCTAssertEqual(packet.executionTrace.retainedCount, 2)
+            XCTAssertTrue(packet.openInnerStagesAtWatchdogTerminal.isEmpty)
+            XCTAssertNil(packet.longestClosedInnerStage)
+            XCTAssertTrue(packet.missingRequiredEvidence.contains("watchdog_terminal_boundary:missing"))
+            XCTAssertFalse(packet.requiredEvidenceComplete)
+        }
+
+        func testOutOfOrderNonCancelledGraceTerminalSuppressesLaterDeadlineFallback() async throws {
+            let fixture = try closedFreshnessFallbackFixture(label: "out-of-order-grace-terminal")
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "late_completion"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: fixture.appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+        }
+
+        func testInvalidNonCancelledGraceTerminalSuppressesLaterDeadlineFallback() async throws {
+            let fixture = try closedFreshnessFallbackFixture(label: "invalid-grace-terminal")
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: fixture.appInvocationID,
+                    connectionID: fixture.connectionID,
+                    requestIdentity: fixture.identity,
+                    phase: .settledDuringGrace,
+                    freeFormCanary: "ignored",
+                    cancellationRequested: false,
+                    cancellationOutcome: "success",
+                    graceOutcome: "settled"
+                ),
+                captureIdentity: fixture.captureIdentity
+            )
+
+            let response = try await packetResponse(appInvocationID: fixture.appInvocationID)
+            let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+            XCTAssertTrue(packet["longest_closed_inner_stage"] is NSNull)
+            let missing = try XCTUnwrap(packet["missing_required_evidence"] as? [String])
+            XCTAssertTrue(missing.contains("watchdog_terminal_boundary:missing"), "\(missing)")
+        }
+
+        func testExplicitMaterializationLateRootTokenPairsWithTokenlessBegin() throws {
+            _ = try startedCapture(label: "explicit-materialization-pairing")
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "explicit-materialization-pairing"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "explicitMaterialization", status: "materializationBegan")
+            )
+            let materializedRootToken = UUID().uuidString
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "materializationEnded",
+                    outcome: "materialized",
+                    rootToken: materializedRootToken
+                )
+            )
+            let interactiveRootToken = UUID().uuidString
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.InteractiveStage",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "attempt",
+                    status: "began",
+                    rootToken: interactiveRootToken,
+                    serialPosition: 0
+                )
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.InteractiveStage",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "attempt",
+                    status: "ended",
+                    outcome: "completed",
+                    rootToken: interactiveRootToken,
+                    serialPosition: 0
+                )
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: MCPToolExecutionTraceEvent.Phase.handlerCompleted.rawValue,
+                    status: "settled",
+                    outcome: "success"
+                )
+            )
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .handlerCompleted,
+                    freeFormCanary: "ignored"
+                ),
+                captureIdentity: captureIdentity
+            )
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            let captureID = try XCTUnwrap(capture.captureID)
+            let packet = try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                trace: MCPToolExecutionTracer.debugEventSnapshot(captureID),
+                work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                runtimeIdentity: Self.completeRuntimeIdentityValue()
+            )
+            XCTAssertEqual(packet.exactResolution.state, "observed")
+            XCTAssertEqual(packet.exactResolution.openSpanCount, 0)
+            XCTAssertEqual(packet.exactResolution.terminalIntegrity, "balanced")
+            XCTAssertEqual(packet.exactResolution.retainedCount, 2)
+            XCTAssertEqual(packet.exactResolution.entries.last?.dimensions["rootToken"], materializedRootToken)
+            XCTAssertEqual(packet.packetState, .complete)
+            XCTAssertTrue(packet.requiredEvidenceComplete)
+            XCTAssertEqual(packet.missingRequiredEvidence, [])
+        }
+
+        func testFreshnessCancellationOutcomeUsesWatchdogOriginInsteadOfGenericCancellation() async throws {
+            _ = try startedCapture(label: "cancellation-provenance")
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            let connectionID = UUID()
+            let cases: [(MCPToolExecutionCancellationOrigin?, String, String)] = [
+                (.watchdogDeadline, "other_cancellation", "outer_cancellation"),
+                (.requestCancellation, "other_cancellation", "other_cancellation"),
+                (nil, "inner_timeout", "inner_timeout")
+            ]
+            for (ordinal, testCase) in cases.enumerated() {
+                let appInvocationID = UUID()
+                let identity = requestIdentity(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    generation: 1,
+                    ordinal: UInt64(ordinal + 1),
+                    requestID: "cancellation-\(ordinal)"
+                )
+                try recordReceived(identity)
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                    requestIdentity: identity,
+                    toolName: "read_file"
+                ))
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                    correlation: correlation
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                    correlation: correlation,
+                    EditFlowPerf.Dimensions(outcome: testCase.1, rootCount: 0)
+                )
+                MCPToolExecutionTracer.emit(
+                    Self.makeTraceEvent(
+                        appInvocationID: appInvocationID,
+                        connectionID: connectionID,
+                        requestIdentity: identity,
+                        phase: .handlerCompleted,
+                        freeFormCanary: "ignored",
+                        cancellationOrigin: testCase.0,
+                        cancellationOutcome: "cancellation"
+                    ),
+                    captureIdentity: captureIdentity
+                )
+
+                let response = try await packetResponse(appInvocationID: appInvocationID)
+                let packet = try XCTUnwrap(response["packet"] as? [String: Any])
+                let freshness = try XCTUnwrap(packet["freshness_authority_ingress"] as? [String: Any])
+                let exact = try XCTUnwrap(packet["exact_resolution"] as? [String: Any])
+                let interactive = try XCTUnwrap(packet["interactive_load"] as? [String: Any])
+                let entries = try XCTUnwrap(freshness["entries"] as? [[String: Any]])
+                let longest = try XCTUnwrap(packet["longest_closed_inner_stage"] as? [String: Any])
+                XCTAssertEqual(exact["state"] as? String, "not_entered")
+                XCTAssertEqual(interactive["state"] as? String, "not_entered")
+                XCTAssertEqual(entries.last?["outcome"] as? String, testCase.2)
+                XCTAssertEqual(longest["section"] as? String, "freshness_authority_ingress")
+                XCTAssertEqual(longest["stage"] as? String, "freshness_authority_ingress:ReadFile.ExplicitFreshness")
+                XCTAssertNotNil(longest["duration_ms"] as? Double)
+            }
         }
 
         func testBusyCaptureHandlerReturnsTokenWithoutOperatorLabelAnywhere() async throws {
@@ -257,7 +1183,7 @@
             let appInvocationID = UUID()
             let connectionID = UUID()
             let requestCanary = "/Users/example/private/Secret.swift|argument-canary-8F21"
-            let freeFormCanary = "free-form error canary 8F21"
+            let freeFormCanary = "free_form_error_canary_8F21"
             let identity = requestIdentity(
                 appInvocationID: appInvocationID,
                 connectionID: connectionID,
@@ -280,6 +1206,30 @@
                         event,
                         correlation: correlation,
                         EditFlowPerf.Dimensions(outcome: freeFormCanary)
+                    )
+                }
+                for event: StaticString in [
+                    EditFlowPerf.Lifecycle.ReadFile.pathClassified,
+                    EditFlowPerf.Lifecycle.ReadFile.gitPreflightEnded,
+                    "ReadFile.FreshnessRootSnapshot",
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    "ReadFile.InteractiveStage",
+                    "ReadFile.SettlementTransition"
+                ] {
+                    EditFlowPerf.lifecycleEvent(
+                        event,
+                        correlation: correlation,
+                        EditFlowPerf.Dimensions(
+                            runPurpose: freeFormCanary,
+                            status: freeFormCanary,
+                            outcome: requestCanary,
+                            inputShape: freeFormCanary,
+                            translationRoute: requestCanary,
+                            bindingFingerprintToken: requestCanary,
+                            gitClassification: freeFormCanary,
+                            gitCapability: requestCanary,
+                            gitPreflightStatus: freeFormCanary
+                        )
                     )
                 }
                 try await MCPToolWorkCountDiagnostics.withReadFileInvocation {
@@ -332,11 +1282,17 @@
             for forbidden in [rawLabel, requestCanary, "/Users/example/private/Secret.swift", freeFormCanary] {
                 XCTAssertFalse(payloadContains(forbidden, in: response), forbidden)
             }
+            let settlement = try XCTUnwrap(packet["settlement"] as? [String: Any])
+            let settlementEntries = try XCTUnwrap(settlement["entries"] as? [[String: Any]])
             for forbiddenKey in [
                 "root_path", "path", "content", "error", "arguments", "selection",
                 "credential", "repoRoot", "worktreePath", "worktreeName", "branch"
             ] {
                 XCTAssertFalse(payloadContainsKey(forbiddenKey, in: packet), forbiddenKey)
+            }
+            for entry in settlementEntries {
+                XCTAssertNil(entry["provider_active"])
+                XCTAssertNil(entry["permit_active"])
             }
 
             let finishedList = try await payload(manager.handleDebugDiagnosticsTool(
@@ -1008,10 +1964,13 @@
             XCTAssertEqual(replacement.droppedEntryCount, 0)
         }
 
-        private func startedCapture(label: String) throws -> EditFlowPerf.DebugCaptureSnapshot {
+        private func startedCapture(
+            label: String,
+            maxSamples: Int = 100
+        ) throws -> EditFlowPerf.DebugCaptureSnapshot {
             switch EditFlowPerf.beginDebugCapture(
                 label: label,
-                maxSamples: 100,
+                maxSamples: maxSamples,
                 expiryMilliseconds: 120_000,
                 toolFilter: .readFile,
                 prepare: Self.prepareCaptureStores
@@ -1081,12 +2040,277 @@
             ))
         }
 
+        private enum TruncatedDeadlineEvidenceSection {
+            case freshness
+            case exactResolution
+            case interactive
+            case settlement
+            case lifecycle
+            case execution
+        }
+
+        private func preciseBoundaryPacket(
+            truncating section: TruncatedDeadlineEvidenceSection
+        ) throws -> MCPReadFileInvocationDiagnosticPacket {
+            _ = try startedCapture(label: "precise-boundary-truncated-\(section)", maxSamples: 1000)
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: "precise-boundary-truncated-\(section)"
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "explicitMaterialization", status: "materializationBegan")
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "materializationEnded",
+                    outcome: "materialized",
+                    rootToken: UUID().uuidString
+                )
+            )
+            let interactiveRootToken = UUID().uuidString
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.InteractiveStage",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "attempt",
+                    status: "began",
+                    rootToken: interactiveRootToken,
+                    serialPosition: 0
+                )
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.InteractiveStage",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "attempt",
+                    status: "ended",
+                    outcome: "completed",
+                    rootToken: interactiveRootToken,
+                    serialPosition: 0
+                )
+            )
+
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.providerResultReady,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_cancellation_boundary")
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "outer_cancellation", rootCount: 0)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+
+            switch section {
+            case .freshness:
+                for _ in 0 ... 128 {
+                    EditFlowPerf.lifecycleEvent("ReadFile.FreshnessRootSnapshot", correlation: correlation)
+                }
+            case .exactResolution:
+                for _ in 0 ... 512 {
+                    EditFlowPerf.lifecycleEvent(
+                        EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                        correlation: correlation
+                    )
+                }
+            case .interactive:
+                for _ in 0 ... 256 {
+                    EditFlowPerf.lifecycleEvent("ReadFile.InteractiveStage", correlation: correlation)
+                }
+            case .settlement:
+                for _ in 0 ... 64 {
+                    EditFlowPerf.lifecycleEvent(
+                        "ReadFile.SettlementTransition",
+                        correlation: correlation,
+                        EditFlowPerf.Dimensions(runPurpose: "execution_started", outcome: "observed")
+                    )
+                }
+            case .lifecycle:
+                for _ in 0 ... 512 {
+                    EditFlowPerf.lifecycleEvent(
+                        EditFlowPerf.Lifecycle.ReadFile.providerEntered,
+                        correlation: correlation
+                    )
+                }
+            case .execution:
+                break
+            }
+            let captureIdentity = try XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            MCPToolExecutionTracer.emit(
+                Self.makeTraceEvent(
+                    appInvocationID: appInvocationID,
+                    connectionID: connectionID,
+                    requestIdentity: identity,
+                    phase: .deadlineExpired,
+                    freeFormCanary: "ignored",
+                    cancellationOrigin: .watchdogDeadline,
+                    cancellationOutcome: "cancellation"
+                ),
+                captureIdentity: captureIdentity
+            )
+            if case .execution = section {
+                for _ in 0 ..< 64 {
+                    MCPToolExecutionTracer.emit(
+                        Self.makeTraceEvent(
+                            appInvocationID: appInvocationID,
+                            connectionID: connectionID,
+                            requestIdentity: identity,
+                            phase: .handlerPhaseTransition,
+                            freeFormCanary: "ignored"
+                        ),
+                        captureIdentity: captureIdentity
+                    )
+                }
+            }
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            let captureID = try XCTUnwrap(capture.captureID)
+            return try MCPReadFileInvocationDiagnosticPacketAssembler.packet(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                trace: MCPToolExecutionTracer.debugEventSnapshot(captureID),
+                work: MCPToolWorkCountDiagnostics.debugReadFileSnapshot(captureID: captureID),
+                runtimeIdentity: Self.completeRuntimeIdentityValue()
+            )
+        }
+
+        private func assertDeadlineSummarySuppressedBySelectedLoss(
+            _ packet: MCPReadFileInvocationDiagnosticPacket,
+            section: String,
+            label: String,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            let truncated = switch section {
+            case "freshness_authority_ingress": packet.freshnessAuthorityIngress.truncated
+            case "exact_resolution": packet.exactResolution.truncated
+            case "interactive_load": packet.interactiveLoad.truncated
+            case "settlement": packet.settlement.truncated
+            case "lifecycle": packet.lifecycle.truncated
+            case "execution_trace": packet.executionTrace.truncated
+            default: false
+            }
+            XCTAssertTrue(truncated, label, file: file, line: line)
+            XCTAssertTrue(packet.watchdogTerminalObserved, label, file: file, line: line)
+            XCTAssertTrue(packet.openInnerStagesAtWatchdogTerminal.isEmpty, label, file: file, line: line)
+            XCTAssertNil(packet.longestClosedInnerStage, label, file: file, line: line)
+            XCTAssertFalse(packet.requiredEvidenceComplete, label, file: file, line: line)
+            XCTAssertTrue(packet.missingRequiredEvidence.contains("\(section):truncated"), label, file: file, line: line)
+            XCTAssertFalse(
+                packet.missingRequiredEvidence.contains("watchdog_terminal_boundary:missing"),
+                "The retained precise boundary must remain distinguished from selected evidence loss.",
+                file: file,
+                line: line
+            )
+            let boundary = packet.settlement.entries.first {
+                $0.dimensions["purpose"] == "execution_deadline_cancellation_boundary"
+            }
+            let boundaryOrdinal = boundary?.ordinal
+            XCTAssertNotNil(boundaryOrdinal, label, file: file, line: line)
+            XCTAssertTrue(packet.settlement.entries.contains { entry in
+                entry.dimensions["purpose"] == "execution_deadline_expired"
+                    && boundaryOrdinal.map { entry.ordinal > $0 } == true
+            }, label, file: file, line: line)
+            XCTAssertTrue(packet.freshnessAuthorityIngress.entries.contains { entry in
+                entry.kind == "ReadFile.ExplicitFreshnessEnded"
+                    && boundaryOrdinal.map { entry.ordinal > $0 } == true
+            }, label, file: file, line: line)
+        }
+
+        private func closedFreshnessFallbackFixture(
+            label: String
+        ) throws -> (
+            appInvocationID: UUID,
+            connectionID: UUID,
+            identity: MCPRequestTimelineIdentity,
+            correlation: EditFlowPerf.LifecycleCorrelation,
+            captureIdentity: EditFlowPerf.DebugCaptureIdentity
+        ) {
+            _ = try startedCapture(label: label)
+            let appInvocationID = UUID()
+            let connectionID = UUID()
+            let identity = requestIdentity(
+                appInvocationID: appInvocationID,
+                connectionID: connectionID,
+                generation: 1,
+                ordinal: 1,
+                requestID: label
+            )
+            try recordReceived(identity)
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive(
+                requestIdentity: identity,
+                toolName: "read_file"
+            ))
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessBegan,
+                correlation: correlation
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.explicitFreshnessEnded,
+                correlation: correlation,
+                EditFlowPerf.Dimensions(outcome: "success", rootCount: 1)
+            )
+            EditFlowPerf.lifecycleEvent(
+                "ReadFile.SettlementTransition",
+                correlation: correlation,
+                EditFlowPerf.Dimensions(runPurpose: "execution_deadline_expired", outcome: "observed")
+            )
+            return try (
+                appInvocationID,
+                connectionID,
+                identity,
+                correlation,
+                XCTUnwrap(EditFlowPerf.debugCaptureIdentity(toolName: "read_file"))
+            )
+        }
+
         private static func makeTraceEvent(
             appInvocationID: UUID,
             connectionID: UUID,
             requestIdentity: MCPRequestTimelineIdentity?,
             phase: MCPToolExecutionTraceEvent.Phase,
-            freeFormCanary: String
+            freeFormCanary: String,
+            cancellationRequested: Bool = false,
+            cancellationOrigin: MCPToolExecutionCancellationOrigin? = nil,
+            cancellationOutcome: String? = nil,
+            graceOutcome: String? = nil
         ) -> MCPToolExecutionTraceEvent {
             MCPToolExecutionTraceEvent(
                 toolName: "read_file",
@@ -1101,11 +2325,11 @@
                 cleanupDisposition: .detachAndSettle,
                 phase: phase,
                 elapsedMilliseconds: 12.5,
-                cancellationRequested: false,
-                cancellationOutcome: freeFormCanary,
-                cancellationOrigin: nil,
+                cancellationRequested: cancellationRequested,
+                cancellationOutcome: cancellationOutcome ?? freeFormCanary,
+                cancellationOrigin: cancellationOrigin,
                 settlement: freeFormCanary,
-                graceOutcome: freeFormCanary,
+                graceOutcome: graceOutcome ?? freeFormCanary,
                 escalationReason: freeFormCanary,
                 handlerPhase: nil,
                 handlerPhaseAgeMilliseconds: nil

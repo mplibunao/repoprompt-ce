@@ -21,10 +21,18 @@
         let selectedInvocationLossAttribution: String
         let truncationScope: String
         let missingRequiredEvidence: [String]
+        let watchdogTerminalObserved: Bool
+        let openInnerStagesAtWatchdogTerminal: [String]
+        let longestClosedInnerStage: InnerStageSummary?
+        let requiredEvidenceComplete: Bool
         let invocation: InvocationSection
         let runtimeIdentity: RuntimeIdentitySection
         let routingProjection: AttributionSection
         let gitArtifact: AttributionSection
+        let freshnessAuthorityIngress: AttributionSection
+        let exactResolution: AttributionSection
+        let interactiveLoad: AttributionSection
+        let settlement: AttributionSection
         let lifecycle: LifecycleSection
         let executionTrace: ExecutionTraceSection
         let workCounts: WorkCountSection
@@ -43,14 +51,36 @@
                 "selected_invocation_loss_attribution": selectedInvocationLossAttribution,
                 "truncation_scope": truncationScope,
                 "missing_required_evidence": missingRequiredEvidence,
+                "watchdog_terminal_observed": watchdogTerminalObserved,
+                "open_inner_stages_at_watchdog_terminal": openInnerStagesAtWatchdogTerminal,
+                "longest_closed_inner_stage": Self.optional(longestClosedInnerStage?.payload),
+                "required_evidence_complete": requiredEvidenceComplete,
                 "invocation": invocation.payload,
                 "runtime_identity": runtimeIdentity.payload,
                 "routing_projection": routingProjection.payload,
                 "git_artifact": gitArtifact.payload,
+                "freshness_authority_ingress": freshnessAuthorityIngress.payload,
+                "exact_resolution": exactResolution.payload,
+                "interactive_load": interactiveLoad.payload,
+                "settlement": settlement.payload,
                 "lifecycle": lifecycle.payload,
                 "execution_trace": executionTrace.payload,
                 "work_counts": workCounts.payload
             ]
+        }
+
+        struct InnerStageSummary {
+            let section: String
+            let stage: String
+            let durationMilliseconds: Double
+
+            var payload: [String: Any] {
+                [
+                    "section": section,
+                    "stage": stage,
+                    "duration_ms": MCPReadFileInvocationDiagnosticPacket.roundedMS(durationMilliseconds)
+                ]
+            }
         }
 
         struct InvocationSection {
@@ -112,7 +142,7 @@
                     "offset_ms": MCPReadFileInvocationDiagnosticPacket.roundedMS(offsetMilliseconds),
                     "kind": kind
                 ]
-                for key in Self.allowedKeys {
+                for key in Self.allowedKeys(for: kind) {
                     let value: Any = if let dimension = dimensions[key] {
                         dimension
                     } else if kind == "ReadFile.LookupProjectionResolved",
@@ -131,17 +161,55 @@
                 "lifetimeCurrentBefore", "lifetimeCurrentAfter"
             ]
 
-            private static let allowedKeys = [
-                "inputShape", "translationRoute", "rootScopeKind", "rootCount",
-                "logicalRootToken", "physicalRootToken", "bindingFingerprintToken",
-                "hydrationState", "projectionSource", "usesWorktreeProjection",
-                "ownershipGeneration", "rootLifetimeID", "lifetimeCurrentBefore",
-                "lifetimeCurrentAfter", "visibleRootFingerprintToken", "visibleRootFingerprintTokenAfter", "windowID",
-                "workspaceID", "tabID", "agentSessionID", "runID", "bindingKind",
-                "requestedRunValidated", "gitClassification", "gitCapability",
-                "gitPreflightStatus", "candidateKind", "rejectionReason",
-                "candidateCount", "examinedCount", "outcome"
-            ]
+            static func allowedKeys(for eventName: String) -> [String] {
+                switch eventName {
+                case "ReadFile.DomainRouteResolved":
+                    ["windowID", "workspaceID", "tabID", "agentSessionID", "runID", "bindingKind", "requestedRunValidated"]
+                case "ReadFile.LookupProjectionResolved":
+                    [
+                        "rootCount", "bindingFingerprintToken", "hydrationState", "projectionSource",
+                        "usesWorktreeProjection", "lifetimeCurrentBefore", "lifetimeCurrentAfter",
+                        "visibleRootFingerprintToken", "visibleRootFingerprintTokenAfter", "agentSessionID"
+                    ]
+                case "ReadFile.PathClassified":
+                    [
+                        "inputShape", "translationRoute", "rootScopeKind", "rootCount",
+                        "logicalRootToken", "physicalRootToken", "bindingFingerprintToken",
+                        "usesWorktreeProjection", "ownershipGeneration", "rootLifetimeID"
+                    ]
+                case "ReadFile.GitPreflightBegan", "ReadFile.GitPreflightEnded":
+                    ["gitClassification", "gitCapability", "gitPreflightStatus", "candidateCount", "examinedCount", "outcome"]
+                case "ReadFile.GitCandidateResolved":
+                    ["outcome", "serialPosition", "candidateKind", "rejectionReason"]
+                case "ReadFile.ExplicitFreshnessBegan", "ReadFile.ExplicitFreshnessEnded":
+                    ["rootCount", "pendingRawEventCount", "outcome"]
+                case "ReadFile.FreshnessRootSnapshot":
+                    [
+                        "purpose", "status", "outcome", "rootToken", "serialPosition", "activeCount",
+                        "workerCount", "queueDepth", "taskCount", "waiterCount", "pendingRawEventCount",
+                        "ingressSequence", "barrierSequence", "observerToken", "durationMicroseconds",
+                        "providerActive", "permitActive", "publicationPending"
+                    ]
+                case "ReadFile.SeededAuthorityWaitBegan", "ReadFile.SeededAuthorityWaitEnded":
+                    ["purpose", "outcome", "rootToken"]
+                case "ReadFile.IngressBarrierBegan", "ReadFile.IngressBarrierEnded":
+                    ["outcome", "rootToken", "ingressSequence", "observerToken"]
+                case "WorkspaceExactResolution.Checkpoint":
+                    ["purpose", "status", "outcome", "rootToken", "serialPosition"]
+                case "ReadFile.InteractiveStage":
+                    [
+                        "purpose", "status", "outcome", "rootToken", "serialPosition",
+                        "bindingFingerprintToken", "visibleRootFingerprintToken", "fileBytes", "cacheHit"
+                    ]
+                case "ReadFile.SettlementTransition":
+                    [
+                        "purpose", "status", "outcome", "windowID", "activeCount", "workerCount",
+                        "errorCount", "durationMicroseconds", "blocksAdmission", "isReleased"
+                    ]
+                default:
+                    []
+                }
+            }
 
             private static func payloadKey(for dimensionKey: String) -> String {
                 var scalars: [Character] = []
@@ -162,6 +230,8 @@
             let retainedCount: Int
             let omittedCount: Int
             let truncated: Bool
+            let openSpanCount: Int
+            let terminalIntegrity: String
             let entries: [AttributionEntry]
 
             var payload: [String: Any] {
@@ -170,6 +240,8 @@
                     "retained_count": retainedCount,
                     "omitted_count": omittedCount,
                     "truncated": truncated,
+                    "open_span_count": openSpanCount,
+                    "terminal_integrity": terminalIntegrity,
                     "entries": entries.map(\.payload)
                 ]
             }
@@ -220,7 +292,11 @@
             let cleanupGraceMilliseconds: Double?
             let cleanupDisposition: String?
             let cancellationRequested: Bool?
+            let cancellationOutcome: String?
             let cancellationOrigin: String?
+            let settlement: String?
+            let graceOutcome: String?
+            let escalationReason: String?
             let handlerPhase: String?
             let handlerPhaseTransition: String?
             let handlerPhaseElapsedMilliseconds: Double?
@@ -240,7 +316,11 @@
                     ),
                     "cleanup_disposition": MCPReadFileInvocationDiagnosticPacket.optional(cleanupDisposition),
                     "cancellation_requested": MCPReadFileInvocationDiagnosticPacket.optional(cancellationRequested),
+                    "cancellation_outcome": MCPReadFileInvocationDiagnosticPacket.optional(cancellationOutcome),
                     "cancellation_origin": MCPReadFileInvocationDiagnosticPacket.optional(cancellationOrigin),
+                    "settlement": MCPReadFileInvocationDiagnosticPacket.optional(settlement),
+                    "grace_outcome": MCPReadFileInvocationDiagnosticPacket.optional(graceOutcome),
+                    "escalation_reason": MCPReadFileInvocationDiagnosticPacket.optional(escalationReason),
                     "handler_phase": MCPReadFileInvocationDiagnosticPacket.optional(handlerPhase),
                     "handler_phase_transition": MCPReadFileInvocationDiagnosticPacket.optional(handlerPhaseTransition),
                     "handler_phase_elapsed_ms": MCPReadFileInvocationDiagnosticPacket.optional(
@@ -397,6 +477,89 @@
         case malformedIdentity
     }
 
+    private struct DeadlineSummaryDecision {
+        enum BoundaryStatus {
+            case available
+            case missing
+            case ambiguous
+        }
+
+        let watchdogTerminalObserved: Bool
+        let retainedBoundaryStatus: BoundaryStatus
+        let analysisBoundaryOrdinal: UInt64?
+        let evidenceCompleteForAnalysis: Bool
+
+        static func classify(
+            executionEntries: [MCPReadFileInvocationDiagnosticPacket.ExecutionTraceEntry],
+            settlementEntries: [MCPReadFileInvocationDiagnosticPacket.AttributionEntry],
+            evidenceCompleteForAnalysis: Bool
+        ) -> DeadlineSummaryDecision {
+            let watchdogTerminalObserved = executionEntries.contains {
+                $0.phase == MCPToolExecutionTraceEvent.Phase.deadlineExpired.rawValue
+            }
+            let operationCancellationObserved = executionEntries.contains {
+                $0.phase == MCPToolExecutionTraceEvent.Phase.cancellationRequested.rawValue
+                    || $0.cancellationRequested == true
+                    || $0.cancellationOrigin != nil
+            }
+            let deadlineEntries = executionEntries.filter {
+                $0.phase == MCPToolExecutionTraceEvent.Phase.deadlineExpired.rawValue
+            }
+            let graceTerminalEntries = executionEntries.filter {
+                $0.phase == MCPToolExecutionTraceEvent.Phase.settledDuringGrace.rawValue
+            }
+            let nonCancelledGraceTerminalObserved = graceTerminalEntries.contains {
+                $0.cancellationRequested == false
+            }
+            let orderedNonCancelledGraceTerminalObserved = if deadlineEntries.count == 1,
+                                                              graceTerminalEntries.count == 1
+            {
+                graceTerminalEntries[0].sequence > deadlineEntries[0].sequence
+                    && graceTerminalEntries[0].cancellationRequested == false
+                    && graceTerminalEntries[0].cancellationOutcome != nil
+                    && graceTerminalEntries[0].graceOutcome == "late_completion"
+            } else {
+                false
+            }
+            let preciseBoundaries = settlementEntries.filter {
+                $0.dimensions["purpose"] == "execution_deadline_cancellation_boundary"
+            }
+            let preciseBoundaryAmbiguous = preciseBoundaries.count > 1
+                || (!preciseBoundaries.isEmpty && nonCancelledGraceTerminalObserved)
+            let preciseBoundaryOrdinal = preciseBoundaries.count == 1
+                && !preciseBoundaryAmbiguous
+                ? preciseBoundaries[0].ordinal
+                : nil
+            let laterFallbackAuthorized = evidenceCompleteForAnalysis
+                && orderedNonCancelledGraceTerminalObserved
+                && !operationCancellationObserved
+            let laterFallbackOrdinal = !preciseBoundaryAmbiguous
+                && laterFallbackAuthorized
+                ? settlementEntries.first(where: {
+                    $0.dimensions["purpose"] == MCPToolExecutionTraceEvent.Phase.deadlineExpired.rawValue
+                })?.ordinal
+                : nil
+            let retainedBoundaryStatus: BoundaryStatus = if preciseBoundaryAmbiguous {
+                .ambiguous
+            } else if preciseBoundaryOrdinal != nil || laterFallbackOrdinal != nil {
+                .available
+            } else {
+                .missing
+            }
+            let retainedBoundaryOrdinal = preciseBoundaryOrdinal ?? laterFallbackOrdinal
+            let analysisBoundaryOrdinal = watchdogTerminalObserved && evidenceCompleteForAnalysis
+                ? retainedBoundaryOrdinal
+                : nil
+
+            return DeadlineSummaryDecision(
+                watchdogTerminalObserved: watchdogTerminalObserved,
+                retainedBoundaryStatus: retainedBoundaryStatus,
+                analysisBoundaryOrdinal: analysisBoundaryOrdinal,
+                evidenceCompleteForAnalysis: evidenceCompleteForAnalysis
+            )
+        }
+    }
+
     enum MCPReadFileInvocationDiagnosticPacketAssembler {
         private static let lifecycleLimit = 512
         private static let executionTraceLimit = 64
@@ -497,17 +660,79 @@
                 throw MCPReadFileInvocationDiagnosticPacketAssemblyError.ambiguousInvocation
             }
 
+            let freshnessCancellationOutcome = trace.events.contains {
+                matches(appInvocationID, event: $0.event)
+                    && $0.event.cancellationOrigin == .watchdogDeadline
+            } ? "outer_cancellation" : "other_cancellation"
             let routingProjection = attributionSection(
                 appInvocationID: appInvocationID,
                 capture: capture,
                 eventNames: routeProjectionEventNames,
-                limit: 64
+                limit: 64,
+                captureActive: capture.active
             )
             let gitArtifact = attributionSection(
                 appInvocationID: appInvocationID,
                 capture: capture,
                 eventNames: gitEventNames,
-                limit: 128
+                limit: 128,
+                captureActive: capture.active
+            )
+            let capturedFreshnessAuthorityIngress = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: freshnessAuthorityIngressEventNames,
+                limit: 128,
+                captureActive: capture.active,
+                freshnessCancellationOutcome: freshnessCancellationOutcome
+            )
+            let capturedExactResolution = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: exactResolutionEventNames,
+                limit: 512,
+                captureActive: capture.active
+            )
+            let capturedInteractiveLoad = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: interactiveEventNames,
+                limit: 256,
+                captureActive: capture.active
+            )
+            let gitAuthorizedArtifact = gitArtifact.entries.contains {
+                $0.dimensions["gitPreflightStatus"] == "authorized"
+                    || $0.dimensions["outcome"] == "authorized_requested_entry"
+            }
+            let ordinaryReadStoppedAtFreshness = capturedFreshnessAuthorityIngress.entries.contains {
+                guard $0.kind == "ReadFile.ExplicitFreshnessEnded",
+                      let outcome = $0.dimensions["outcome"]
+                else { return false }
+                return outcome != "success"
+            }
+            let freshnessAuthorityIngress = gitAuthorizedArtifact
+                ? sectionStateIfMissing(capturedFreshnessAuthorityIngress, state: "not_applicable")
+                : capturedFreshnessAuthorityIngress
+            let exactResolution = if gitAuthorizedArtifact {
+                sectionStateIfMissing(capturedExactResolution, state: "not_applicable")
+            } else if ordinaryReadStoppedAtFreshness {
+                sectionStateIfMissing(capturedExactResolution, state: "not_entered")
+            } else {
+                capturedExactResolution
+            }
+            let interactiveLoad = if gitAuthorizedArtifact {
+                sectionStateIfMissing(capturedInteractiveLoad, state: "not_applicable")
+            } else if ordinaryReadStoppedAtFreshness {
+                sectionStateIfMissing(capturedInteractiveLoad, state: "not_entered")
+            } else {
+                capturedInteractiveLoad
+            }
+            let settlement = attributionSection(
+                appInvocationID: appInvocationID,
+                capture: capture,
+                eventNames: settlementEventNames,
+                limit: 64,
+                captureActive: capture.active
             )
             let lifecycle = lifecycleSection(
                 appInvocationID: appInvocationID,
@@ -553,22 +778,107 @@
                 identity: runtimeIdentity
             )
 
+            let innerSections = [
+                (name: "freshness_authority_ingress", entries: freshnessAuthorityIngress.entries),
+                (name: "exact_resolution", entries: exactResolution.entries),
+                (name: "interactive_load", entries: interactiveLoad.entries)
+            ]
+            let relevantSelectedEvidenceComplete = !freshnessAuthorityIngress.truncated
+                && !exactResolution.truncated
+                && !interactiveLoad.truncated
+                && !settlement.truncated
+                && !lifecycle.truncated
+                && !execution.truncated
+                && execution.omittedCount == 0
+            let deadlineSummaryEvidenceComplete = relevantSelectedEvidenceComplete
+                && !captureWideLoss.hasAny
+            let deadlineDecision = DeadlineSummaryDecision.classify(
+                executionEntries: execution.entries,
+                settlementEntries: settlement.entries,
+                evidenceCompleteForAnalysis: deadlineSummaryEvidenceComplete
+            )
+            // Settlement transitions and inner stages share the capture lifecycle ordinal authority.
+            // Slice only the summary analysis so later grace/detached terminals remain in full history.
+            let innerAnalyses = innerSections.map { section in
+                let entries = if deadlineDecision.watchdogTerminalObserved {
+                    section.entries.filter { entry in
+                        deadlineDecision.analysisBoundaryOrdinal.map { entry.ordinal <= $0 } ?? false
+                    }
+                } else {
+                    section.entries
+                }
+                return innerSpanAnalysis(section: section.name, entries: entries)
+            }
+            let openInnerStagesAtWatchdogTerminal = deadlineDecision.watchdogTerminalObserved
+                && deadlineDecision.analysisBoundaryOrdinal != nil
+                ? innerAnalyses.flatMap(\.openStages).sorted()
+                : []
+            let longestClosedInnerStage = deadlineDecision.watchdogTerminalObserved
+                && deadlineDecision.analysisBoundaryOrdinal == nil
+                ? nil
+                : innerAnalyses.flatMap(\.closedStages).sorted {
+                    if $0.durationMilliseconds == $1.durationMilliseconds {
+                        return $0.stage < $1.stage
+                    }
+                    return $0.durationMilliseconds > $1.durationMilliseconds
+                }.first
+
             var missingRequiredEvidence: [String] = []
             if !invocationComplete { missingRequiredEvidence.append("invocation_identity") }
             if !runtimeComplete { missingRequiredEvidence.append("runtime_identity") }
             if lifecycle.entries.isEmpty { missingRequiredEvidence.append("lifecycle") }
+            if lifecycle.truncated { missingRequiredEvidence.append("lifecycle:truncated") }
             if execution.entries.isEmpty { missingRequiredEvidence.append("execution_trace") }
+            if execution.truncated { missingRequiredEvidence.append("execution_trace:truncated") }
             if execution.terminalState == "open"
                 || execution.terminalState == "capture_closed_before_terminal"
             {
                 missingRequiredEvidence.append("execution_terminal")
             }
+            for (name, section) in [
+                ("freshness_authority_ingress", freshnessAuthorityIngress),
+                ("exact_resolution", exactResolution),
+                ("interactive_load", interactiveLoad),
+                ("settlement", settlement)
+            ] {
+                let stateComplete = ["observed", "not_entered", "not_applicable"].contains(section.state)
+                if section.truncated {
+                    missingRequiredEvidence.append("\(name):truncated")
+                }
+                if section.terminalIntegrity != "balanced" {
+                    missingRequiredEvidence.append("\(name):\(section.terminalIntegrity)")
+                } else if !stateComplete {
+                    missingRequiredEvidence.append("\(name):\(section.state)")
+                }
+            }
+            if deadlineDecision.watchdogTerminalObserved {
+                switch deadlineDecision.retainedBoundaryStatus {
+                case .ambiguous:
+                    missingRequiredEvidence.append("watchdog_terminal_boundary:ambiguous")
+                case .missing:
+                    missingRequiredEvidence.append("watchdog_terminal_boundary:missing")
+                case .available:
+                    let openSections = Set(innerAnalyses.compactMap { analysis in
+                        analysis.openStages.isEmpty ? nil : analysis.section
+                    })
+                    missingRequiredEvidence.append(contentsOf: openSections.sorted().map {
+                        "\($0):open_at_watchdog_terminal"
+                    })
+                }
+            }
 
             let selectedInvocationTruncated = routingProjection.truncated
                 || gitArtifact.truncated
+                || freshnessAuthorityIngress.truncated
+                || exactResolution.truncated
+                || interactiveLoad.truncated
+                || settlement.truncated
                 || lifecycle.truncated
                 || execution.truncated
                 || workCounts.truncated
+            let requiredEvidenceComplete = missingRequiredEvidence.isEmpty
+                && !captureWideLoss.hasAny
+                && !selectedInvocationTruncated
             let packetState: MCPReadFileInvocationDiagnosticPacket.PacketState = if selectedInvocationTruncated {
                 .truncated
             } else if missingRequiredEvidence.isEmpty, !captureWideLoss.hasAny {
@@ -596,10 +906,18 @@
                     : (selectedInvocationTruncated ? "observed" : "none"),
                 truncationScope: selectedInvocationTruncated ? "selected_invocation" : "none",
                 missingRequiredEvidence: missingRequiredEvidence,
+                watchdogTerminalObserved: deadlineDecision.watchdogTerminalObserved,
+                openInnerStagesAtWatchdogTerminal: openInnerStagesAtWatchdogTerminal,
+                longestClosedInnerStage: longestClosedInnerStage,
+                requiredEvidenceComplete: requiredEvidenceComplete,
                 invocation: invocation,
                 runtimeIdentity: runtime,
                 routingProjection: routingProjection,
                 gitArtifact: gitArtifact,
+                freshnessAuthorityIngress: freshnessAuthorityIngress,
+                exactResolution: exactResolution,
+                interactiveLoad: interactiveLoad,
+                settlement: settlement,
                 lifecycle: lifecycle,
                 executionTrace: execution,
                 workCounts: workCounts
@@ -799,11 +1117,35 @@
             "ReadFile.GitPreflightEnded"
         ]
 
+        private static let freshnessAuthorityIngressEventNames: Set<String> = [
+            "ReadFile.ExplicitFreshnessBegan",
+            "ReadFile.ExplicitFreshnessEnded",
+            "ReadFile.FreshnessRootSnapshot",
+            "ReadFile.SeededAuthorityWaitBegan",
+            "ReadFile.SeededAuthorityWaitEnded",
+            "ReadFile.IngressBarrierBegan",
+            "ReadFile.IngressBarrierEnded"
+        ]
+
+        private static let exactResolutionEventNames: Set<String> = [
+            "WorkspaceExactResolution.Checkpoint"
+        ]
+
+        private static let interactiveEventNames: Set<String> = [
+            "ReadFile.InteractiveStage"
+        ]
+
+        private static let settlementEventNames: Set<String> = [
+            "ReadFile.SettlementTransition"
+        ]
+
         private static func attributionSection(
             appInvocationID: UUID,
             capture: EditFlowPerf.DebugCaptureSnapshot,
             eventNames: Set<String>,
-            limit: Int
+            limit: Int,
+            captureActive: Bool,
+            freshnessCancellationOutcome: String? = nil
         ) -> MCPReadFileInvocationDiagnosticPacket.AttributionSection {
             let selected = capture.lifecycleEvents.filter {
                 eventNames.contains($0.eventName)
@@ -814,30 +1156,362 @@
                     ordinal: event.ordinal,
                     offsetMilliseconds: event.offsetMS,
                     kind: event.eventName,
-                    dimensions: sanitizedDimensionMap(event.sanitizedDimensions)
+                    dimensions: sanitizedDimensionMap(
+                        event.sanitizedDimensions,
+                        eventName: event.eventName,
+                        freshnessCancellationOutcome: freshnessCancellationOutcome
+                    )
                 )
             }
             let omitted = max(0, selected.count - entries.count)
+            let balance = spanBalance(entries: entries, captureActive: captureActive)
+            let state: String = if entries.isEmpty {
+                "missing"
+            } else if omitted > 0 {
+                "truncated"
+            } else if balance.integrity != "balanced", balance.openCount == 0 {
+                "missing"
+            } else if balance.openCount > 0 {
+                captureActive ? "open" : "capture_closed_before_terminal"
+            } else {
+                "observed"
+            }
             return MCPReadFileInvocationDiagnosticPacket.AttributionSection(
-                state: entries.isEmpty ? "missing" : (omitted > 0 ? "partial" : "observed"),
+                state: state,
                 retainedCount: entries.count,
                 omittedCount: omitted,
                 truncated: omitted > 0,
+                openSpanCount: balance.openCount,
+                terminalIntegrity: balance.integrity,
                 entries: entries
             )
         }
 
-        private static func sanitizedDimensionMap(_ serialized: String) -> [String: String] {
-            Dictionary(
-                serialized.split(separator: " ").compactMap { component -> (String, String)? in
-                    guard let separator = component.firstIndex(of: "=") else { return nil }
-                    let key = String(component[..<separator])
-                    let value = String(component[component.index(after: separator)...])
-                    guard !key.isEmpty, !value.isEmpty else { return nil }
-                    return (key, value)
-                },
-                uniquingKeysWith: { first, _ in first }
+        private static func sectionStateIfMissing(
+            _ section: MCPReadFileInvocationDiagnosticPacket.AttributionSection,
+            state: String
+        ) -> MCPReadFileInvocationDiagnosticPacket.AttributionSection {
+            guard section.state == "missing" else { return section }
+            return MCPReadFileInvocationDiagnosticPacket.AttributionSection(
+                state: state,
+                retainedCount: section.retainedCount,
+                omittedCount: section.omittedCount,
+                truncated: section.truncated,
+                openSpanCount: section.openSpanCount,
+                terminalIntegrity: section.terminalIntegrity,
+                entries: section.entries
             )
+        }
+
+        private static func spanBalance(
+            entries: [MCPReadFileInvocationDiagnosticPacket.AttributionEntry],
+            captureActive: Bool
+        ) -> (openCount: Int, integrity: String) {
+            var openByKey: [String: Int] = [:]
+            var closedKeys: Set<String> = []
+            var orphanTerminal = false
+            var duplicateTerminal = false
+            var duplicateBegin = false
+            for entry in entries.sorted(by: { $0.ordinal < $1.ordinal }) {
+                guard let transition = spanTransition(entry) else { continue }
+                switch transition.kind {
+                case .began:
+                    if openByKey[transition.key, default: 0] > 0 {
+                        duplicateBegin = true
+                    }
+                    openByKey[transition.key, default: 0] += 1
+                case .ended:
+                    guard openByKey[transition.key, default: 0] > 0 else {
+                        if closedKeys.contains(transition.key) {
+                            duplicateTerminal = true
+                        } else {
+                            orphanTerminal = true
+                        }
+                        continue
+                    }
+                    openByKey[transition.key, default: 0] -= 1
+                    closedKeys.insert(transition.key)
+                }
+            }
+            let openCount = openByKey.values.reduce(0, +)
+            let integrity: String = if orphanTerminal {
+                "orphan_terminal"
+            } else if duplicateTerminal {
+                "duplicate_terminal"
+            } else if duplicateBegin {
+                "duplicate_begin"
+            } else if openCount > 0 {
+                captureActive ? "open" : "capture_closed_before_terminal"
+            } else {
+                "balanced"
+            }
+            return (openCount, integrity)
+        }
+
+        private struct InnerSpanAnalysis {
+            let section: String
+            let openStages: [String]
+            let closedStages: [MCPReadFileInvocationDiagnosticPacket.InnerStageSummary]
+        }
+
+        private static func innerSpanAnalysis(
+            section: String,
+            entries: [MCPReadFileInvocationDiagnosticPacket.AttributionEntry]
+        ) -> InnerSpanAnalysis {
+            var openByKey: [String: [MCPReadFileInvocationDiagnosticPacket.AttributionEntry]] = [:]
+            var closed: [MCPReadFileInvocationDiagnosticPacket.InnerStageSummary] = []
+            for entry in entries.sorted(by: { $0.ordinal < $1.ordinal }) {
+                guard let transition = spanTransition(entry) else { continue }
+                switch transition.kind {
+                case .began:
+                    openByKey[transition.key, default: []].append(entry)
+                case .ended:
+                    guard var began = openByKey[transition.key], !began.isEmpty else { continue }
+                    let start = began.removeFirst()
+                    openByKey[transition.key] = began
+                    closed.append(MCPReadFileInvocationDiagnosticPacket.InnerStageSummary(
+                        section: section,
+                        stage: innerStageName(section: section, entry: start),
+                        durationMilliseconds: max(0, entry.offsetMilliseconds - start.offsetMilliseconds)
+                    ))
+                }
+            }
+            let open = openByKey.values.flatMap(\.self).map {
+                innerStageName(section: section, entry: $0)
+            }.sorted()
+            return InnerSpanAnalysis(section: section, openStages: open, closedStages: closed)
+        }
+
+        private static func innerStageName(
+            section: String,
+            entry: MCPReadFileInvocationDiagnosticPacket.AttributionEntry
+        ) -> String {
+            let event = removingTransitionSuffix(entry.kind)
+            let purpose = entry.dimensions["purpose"]
+            let status = entry.dimensions["status"].map(removingTransitionSuffix)
+            return [section, event, purpose, status]
+                .compactMap { value in value?.isEmpty == false ? value : nil }
+                .joined(separator: ":")
+        }
+
+        private enum SpanTransitionKind {
+            case began
+            case ended
+        }
+
+        private static func spanTransition(
+            _ entry: MCPReadFileInvocationDiagnosticPacket.AttributionEntry
+        ) -> (kind: SpanTransitionKind, key: String)? {
+            let status = entry.dimensions["status"] ?? ""
+            let eventTransition = transitionSuffix(entry.kind)
+            let statusTransition = transitionSuffix(status)
+            guard let transition = statusTransition ?? eventTransition else { return nil }
+            let eventBase = removingTransitionSuffix(entry.kind)
+            let statusBase = removingTransitionSuffix(status)
+            let stableRootToken = eventBase == "WorkspaceExactResolution.Checkpoint"
+                ? ""
+                : entry.dimensions["rootToken"] ?? ""
+            let key = [
+                eventBase,
+                statusBase,
+                entry.dimensions["purpose"] ?? "",
+                stableRootToken,
+                entry.dimensions["serialPosition"] ?? ""
+            ].joined(separator: "|")
+            return (transition, key)
+        }
+
+        private static func transitionSuffix(_ value: String) -> SpanTransitionKind? {
+            if value == "began" || value.hasSuffix("Began") { return .began }
+            if value == "ended" || value.hasSuffix("Ended") { return .ended }
+            return nil
+        }
+
+        private static func removingTransitionSuffix(_ value: String) -> String {
+            if value == "began" || value == "ended" { return "" }
+            if value.hasSuffix("Began") { return String(value.dropLast("Began".count)) }
+            if value.hasSuffix("Ended") { return String(value.dropLast("Ended".count)) }
+            return value
+        }
+
+        private static func sanitizedDimensionMap(
+            _ serialized: String,
+            eventName: String,
+            freshnessCancellationOutcome: String?
+        ) -> [String: String] {
+            var result: [String: String] = [:]
+            for component in serialized.split(separator: " ") {
+                guard let separator = component.firstIndex(of: "=") else { continue }
+                let key = String(component[..<separator])
+                var value = String(component[component.index(after: separator)...])
+                guard !key.isEmpty, !value.isEmpty else { continue }
+                if eventName == "ReadFile.ExplicitFreshnessEnded",
+                   key == "outcome",
+                   value == "other_cancellation",
+                   let freshnessCancellationOutcome
+                {
+                    value = freshnessCancellationOutcome
+                }
+                guard result[key] == nil,
+                      let safeValue = safeAttributionDimension(
+                          eventName: eventName,
+                          key: key,
+                          value: value
+                      )
+                else { continue }
+                result[key] = safeValue
+            }
+            return result
+        }
+
+        private static func safeAttributionDimension(
+            eventName: String,
+            key: String,
+            value: String
+        ) -> String? {
+            let allowedKeys = Set(MCPReadFileInvocationDiagnosticPacket.AttributionEntry.allowedKeys(for: eventName))
+            guard allowedKeys.contains(key) else { return nil }
+            switch key {
+            case "rootCount", "ownershipGeneration", "windowID", "candidateCount", "examinedCount",
+                 "serialPosition", "activeCount", "workerCount", "errorCount", "queueDepth", "taskCount",
+                 "waiterCount", "pendingRawEventCount", "ingressSequence", "barrierSequence",
+                 "observerToken", "durationMicroseconds", "fileBytes":
+                return UInt64(value) == nil && Int64(value) == nil ? nil : value
+            case "usesWorktreeProjection", "lifetimeCurrentBefore", "lifetimeCurrentAfter",
+                 "requestedRunValidated", "cacheHit", "providerActive", "permitActive", "publicationPending",
+                 "blocksAdmission", "isReleased":
+                return value == "true" || value == "false" ? value : nil
+            case "workspaceID", "tabID", "agentSessionID", "runID", "rootLifetimeID", "rootToken":
+                return UUID(uuidString: value) == nil ? nil : value
+            case "logicalRootToken", "physicalRootToken", "bindingFingerprintToken",
+                 "visibleRootFingerprintToken", "visibleRootFingerprintTokenAfter":
+                return isCaptureToken(value) ? value : nil
+            default:
+                guard let allowed = allowedAttributionValues(eventName: eventName, key: key),
+                      allowed.contains(value)
+                else { return nil }
+                return value
+            }
+        }
+
+        private static func isCaptureToken(_ value: String) -> Bool {
+            let components = value.split(separator: ":", omittingEmptySubsequences: false)
+            guard components.count == 2,
+                  [
+                      "logical_root", "physical_root", "binding_fingerprint",
+                      "visible_root_fingerprint", "cache_key", "file_system_fingerprint"
+                  ].contains(String(components[0])),
+                  components[1].count == 64
+            else { return false }
+            return components[1].allSatisfy { "0123456789abcdef".contains($0) }
+        }
+
+        private static func allowedAttributionValues(eventName: String, key: String) -> Set<String>? {
+            switch (eventName, key) {
+            case ("ReadFile.DomainRouteResolved", "bindingKind"):
+                ["explicit", "app_presentation", "run_scoped"]
+            case ("ReadFile.LookupProjectionResolved", "hydrationState"):
+                ["not_applicable", "hydrated", "unhydrated", "unavailable"]
+            case ("ReadFile.LookupProjectionResolved", "projectionSource"):
+                ["fail_closed", "frozen_context", "cache_hit", "newly_materialized"]
+            case ("ReadFile.PathClassified", "inputShape"):
+                ["absolute", "explicit_root", "bare_relative"]
+            case ("ReadFile.PathClassified", "translationRoute"):
+                ["unchanged_physical", "logical_to_physical", "alias_to_physical", "single_binding_relative", "untranslated", "blocked"]
+            case ("ReadFile.PathClassified", "rootScopeKind"):
+                ["visible_workspace", "visible_workspace_plus_git_data", "all_loaded", "all_loaded_excluding_git_data", "session_bound", "validated_session_bound"]
+            case let (event, "gitClassification") where gitEventNames.contains(event):
+                ["syntactic_git", "not_evaluated", "git_artifact_target", "possible_git_artifact", "ordinary"]
+            case let (event, "gitCapability") where gitEventNames.contains(event):
+                ["not_evaluated", "absent", "direct", "delegated"]
+            case let (event, "gitPreflightStatus") where gitEventNames.contains(event):
+                ["open", "failed", "cancelled", "rejected", "not_applicable", "ordinary_fallthrough", "authorized"]
+            case ("ReadFile.GitCandidateResolved", "outcome"):
+                ["authorized", "rejected"]
+            case ("ReadFile.GitCandidateResolved", "candidateKind"):
+                ["map", "patch", "unknown"]
+            case ("ReadFile.GitCandidateResolved", "rejectionReason"):
+                [
+                    "invalid_absolute_path", "outside_workspace_git_data", "capability_root_unavailable",
+                    "not_cataloged", "unsupported_artifact_path", "manifest_not_cataloged",
+                    "manifest_unreadable", "manifest_invalid", "manifest_identity_mismatch", "tab_mismatch",
+                    "legacy_tab_not_allowed", "repository_provenance_missing", "checkout_provenance_mismatch",
+                    "unlisted_patch", "content_unreadable", "not_in_delegated_selection",
+                    "delegation_consumer_mismatch", "delegation_workspace_mismatch",
+                    "legacy_artifact_not_delegable", "delegation_binding_mismatch"
+                ]
+            case ("ReadFile.GitPreflightEnded", "outcome"):
+                ["not_evaluated", "rejected_target", "no_requested_match", "authorized_requested_entry"]
+            case ("ReadFile.ExplicitFreshnessEnded", "outcome"):
+                ["success", "inner_timeout", "outer_cancellation", "other_cancellation", "error"]
+            case ("ReadFile.FreshnessRootSnapshot", "purpose"):
+                ["explicit_freshness_pre", "explicit_freshness_post", "explicit_ingress", "interactive_pre", "interactive_post"]
+            case ("ReadFile.FreshnessRootSnapshot", "status"):
+                ["before", "after"]
+            case ("ReadFile.FreshnessRootSnapshot", "outcome"):
+                ["no_fence", "reconciliation_failed", "blocked_reconciling", "queryable"]
+            case let (event, "purpose") where event == "ReadFile.SeededAuthorityWaitBegan" || event == "ReadFile.SeededAuthorityWaitEnded":
+                ["explicit_freshness_pre", "explicit_freshness_post", "interactive_pre", "interactive_post"]
+            case ("ReadFile.SeededAuthorityWaitEnded", "outcome"):
+                ["completed", "cancelled", "failed_unavailable", "failed_other"]
+            case ("ReadFile.IngressBarrierEnded", "outcome"):
+                [
+                    "cancelled_or_unavailable", "no_op", "joined", "joined_cancelled", "joined_completed",
+                    "coalesced_successor", "coalesced_successor_cancelled", "coalesced_successor_completed",
+                    "successor", "successor_cancelled", "successor_completed", "launched",
+                    "launched_cancelled", "launched_completed"
+                ]
+            case ("WorkspaceExactResolution.Checkpoint", "purpose"):
+                ["qualifiedTargetValidation", "bareRelativeNamespaceClassification", "canonicalCompaction", "explicitMaterialization"]
+            case ("WorkspaceExactResolution.Checkpoint", "status"):
+                [
+                    "bindingProbeBegan", "bindingProbeEnded", "catalogValidationBegan", "catalogValidationEnded",
+                    "eligibilityBegan", "eligibilityEnded", "missingFilePruneBegan", "missingFilePruneEnded",
+                    "materializationBegan", "materializationEnded", "candidateEligibilityBegan",
+                    "candidateEligibilityEnded", "candidateMissingFilePruneBegan",
+                    "candidateMissingFilePruneEnded", "managedRegistrationBegan", "managedRegistrationEnded",
+                    "codemapRootFenceBegan", "codemapRootFenceEnded", "codemapCleanupFlightsBegan",
+                    "codemapCleanupFlightsEnded"
+                ]
+            case ("WorkspaceExactResolution.Checkpoint", "outcome"):
+                [
+                    "unavailable", "missing", "current", "catalogCurrent", "eligible", "ignored",
+                    "missingOrDirectory", "ineligible", "completed", "error", "noCandidate", "blocked",
+                    "ambiguous", "materialized", "cancelled", "acquired"
+                ]
+            case ("ReadFile.InteractiveStage", "purpose"):
+                ["attempt", "fingerprint", "catalog_revalidation", "cache_snapshot", "content_load", "off_actor_preparation", "record_revalidation"]
+            case ("ReadFile.InteractiveStage", "status"):
+                ["began", "ended"]
+            case ("ReadFile.InteractiveStage", "outcome"):
+                [
+                    "completed", "cancelled", "missing", "failed_other", "stale", "current", "hit",
+                    "miss_loaded", "no_content", "scheduler_error", "fingerprint_changed",
+                    "cancelled_fingerprint", "missing_fingerprint", "failed_fingerprint",
+                    "retry_record_changed", "failed_record_changed", "retry_no_content", "failed_no_content",
+                    "cancelled_cache_or_load", "failed_scheduler", "retry_fingerprint_changed",
+                    "failed_fingerprint_changed", "missing_content"
+                ]
+            case ("ReadFile.SettlementTransition", "purpose"):
+                [
+                    "admission", "busy_admission", "execution_exit", "execution_contract_selected",
+                    "execution_started", "execution_handler_completed", "execution_handler_phase_transition",
+                    "execution_deadline_cancellation_boundary", "execution_deadline_expired",
+                    "execution_cancellation_requested", "execution_settled_during_grace",
+                    "execution_cleanup_grace_expired", "execution_detached_for_settlement",
+                    "execution_detached_settled", "recovery_released", "connection_force_disconnect_requested"
+                ]
+            case ("ReadFile.SettlementTransition", "status"):
+                ["reserved", "detaching", "detaching_success", "detaching_cancellation", "detaching_error", "detached", "abandoned", "force_disconnecting", "settled"]
+            case ("ReadFile.SettlementTransition", "outcome"):
+                [
+                    "admitted", "detached", "abandoned", "settling", "released_provider_limit", "released",
+                    "retained", "already_settled", "unavailable", "success", "cancellation", "error",
+                    "observed", "late_completion", "expired", "settled"
+                ]
+            default:
+                nil
+            }
         }
 
         private static func lifecycleSection(
@@ -849,7 +1523,12 @@
                 $0.requestIdentity?.appInvocationID.flatMap(UUID.init(uuidString:)) == appInvocationID
             }
             let genericSelected = selected.filter {
-                !routeProjectionEventNames.contains($0.eventName) && !gitEventNames.contains($0.eventName)
+                !routeProjectionEventNames.contains($0.eventName)
+                    && !gitEventNames.contains($0.eventName)
+                    && !freshnessAuthorityIngressEventNames.contains($0.eventName)
+                    && !exactResolutionEventNames.contains($0.eventName)
+                    && !interactiveEventNames.contains($0.eventName)
+                    && !settlementEventNames.contains($0.eventName)
             }
             let recognized = genericSelected.compactMap { event -> MCPReadFileInvocationDiagnosticPacket.LifecycleEntry? in
                 guard let kind = lifecycleKind(event.eventName) else { return nil }
@@ -908,7 +1587,23 @@
                     cleanupGraceMilliseconds: event.cleanupGraceSeconds.map { $0 * 1000 },
                     cleanupDisposition: event.cleanupDisposition?.rawValue,
                     cancellationRequested: event.cancellationRequested,
+                    cancellationOutcome: safeTraceValue(
+                        event.cancellationOutcome,
+                        allowed: ["success", "cancellation", "error"]
+                    ),
                     cancellationOrigin: event.cancellationOrigin?.rawValue,
+                    settlement: safeTraceValue(event.settlement, allowed: ["detached"]),
+                    graceOutcome: safeTraceValue(
+                        event.graceOutcome,
+                        allowed: ["settled", "late_completion", "expired"]
+                    ),
+                    escalationReason: safeTraceValue(
+                        event.escalationReason,
+                        allowed: [
+                            "handler_ignored_cancellation",
+                            "detach_disposition_handler_ignored_cancellation"
+                        ]
+                    ),
                     handlerPhase: event.handlerPhase?.phase.rawValue,
                     handlerPhaseTransition: event.handlerPhase?.transition.rawValue,
                     handlerPhaseElapsedMilliseconds: event.handlerPhase?.elapsedMilliseconds,
@@ -976,6 +1671,11 @@
                 captureWideLossImpact: captureWideLoss.workSectionCount > 0 ? "unknown" : "none",
                 entries: entries
             )
+        }
+
+        private static func safeTraceValue(_ value: String?, allowed: Set<String>) -> String? {
+            guard let value, allowed.contains(value) else { return nil }
+            return value
         }
 
         private static func matches(_ appInvocationID: UUID, event: MCPToolExecutionTraceEvent) -> Bool {
