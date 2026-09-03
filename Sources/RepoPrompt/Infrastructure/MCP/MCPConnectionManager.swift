@@ -1005,6 +1005,174 @@ actor ServerNetworkManager {
         return CallTool.Result(content: [.text(text: ToolOutputFormatter.rawJSONString(value), annotations: nil, _meta: nil)], isError: true)
     }
 
+    private struct PromptExportExecutionEnvelope {
+        let admissionDeadline: MCPDomainAdmissionDeadline
+        let cleanupNotAfter: Duration
+        let cancellationOrigin: MCPToolExecutionCancellationOrigin
+    }
+
+    /// Transfers the host's synchronous provider-entry instant to the async watchdog owner.
+    /// The watchdog's initial clock read and deadline sleep are rebased to that instant so
+    /// admission consumes none of the provider's declared execution budget.
+    private final class PromptExportProviderEntryBridge: @unchecked Sendable {
+        struct ProviderEntry {
+            let watchdogEnvironment: MCPToolExecutionWatchdogEnvironment
+            let cleanupNotAfter: Duration
+        }
+
+        enum InitialEvent {
+            case providerEntered(ProviderEntry)
+            case providerEntryRejected
+            case hostCompleted
+            case cancelled
+        }
+
+        private final class RebasedWatchdogTiming: @unchecked Sendable {
+            private let lock = NSLock()
+            private var providerEntryForInitialRead: Duration?
+            private var deadlineNotAfterForInitialSleep: Duration?
+            private let baseNow: @Sendable () -> Duration
+            private let baseSleep: @Sendable (Duration) async throws -> Void
+
+            init(
+                providerEntry: Duration,
+                executionDeadline: Duration,
+                now: @escaping @Sendable () -> Duration,
+                sleep: @escaping @Sendable (Duration) async throws -> Void
+            ) {
+                providerEntryForInitialRead = providerEntry
+                deadlineNotAfterForInitialSleep = providerEntry + executionDeadline
+                baseNow = now
+                baseSleep = sleep
+            }
+
+            func read() -> Duration {
+                lock.lock()
+                if let providerEntry = providerEntryForInitialRead {
+                    providerEntryForInitialRead = nil
+                    lock.unlock()
+                    return providerEntry
+                }
+                lock.unlock()
+                return baseNow()
+            }
+
+            func sleep(_ duration: Duration) async throws {
+                lock.lock()
+                let deadlineNotAfter = deadlineNotAfterForInitialSleep
+                deadlineNotAfterForInitialSleep = nil
+                lock.unlock()
+
+                guard let deadlineNotAfter else {
+                    try await baseSleep(duration)
+                    return
+                }
+                // Duration-based sleep must subtract watchdog installation time to preserve
+                // the provider-entry instant as the absolute execution deadline origin.
+                let remaining = deadlineNotAfter - baseNow()
+                try await baseSleep(remaining > .zero ? remaining : .zero)
+            }
+        }
+
+        private let lock = NSLock()
+        private let environment: MCPToolExecutionWatchdogEnvironment
+        private let executionDeadline: Duration
+        private let cancellationGrace: Duration
+        private let outerCleanupNotAfter: Duration
+        private var initialEvent: InitialEvent?
+        private var hostCompletionInstant: Duration?
+        private var waiter: CheckedContinuation<InitialEvent, Never>?
+
+        init(
+            environment: MCPToolExecutionWatchdogEnvironment,
+            executionDeadline: Duration,
+            cancellationGrace: Duration,
+            outerCleanupNotAfter: Duration
+        ) {
+            self.environment = environment
+            self.executionDeadline = executionDeadline
+            self.cancellationGrace = cancellationGrace
+            self.outerCleanupNotAfter = outerCleanupNotAfter
+        }
+
+        func providerWillEnter() throws {
+            let providerEntry = environment.now()
+            let cleanupNotAfter = providerEntry + executionDeadline + cancellationGrace
+            guard cleanupNotAfter <= outerCleanupNotAfter else {
+                guard resolve(.providerEntryRejected) else { throw CancellationError() }
+                throw MCPToolExecutionWatchdogError.admissionEnvelopeExpired
+            }
+
+            let rebasedTiming = RebasedWatchdogTiming(
+                providerEntry: providerEntry,
+                executionDeadline: executionDeadline,
+                now: environment.now,
+                sleep: environment.sleep
+            )
+            let watchdogEnvironment = MCPToolExecutionWatchdogEnvironment(
+                now: { rebasedTiming.read() },
+                sleep: { try await rebasedTiming.sleep($0) },
+                eventDidProduce: environment.eventDidProduce,
+                beforeEventConsumption: environment.beforeEventConsumption,
+                beforeCleanupGraceTaskRegistration: environment.beforeCleanupGraceTaskRegistration,
+                beforeDetachActivation: environment.beforeDetachActivation
+            )
+            guard resolve(.providerEntered(ProviderEntry(
+                watchdogEnvironment: watchdogEnvironment,
+                cleanupNotAfter: cleanupNotAfter
+            ))) else {
+                throw CancellationError()
+            }
+        }
+
+        func hostDidComplete(at instant: Duration) {
+            lock.lock()
+            precondition(hostCompletionInstant == nil, "Prompt export host completed more than once")
+            hostCompletionInstant = instant
+            lock.unlock()
+            _ = resolve(.hostCompleted)
+        }
+
+        func recordedHostCompletionInstant() -> Duration? {
+            lock.lock()
+            defer { lock.unlock() }
+            return hostCompletionInstant
+        }
+
+        func cancel() {
+            _ = resolve(.cancelled)
+        }
+
+        func waitForInitialEvent() async -> InitialEvent {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let initialEvent {
+                    lock.unlock()
+                    continuation.resume(returning: initialEvent)
+                    return
+                }
+                precondition(waiter == nil, "Prompt export provider-entry bridge has multiple waiters")
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+
+        @discardableResult
+        private func resolve(_ event: InitialEvent) -> Bool {
+            lock.lock()
+            guard initialEvent == nil else {
+                lock.unlock()
+                return false
+            }
+            initialEvent = event
+            let waiter = waiter
+            self.waiter = nil
+            lock.unlock()
+            waiter?.resume(returning: event)
+            return true
+        }
+    }
+
     private final class PromptExportMutationSettlementObservation: @unchecked Sendable {
         private let lock = NSLock()
         private var settlement: DomainProtectedMutationSettlement?
@@ -1283,6 +1451,8 @@ actor ServerNetworkManager {
         private var debugBeforeToolResultFormattingForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforeToolCompletionObserversForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforePromptExportPublicationClaimForTesting: (@Sendable (UUID, String) async -> Void)?
+        private var debugAfterPromptExportProviderEntryForTesting: (@Sendable (UUID, String) async -> Void)?
+        private var debugAfterPromptExportHostCompletionForTesting: (@Sendable (UUID, String, Duration) -> Void)?
         private var debugBeforeAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugBeforeActiveToolCancellationScanForTesting: (@Sendable (UUID, [UUID]) async -> Void)?
         private var debugAllocatedActiveToolScopeIDsForTesting: Set<UUID> = []
@@ -9309,6 +9479,18 @@ actor ServerNetworkManager {
                 toolExecutionWatchdogEnvironment = .continuous()
             }
 
+            func debugSetAfterPromptExportProviderEntryForTesting(
+                _ handler: (@Sendable (UUID, String) async -> Void)?
+            ) {
+                debugAfterPromptExportProviderEntryForTesting = handler
+            }
+
+            func debugSetAfterPromptExportHostCompletionForTesting(
+                _ handler: (@Sendable (UUID, String, Duration) -> Void)?
+            ) {
+                debugAfterPromptExportHostCompletionForTesting = handler
+            }
+
             func debugSetResolvedToolOperationOverride(
                 toolName: String,
                 operation: (@Sendable () async throws -> Value)?
@@ -11088,6 +11270,93 @@ actor ServerNetworkManager {
             let extractedRawJSON = normalized.rawJSON
             let cleanedArguments = normalized.payload
             let capturedRawJSON = extractedRawJSON
+            let isPromptExport = (toolName == "prompt" || toolName == "workspace_context")
+                && MCPPromptContextOperation.parse(toolName: toolName, arguments: cleanedArguments) == .export
+            let promptExportOperationID: String = {
+                let supplied = cleanedArguments["operation_id"]?.stringValue?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return supplied.isEmpty ? invocationID.uuidString : supplied
+            }()
+            if isPromptExport, case .invalid = normalized.executionEnvelopeState {
+                return Self.executionContractToolErrorResult(
+                    rawJSON: capturedRawJSON,
+                    code: "tool_execution_invalid_envelope",
+                    message: "Tool '\(toolName)' received an invalid execution envelope.",
+                    metadata: [
+                        "retryable": .bool(false),
+                        "mutation_state": .string("not_applied"),
+                        "operation_id": .string(promptExportOperationID),
+                        "tool": .string(toolName)
+                    ]
+                )
+            }
+            let executionWatchdogEnvironment = await toolExecutionWatchdogEnvironment
+            let promptExportExecutionEnvelope: PromptExportExecutionEnvelope? = {
+                guard isPromptExport else { return nil }
+                let receiptInstant = executionWatchdogEnvironment.now()
+                let totalEnvelopeSeconds = TimeInterval(MCPTimeoutPolicy.promptExportTotalEnvelopeSeconds)
+                let remainingSeconds: TimeInterval
+                let cancellationOrigin: MCPToolExecutionCancellationOrigin
+                switch normalized.executionEnvelopeState {
+                case let .valid(suppliedEnvelope):
+                    switch suppliedEnvelope.timeoutMode {
+                    case .ordinaryDefault:
+                        guard let expiresAtUnixMilliseconds = suppliedEnvelope.expiresAtUnixMilliseconds else {
+                            return nil
+                        }
+                        let wallNowMilliseconds = Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+                        let suppliedRemaining = (
+                            TimeInterval(expiresAtUnixMilliseconds)
+                                - TimeInterval(wallNowMilliseconds)
+                        ) / 1000
+                        remainingSeconds = min(totalEnvelopeSeconds, max(0, suppliedRemaining))
+                        cancellationOrigin = .clientDeadline
+                    case .explicitFinite, .explicitUnbounded:
+                        return nil
+                    }
+                case .absent:
+                    remainingSeconds = totalEnvelopeSeconds
+                    cancellationOrigin = .serverExportEnvelope
+                case .invalid:
+                    return nil
+                }
+                let outerDeadline = receiptInstant + .seconds(remainingSeconds)
+                return PromptExportExecutionEnvelope(
+                    admissionDeadline: MCPDomainAdmissionDeadline(
+                        instant: outerDeadline - .seconds(MCPTimeoutPolicy.promptExportReservedProviderAndCleanupSeconds),
+                        now: executionWatchdogEnvironment.now,
+                        sleep: executionWatchdogEnvironment.sleep
+                    ),
+                    cleanupNotAfter: outerDeadline - .seconds(
+                        MCPTimeoutPolicy.promptExportResponseDeliveryAllowanceSeconds
+                    ),
+                    cancellationOrigin: cancellationOrigin
+                )
+            }()
+            func promptExportAdmissionTimeoutResultIfExpired() -> CallTool.Result? {
+                guard let promptExportExecutionEnvelope else { return nil }
+                do {
+                    try promptExportExecutionEnvelope.admissionDeadline.check()
+                    return nil
+                } catch {
+                    return Self.executionContractToolErrorResult(
+                        rawJSON: capturedRawJSON,
+                        code: "tool_execution_admission_timeout",
+                        message: "Tool '\(toolName)' could not enter its provider while preserving the export execution envelope.",
+                        metadata: [
+                            "retryable": .bool(true),
+                            "mutation_state": .string("not_applied"),
+                            "operation_id": .string(promptExportOperationID),
+                            "tool": .string(toolName),
+                            "cancellation_origin": .string(promptExportExecutionEnvelope.cancellationOrigin.rawValue),
+                            "settlement": .string("admission_timeout")
+                        ]
+                    )
+                }
+            }
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return admissionTimeout
+            }
             let evidenceOperationIdentity = MCPToolAdmissionPolicy.operationIdentity(
                 forCanonicalToolName: toolName,
                 arguments: cleanedArguments
@@ -11162,6 +11431,9 @@ actor ServerNetworkManager {
                         return Self.toolErrorResult(rawJSON: capturedRawJSON, message: error.localizedDescription)
                     }
                 }
+            }
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return admissionTimeout
             }
 
             do {
@@ -11279,14 +11551,16 @@ actor ServerNetworkManager {
                 )
             }
 
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return admissionTimeout
+            }
+
             // Create immutable copies for Swift 6 concurrency safety
             let capturedTabContextHint = dispatchTabContextHint
             let capturedWindowID = extractedWindowID
             let capturedPreResolvedWindowID = preResolvedWindowID
             let capturedArguments = dispatchArguments
             let capturedArgsForFormatter = argsForFormatter
-            let isPromptExport = (toolName == "prompt" || toolName == "workspace_context")
-                && MCPPromptContextOperation.parse(toolName: toolName, arguments: capturedArguments) == .export
             let promptExportMutationObservation: PromptExportMutationSettlementObservation? = if isPromptExport {
                 PromptExportMutationSettlementObservation()
             } else {
@@ -11322,6 +11596,9 @@ actor ServerNetworkManager {
             // after window routing chooses the canonical application/window scope.
             let bypassWindowRoutingForSnapshot = Self.shouldBypassWindowRouting(for: toolName)
             connectionLog("tools/call \(toolName): reading MainActor routing state")
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return await finishRequestProgress(admissionTimeout)
+            }
             let routingSnapshot: (Int, Bool) = await EditFlowPerf.measure(
                 EditFlowPerf.Stage.MCPToolCall.routingSnapshot,
                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -11335,6 +11612,9 @@ actor ServerNetworkManager {
                     return (windows.count, effectiveMode)
                 }
             }
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return await finishRequestProgress(admissionTimeout)
+            }
             connectionLog("tools/call \(toolName): routing state windowCount=\(routingSnapshot.0) multi=\(routingSnapshot.1)")
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.MCPToolCall.routingSnapshotCompleted,
@@ -11347,6 +11627,9 @@ actor ServerNetworkManager {
             let admissionClass = preAdmissionDecision.admissionClass
             let callLane = admissionClass.connectionLane
             connectionLog("tools/call \(toolName): acquiring limiter lane=\(callLane.rawValue)")
+            if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                return await finishRequestProgress(admissionTimeout)
+            }
             let limiterResolution = await EditFlowPerf.measure(
                 EditFlowPerf.Stage.MCPToolCall.limiterResolution,
                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -11447,6 +11730,15 @@ actor ServerNetworkManager {
                     resolution: limiterResolution,
                     toolName: toolName,
                     lifecycleCorrelation: lifecycleCorrelation,
+                    admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline,
+                    admissionTimeoutResult: {
+                        promptExportAdmissionTimeoutResultIfExpired()
+                            ?? Self.executionContractToolErrorResult(
+                                rawJSON: capturedRawJSON,
+                                code: "tool_execution_admission_timeout",
+                                message: "Tool '\(toolName)' could not enter its provider while preserving the export execution envelope."
+                            )
+                    },
                     cancellationResult: {
                         MCPToolConcurrencyEvidenceRecorder.shared.recordLaneWaitAbandoned(classKey: evidenceClass)
                         MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
@@ -11461,6 +11753,9 @@ actor ServerNetworkManager {
                         )
                     }
                 ) {
+                    if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                        return admissionTimeout
+                    }
                     MCPToolConcurrencyEvidenceRecorder.shared.recordLaneAdmitted(
                         classKey: evidenceClass,
                         operationIdentity: evidenceOperationIdentity,
@@ -11693,6 +11988,9 @@ actor ServerNetworkManager {
                                         ? nil
                                         : await self.runIDForConnection(connectionID)
                                 }
+                                if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                                    return admissionTimeout
+                                }
                                 let mutationAdmissionLease: MCPDomainToolResourceAdmissionController.Lease?
                                 if admissionClass == .exclusive {
                                     let mutationResource: MCPDomainToolResourceAdmissionController.Resource
@@ -11709,7 +12007,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        mutationAdmissionLease = try await self.domainHost.acquireMutationResourceAdmission(mutationResource)
+                                        mutationAdmissionLease = try await self.domainHost.acquireMutationResourceAdmission(
+                                            mutationResource,
+                                            admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -11721,6 +12022,11 @@ actor ServerNetworkManager {
                                             operationIdentity: evidenceOperationIdentity,
                                             reason: .leaseWaitTermination(for: error)
                                         )
+                                        if error is MCPDomainAdmissionDeadline.Expired,
+                                           let timeoutResult = promptExportAdmissionTimeoutResultIfExpired()
+                                        {
+                                            return timeoutResult
+                                        }
                                         return Self.executionContractToolErrorResult(
                                             rawJSON: capturedRawJSON,
                                             code: "tool_execution_connection_terminal",
@@ -11743,7 +12049,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        smallReadAdmissionLease = try await self.domainHost.acquireSmallReadResourceAdmission(windowID: chosenID)
+                                        smallReadAdmissionLease = try await self.domainHost.acquireSmallReadResourceAdmission(
+                                            windowID: chosenID,
+                                            admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -11755,6 +12064,11 @@ actor ServerNetworkManager {
                                             operationIdentity: evidenceOperationIdentity,
                                             reason: .leaseWaitTermination(for: error)
                                         )
+                                        if error is MCPDomainAdmissionDeadline.Expired,
+                                           let timeoutResult = promptExportAdmissionTimeoutResultIfExpired()
+                                        {
+                                            return timeoutResult
+                                        }
                                         return Self.executionContractToolErrorResult(
                                             rawJSON: capturedRawJSON,
                                             code: "tool_execution_connection_terminal",
@@ -11777,7 +12091,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        fileReadAdmissionLease = try await self.domainHost.acquireFileReadResourceAdmission(windowID: chosenID)
+                                        fileReadAdmissionLease = try await self.domainHost.acquireFileReadResourceAdmission(
+                                            windowID: chosenID,
+                                            admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -11789,6 +12106,11 @@ actor ServerNetworkManager {
                                             operationIdentity: evidenceOperationIdentity,
                                             reason: .leaseWaitTermination(for: error)
                                         )
+                                        if error is MCPDomainAdmissionDeadline.Expired,
+                                           let timeoutResult = promptExportAdmissionTimeoutResultIfExpired()
+                                        {
+                                            return timeoutResult
+                                        }
                                         return Self.executionContractToolErrorResult(
                                             rawJSON: capturedRawJSON,
                                             code: "tool_execution_connection_terminal",
@@ -11831,6 +12153,9 @@ actor ServerNetworkManager {
                                     releaseResourceAdmissionLeases(outcome: "provider_error")
                                 }
 
+                                if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
+                                    return admissionTimeout
+                                }
                                 let toolCardOwnershipLease: MCPToolCardOwnershipLedger.Lease?
                                 if let runID = observerRunIDForCallbacksFinal, let chosenID {
                                     guard let lease = self.toolCardOwnershipLedger.begin(
@@ -11930,7 +12255,6 @@ actor ServerNetworkManager {
                                     for: toolName,
                                     arguments: capturedArguments
                                 )
-                                let executionWatchdogEnvironment = await self.toolExecutionWatchdogEnvironment
                                 let executionTraceOrigin = executionWatchdogEnvironment.now()
                                 let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
                                     origin: executionTraceOrigin,
@@ -11979,22 +12303,28 @@ actor ServerNetworkManager {
                                     ))
                                 }
 
-                                @Sendable func dispatchResolvedProvider(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
+                                @Sendable func dispatchResolvedProvider(
+                                    _ operation: @escaping @Sendable (PromptExportProviderEntryBridge?) async throws -> Value
+                                ) async throws -> Value {
+                                    try promptExportExecutionEnvelope?.admissionDeadline.check()
                                     guard await self.isCurrentConnectionCallLimiterResolution(
                                         limiterResolution,
                                         connectionID: connectionID
                                     ) else {
                                         throw ToolDispatchAdmissionError.connectionTerminal
                                     }
+                                    try promptExportExecutionEnvelope?.admissionDeadline.check()
                                     if let authorization = Self.currentToolDispatchAuthorization {
                                         guard await self.isCurrentToolDispatchAuthorization(authorization) else {
                                             throw ToolDispatchAdmissionError.connectionTerminal
                                         }
+                                        try promptExportExecutionEnvelope?.admissionDeadline.check()
                                         if let windowIdentity = authorization.windowIdentity,
                                            await !(self.isCurrentWindowToolDispatchIdentity(windowIdentity))
                                         {
                                             throw ToolDispatchAdmissionError.windowTerminal
                                         }
+                                        try promptExportExecutionEnvelope?.admissionDeadline.check()
                                     }
                                     guard let contract = selectedExecutionContract else {
                                         throw MCPToolExecutionDispatchError.missingContract(toolName: toolName)
@@ -12076,7 +12406,9 @@ actor ServerNetworkManager {
                                     }
 
                                     await emitExecutionTrace(.contractSelected)
+                                    try promptExportExecutionEnvelope?.admissionDeadline.check()
                                     await emitExecutionTrace(.started)
+                                    try promptExportExecutionEnvelope?.admissionDeadline.check()
                                     EditFlowPerf.lifecycleEvent(
                                         EditFlowPerf.Lifecycle.MCPToolCall.resolvedProviderBegan,
                                         correlation: lifecycleCorrelation,
@@ -12097,29 +12429,34 @@ actor ServerNetworkManager {
                                         )
                                     )
 
-                                    let tracedOperation: @Sendable () async throws -> Value = {
+                                    let tracedOperation: @Sendable (PromptExportProviderEntryBridge?) async throws -> Value = { providerEntryBridge in
+                                        try promptExportExecutionEnvelope?.admissionDeadline.check()
                                         guard await self.isCurrentConnectionCallLimiterResolution(
                                             limiterResolution,
                                             connectionID: connectionID
                                         ) else {
                                             throw ToolDispatchAdmissionError.connectionTerminal
                                         }
+                                        try promptExportExecutionEnvelope?.admissionDeadline.check()
                                         if let authorization = Self.currentToolDispatchAuthorization {
                                             guard await self.isCurrentToolDispatchAuthorization(authorization) else {
                                                 throw ToolDispatchAdmissionError.connectionTerminal
                                             }
+                                            try promptExportExecutionEnvelope?.admissionDeadline.check()
                                             if let windowIdentity = authorization.windowIdentity,
                                                await !(self.isCurrentWindowToolDispatchIdentity(windowIdentity))
                                             {
                                                 throw ToolDispatchAdmissionError.windowTerminal
                                             }
+                                            try promptExportExecutionEnvelope?.admissionDeadline.check()
                                         }
                                         return try await MCPToolExecutionHandlerPhaseContext.$recorder.withValue(handlerPhaseRecorder) {
                                             let executeOperation = {
-                                                try await EditFlowPerf.measure(
+                                                try promptExportExecutionEnvelope?.admissionDeadline.check()
+                                                return try await EditFlowPerf.measure(
                                                     EditFlowPerf.Stage.MCPToolCall.resolvedProviderDispatch,
                                                     EditFlowPerf.Dimensions(toolName: toolName),
-                                                    operation: operation
+                                                    operation: { try await operation(providerEntryBridge) }
                                                 )
                                             }
                                             guard let promptExportMutationObservation else {
@@ -12230,12 +12567,86 @@ actor ServerNetworkManager {
                                     switch contract {
                                     case let .bounded(deadline, cancellationGrace, _):
                                         do {
+                                            let watchdogEnvironment: MCPToolExecutionWatchdogEnvironment
+                                            let cleanupNotAfter: Duration?
+                                            let operationCompletionInstant: @Sendable () -> Duration?
+                                            let watchdogOperation: @Sendable () async throws -> Value
+                                            if let promptExportExecutionEnvelope {
+                                                // Host validation runs in one task before the watchdog supervises
+                                                // that same task from the exact provider-entry instant.
+                                                let providerEntryBridge = PromptExportProviderEntryBridge(
+                                                    environment: executionWatchdogEnvironment,
+                                                    executionDeadline: deadline,
+                                                    cancellationGrace: cancellationGrace,
+                                                    outerCleanupNotAfter: promptExportExecutionEnvelope.cleanupNotAfter
+                                                )
+                                                #if DEBUG
+                                                    let debugHostCompletion = await self.debugAfterPromptExportHostCompletionForTesting
+                                                #endif
+                                                let hostTask = Task<Value, Error> {
+                                                    defer {
+                                                        // Supervision can begin after this task finishes, so completion time
+                                                        // must be captured here rather than when Task.value is observed.
+                                                        let completionInstant = executionWatchdogEnvironment.now()
+                                                        providerEntryBridge.hostDidComplete(at: completionInstant)
+                                                        #if DEBUG
+                                                            debugHostCompletion?(connectionID, toolName, completionInstant)
+                                                        #endif
+                                                    }
+                                                    return try await tracedOperation(providerEntryBridge)
+                                                }
+                                                let initialEvent = await withTaskCancellationHandler {
+                                                    await providerEntryBridge.waitForInitialEvent()
+                                                } onCancel: {
+                                                    providerEntryBridge.cancel()
+                                                    hostTask.cancel()
+                                                }
+                                                switch initialEvent {
+                                                case let .providerEntered(providerEntry):
+                                                    #if DEBUG
+                                                        await self.debugAfterPromptExportProviderEntryForTesting?(
+                                                            connectionID,
+                                                            toolName
+                                                        )
+                                                    #endif
+                                                    // Once provider entry wins the bridge, the watchdog must retain
+                                                    // cleanup ownership even when request cancellation is already pending.
+                                                    if Task.isCancelled {
+                                                        hostTask.cancel()
+                                                    }
+                                                    watchdogEnvironment = providerEntry.watchdogEnvironment
+                                                    cleanupNotAfter = providerEntry.cleanupNotAfter
+                                                    operationCompletionInstant = {
+                                                        providerEntryBridge.recordedHostCompletionInstant()
+                                                    }
+                                                    watchdogOperation = {
+                                                        try await withTaskCancellationHandler {
+                                                            try await hostTask.value
+                                                        } onCancel: {
+                                                            hostTask.cancel()
+                                                        }
+                                                    }
+                                                case .providerEntryRejected, .hostCompleted:
+                                                    try Task.checkCancellation()
+                                                    return try await hostTask.value
+                                                case .cancelled:
+                                                    hostTask.cancel()
+                                                    throw CancellationError()
+                                                }
+                                            } else {
+                                                watchdogEnvironment = executionWatchdogEnvironment
+                                                cleanupNotAfter = nil
+                                                operationCompletionInstant = { nil }
+                                                watchdogOperation = { try await tracedOperation(nil) }
+                                            }
+
                                             return try await MCPToolExecutionWatchdog.execute(
                                                 deadline: deadline,
                                                 cancellationGrace: cancellationGrace,
+                                                cleanupNotAfter: cleanupNotAfter,
                                                 cleanupDisposition: settlementAdmission.cleanupDisposition ?? .forceDisconnect,
                                                 settlementSlot: settlementAdmission.slot,
-                                                environment: executionWatchdogEnvironment,
+                                                environment: watchdogEnvironment,
                                                 onEvent: { event in
                                                     switch event {
                                                     case .deadlineExpired:
@@ -12253,6 +12664,15 @@ actor ServerNetworkManager {
                                                             cancellationOutcome: settlement.rawValue,
                                                             cancellationOrigin: cancellationRequested ? .watchdogDeadline : nil,
                                                             graceOutcome: cancellationRequested ? "settled" : "late_completion"
+                                                        )
+                                                    case .cleanupGraceCappedByOuterEnvelope:
+                                                        await emitExecutionTrace(
+                                                            .cleanupGraceExpired,
+                                                            resolvedCleanupDisposition: .forceDisconnect,
+                                                            cancellationRequested: true,
+                                                            cancellationOrigin: .watchdogDeadline,
+                                                            graceOutcome: "capped",
+                                                            escalationReason: "outer_envelope_cleanup_cap"
                                                         )
                                                     case let .cleanupGraceExpired(resolvedDisposition):
                                                         await emitExecutionTrace(
@@ -12279,7 +12699,8 @@ actor ServerNetworkManager {
                                                 onDetachedSettlement: recordDetachedSettlement,
                                                 onAbandonedSettlement: recordAbandonedSettlement,
                                                 onForceDisconnectedSettlement: recordForceDisconnectedSettlement,
-                                                operation: tracedOperation
+                                                operationCompletionInstant: operationCompletionInstant,
+                                                operation: watchdogOperation
                                             )
                                         } catch MCPToolExecutionWatchdogError.cleanupUnresponsive {
                                             await emitExecutionTrace(
@@ -12297,7 +12718,7 @@ actor ServerNetworkManager {
                                          .interactiveCancellable,
                                          .workspaceLifecycleCancellable:
                                         do {
-                                            let value = try await tracedOperation()
+                                            let value = try await tracedOperation(nil)
                                             await recordSynchronousSettlement(.success)
                                             return value
                                         } catch {
@@ -12382,6 +12803,8 @@ actor ServerNetworkManager {
                                     for error: Error,
                                     context: String
                                 ) async -> CallTool.Result? {
+                                    let isAdmissionExpiry = error is MCPDomainAdmissionDeadline.Expired
+                                        || (error as? MCPToolExecutionWatchdogError) == .admissionEnvelopeExpired
                                     let code: String
                                     let message: String
                                     let outcome: String
@@ -12461,6 +12884,23 @@ actor ServerNetworkManager {
                                         outcome = "executionStructureSettlementWindowUnresolved"
                                         shouldForceDisconnect = false
                                         errorMetadata = ["retryable": .bool(false)]
+                                    case is MCPDomainAdmissionDeadline.Expired,
+                                         MCPToolExecutionWatchdogError.admissionEnvelopeExpired:
+                                        code = "tool_execution_admission_timeout"
+                                        message = "Tool '\(toolName)' could not enter its provider while preserving the export execution envelope."
+                                        outcome = "executionAdmissionTimeout"
+                                        shouldForceDisconnect = false
+                                        errorMetadata = [
+                                            "retryable": .bool(true),
+                                            "mutation_state": .string("not_applied"),
+                                            "operation_id": .string(promptExportOperationID),
+                                            "tool": .string(toolName),
+                                            "cancellation_origin": .string(
+                                                promptExportExecutionEnvelope?.cancellationOrigin.rawValue
+                                                    ?? MCPToolExecutionCancellationOrigin.serverExportEnvelope.rawValue
+                                            ),
+                                            "settlement": .string("admission_timeout")
+                                        ]
                                     case let MCPToolExecutionWatchdogError.executionTimedOut(settlement):
                                         code = "tool_execution_timeout"
                                         message = "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract and settled as \(settlement.rawValue) during cancellation grace."
@@ -12527,13 +12967,15 @@ actor ServerNetworkManager {
                                         errorJSONObject[key] = value
                                     }
                                     let errorJSON = ToolOutputFormatter.rawJSONString(.object(errorJSONObject))
-                                    if let runID = await self.toolTrackingRunIDForCompletion(
-                                        callTimeRunID: observerRunIDForCallbacksFinal,
-                                        connectionID: connectionID,
-                                        toolName: toolName,
-                                        invocationID: invocationID,
-                                        context: "\(context) execution contract failure"
-                                    ) {
+                                    if !isAdmissionExpiry,
+                                       let runID = await self.toolTrackingRunIDForCompletion(
+                                           callTimeRunID: observerRunIDForCallbacksFinal,
+                                           connectionID: connectionID,
+                                           toolName: toolName,
+                                           invocationID: invocationID,
+                                           context: "\(context) execution contract failure"
+                                       )
+                                    {
                                         _ = await self.fireToolCompletedObservers(
                                             runID: runID,
                                             invocationID: invocationID,
@@ -12659,9 +13101,10 @@ actor ServerNetworkManager {
                                     } else {
                                         nil
                                     }
-                                    let resolvedOperation: @Sendable () async throws -> Value = {
+                                    let resolvedOperation: @Sendable (PromptExportProviderEntryBridge?) async throws -> Value = { providerEntryBridge in
                                         #if DEBUG
                                             if let operation = await self.debugResolvedToolOperationOverrides[toolName] {
+                                                try providerEntryBridge?.providerWillEnter()
                                                 return try await operation()
                                             }
                                         #endif
@@ -12671,7 +13114,9 @@ actor ServerNetworkManager {
                                             resolution: resolvedTool,
                                             arguments: effectiveArgs,
                                             securityContext: invocationSecurityContext,
-                                            admittedContext: admittedDomainContext
+                                            admittedContext: admittedDomainContext,
+                                            admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline,
+                                            onProviderEntry: { try providerEntryBridge?.providerWillEnter() }
                                         ))
                                     }
 
@@ -13928,6 +14373,7 @@ actor ServerNetworkManager {
         resolution: ConnectionCallLimiterResolution,
         toolName: String? = nil,
         lifecycleCorrelation: EditFlowPerf.LifecycleCorrelation? = nil,
+        admissionDeadline: MCPDomainAdmissionDeadline? = nil,
         _ operation: @Sendable () async -> T
     ) async throws -> T {
         #if DEBUG
@@ -13967,7 +14413,8 @@ actor ServerNetworkManager {
                     lifecycleCorrelation: lifecycleCorrelation,
                     ownerResource: ownerResource,
                     ownerWindowID: ownerWindowID,
-                    ownerRunID: ownerRunID
+                    ownerRunID: ownerRunID,
+                    admissionDeadline: admissionDeadline
                 ) {
                     #if DEBUG
                         await afterPermitAcquired?(connectionID)
@@ -13989,7 +14436,9 @@ actor ServerNetworkManager {
                     resolution,
                     connectionID: connectionID
                 ),
-                    let replacementLimiters = await attemptedLimiters.admissionRetryReplacement(),
+                    let replacementLimiters = try await attemptedLimiters.admissionRetryReplacement(
+                        admissionDeadline: admissionDeadline
+                    ),
                     replacementLimiters !== attemptedLimiters,
                     !Task.isCancelled,
                     isCurrentConnectionCallLimiterResolution(
@@ -14008,6 +14457,8 @@ actor ServerNetworkManager {
         resolution: ConnectionCallLimiterResolution,
         toolName: String? = nil,
         lifecycleCorrelation: EditFlowPerf.LifecycleCorrelation? = nil,
+        admissionDeadline: MCPDomainAdmissionDeadline? = nil,
+        admissionTimeoutResult: (@Sendable () -> T)? = nil,
         cancellationResult: @Sendable () -> T,
         _ operation: @Sendable () async -> T
     ) async -> T {
@@ -14018,8 +14469,11 @@ actor ServerNetworkManager {
                 resolution: resolution,
                 toolName: toolName,
                 lifecycleCorrelation: lifecycleCorrelation,
+                admissionDeadline: admissionDeadline,
                 operation
             )
+        } catch is MCPDomainAdmissionDeadline.Expired {
+            return admissionTimeoutResult?() ?? cancellationResult()
         } catch {
             return cancellationResult()
         }
@@ -14049,6 +14503,25 @@ actor ServerNetworkManager {
         ) async -> MCPConnectionCallLimiterDebugSnapshot? {
             guard let limiters = callLimiters[connectionID] else { return nil }
             return await limiters.diagnosticsSnapshot()
+        }
+
+        func debugCloseConnectionLimiterTentativelyForTesting(
+            connectionID: UUID,
+            duringTentativeClose: @escaping @Sendable () async -> Void
+        ) async -> Bool {
+            guard let limiters = callLimiters[connectionID] else { return false }
+            let didClose = await limiters.closeIfIdle(afterClosingBegan: duringTentativeClose)
+            if didClose {
+                await limiters.markTentativeCloseCommitted()
+            }
+            return didClose
+        }
+
+        func debugConnectionLimiterAdmissionRetryWaiterCountForTesting(
+            connectionID: UUID
+        ) async -> Int? {
+            guard let limiters = callLimiters[connectionID] else { return nil }
+            return await limiters.admissionRetryWaiterCountForTesting()
         }
 
         func connectionLimiterSnapshotForTesting(
@@ -14805,6 +15278,7 @@ actor ServerNetworkManager {
             ownerResource: String? = nil,
             ownerWindowID: Int? = nil,
             ownerRunID: String? = nil,
+            admissionDeadline: MCPDomainAdmissionDeadline? = nil,
             _ operation: @Sendable () async throws -> T
         ) async throws -> T {
             let queuedSnapshot = await diagnosticsSnapshot(for: lane)
@@ -14821,7 +15295,10 @@ actor ServerNetworkManager {
                 )
             )
             do {
-                let result = try await withPermit(lane: lane) {
+                let result = try await withPermit(
+                    lane: lane,
+                    admissionDeadline: admissionDeadline
+                ) {
                     let acquiredSnapshot = await self.diagnosticsSnapshot(for: lane)
                     EditFlowPerf.lifecycleEvent(
                         EditFlowPerf.Lifecycle.MCPToolCall.permitAcquired,
@@ -14872,9 +15349,14 @@ actor ServerNetworkManager {
             ownerResource _: String? = nil,
             ownerWindowID _: Int? = nil,
             ownerRunID _: String? = nil,
+            admissionDeadline: MCPDomainAdmissionDeadline? = nil,
             _ operation: @Sendable () async throws -> T
         ) async throws -> T {
-            try await withPermit(lane: lane, operation)
+            try await withPermit(
+                lane: lane,
+                admissionDeadline: admissionDeadline,
+                operation
+            )
         }
     }
 #endif

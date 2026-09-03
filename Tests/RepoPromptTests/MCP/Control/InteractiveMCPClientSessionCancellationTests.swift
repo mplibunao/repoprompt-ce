@@ -188,6 +188,210 @@ import XCTest
             )
         }
 
+        func testOrdinaryDefaultExportOverwritesAndTransmitsVersionedEnvelope() async throws {
+            let transports = await InMemoryTransport.createConnectedPair()
+            let recorder = CLIToolArgumentsRecorder()
+            let server = Server(
+                name: "CLI envelope test server",
+                version: "1.0",
+                capabilities: .init(tools: .init())
+            )
+            await server.withMethodHandler(CallTool.self) { params in
+                await recorder.record(params.arguments ?? [:])
+                return .init(
+                    content: [.text(text: "ok", annotations: nil, _meta: nil)],
+                    isError: false
+                )
+            }
+            try await server.start(transport: transports.server)
+            let requestSendBarrier = MCPRequestSendBarrier()
+            let clientTransport = OrderedMCPTransport(
+                underlying: transports.client,
+                requestSendBarrier: requestSendBarrier,
+                logger: transports.client.logger
+            )
+            let client = Client(name: "CLI envelope test client", version: "1.0")
+            do {
+                _ = try await client.connect(transport: clientTransport)
+                let session = InteractiveMCPClientSession(
+                    connectedClientForTesting: client,
+                    requestSendBarrier: requestSendBarrier,
+                    timeoutNowNanoseconds: { 10000 },
+                    wallNowUnixMilliseconds: { 1000 }
+                )
+                _ = try await session.callTool(
+                    name: "prompt",
+                    arguments: [
+                        "op": .string("export"),
+                        MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .string("caller-value")
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "prompt",
+                    arguments: [
+                        "op": .string("get"),
+                        MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .string("caller-value")
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "workspace_context",
+                    arguments: ["op": .string("export")],
+                    timeout: .seconds(300)
+                )
+                _ = try await session.callTool(
+                    name: "prompt",
+                    arguments: ["op": .string("export")],
+                    timeout: .none
+                )
+                _ = try await session.callTool(
+                    name: "prompt",
+                    arguments: [
+                        "args": .object([
+                            "op": .string("export"),
+                            MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .object([
+                                "kind": .string(MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue),
+                                "expires_at_unix_milliseconds": .int(999_999)
+                            ])
+                        ])
+                    ]
+                )
+
+                let calls = await recorder.snapshot()
+                XCTAssertEqual(calls.count, 5)
+                let envelope = calls[0][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                XCTAssertEqual(
+                    envelope?["kind"]?.stringValue,
+                    MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue
+                )
+                XCTAssertEqual(envelope?["timeout_mode"]?.stringValue, "default")
+                XCTAssertEqual(envelope?["expires_at_unix_milliseconds"]?.intValue, 301_000)
+                XCTAssertNil(calls[1][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+                let finiteMarker = calls[2][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                XCTAssertEqual(finiteMarker?["timeout_mode"]?.stringValue, "explicit_finite")
+                XCTAssertNil(finiteMarker?["expires_at_unix_milliseconds"])
+                let unboundedMarker = calls[3][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                XCTAssertEqual(unboundedMarker?["timeout_mode"]?.stringValue, "explicit_unbounded")
+                XCTAssertNil(unboundedMarker?["expires_at_unix_milliseconds"])
+                XCTAssertEqual(
+                    calls[4][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
+                        .objectValue?["expires_at_unix_milliseconds"]?.intValue,
+                    301_000
+                )
+                await client.disconnect()
+                await server.stop()
+            } catch {
+                await client.disconnect()
+                await server.stop()
+                throw error
+            }
+        }
+
+        func testDefaultExportTimeoutBeforeRegistrationReturnsWithoutSending() async throws {
+            let requestStartGate = CLIAsyncGate()
+            let fixture = try await makeFixture(
+                requestSendWillStart: {
+                    await requestStartGate.arriveAndWait()
+                },
+                timeoutSleep: { _ in }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "workspace_context",
+                        arguments: ["op": .string("export")]
+                    )
+                }
+                await requestStartGate.waitUntilArrived()
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected pre-registration export timeout")
+                } catch let error as InteractiveSessionError {
+                    guard case let .toolCallTimeout(toolName, seconds) = error else {
+                        XCTFail("Expected tool timeout, got \(error)")
+                        await requestStartGate.release()
+                        await fixture.cleanup()
+                        return
+                    }
+                    XCTAssertEqual(toolName, "workspace_context")
+                    XCTAssertEqual(seconds, MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds)
+                }
+                let handlerDidStart = await fixture.handlerStarted.isSignalled()
+                XCTAssertFalse(handlerDidStart)
+                await requestStartGate.release()
+                for _ in 0 ..< 100 {
+                    let count = await fixture.session.test_pendingToolCallResponseTaskCount()
+                    if count == 0 { break }
+                    await Task.yield()
+                }
+                let pendingResponseTaskCount = await fixture.session.test_pendingToolCallResponseTaskCount()
+                XCTAssertEqual(pendingResponseTaskCount, 0)
+                let handlerStartedAfterAbandonment = await fixture.handlerStarted.isSignalled()
+                XCTAssertFalse(handlerStartedAfterAbandonment)
+                await fixture.cleanup()
+            } catch {
+                await requestStartGate.release()
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
+        func testDefaultExportTimeoutAfterRegistrationOrdersCancellationBehindSend() async throws {
+            let registrationGate = CLIAsyncGate()
+            let timeoutGate = CLIAsyncGate()
+            let cancellationDelivered = CLIAsyncSignal()
+            let fixture = try await makeFixture(
+                requestSendDidRegister: {
+                    await registrationGate.arriveAndWait()
+                },
+                cancellationDeliveryOverride: { client, requestID, reason in
+                    try? await client.cancelRequest(requestID, reason: reason)
+                    await cancellationDelivered.signal()
+                },
+                timeoutSleep: { _ in
+                    await timeoutGate.arriveAndWait()
+                }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "prompt",
+                        arguments: ["op": .string("export")]
+                    )
+                }
+                await registrationGate.waitUntilArrived()
+                await timeoutGate.waitUntilArrived()
+                await timeoutGate.release()
+                let cancellationBeforeSend = await cancellationDelivered.isSignalled()
+                XCTAssertFalse(cancellationBeforeSend)
+                let handlerBeforeSend = await fixture.handlerStarted.isSignalled()
+                XCTAssertFalse(handlerBeforeSend)
+
+                await registrationGate.release()
+                await fixture.handlerStarted.wait()
+                await cancellationDelivered.wait()
+                await fixture.handlerCancelled.wait()
+
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected prompt export timeout")
+                } catch let error as InteractiveSessionError {
+                    guard case let .toolCallTimeout(toolName, seconds) = error else {
+                        XCTFail("Expected tool timeout, got \(error)")
+                        await fixture.cleanup()
+                        return
+                    }
+                    XCTAssertEqual(toolName, "prompt")
+                    XCTAssertEqual(seconds, MCPTimeoutPolicy.cliDefaultToolCallTimeoutSeconds)
+                }
+                await fixture.cleanup()
+            } catch {
+                await timeoutGate.release()
+                await registrationGate.release()
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
         func testImmediateTimeoutWaitsForCancellationAttemptToFinish() async throws {
             let cancellationDeliveryFinished = CLIAsyncSignal()
             let fixture = try await makeFixture(
@@ -229,15 +433,128 @@ import XCTest
             }
         }
 
+        func testTimeoutWinsSettlementAndCancelsAndDrainsExactlyOnce() async throws {
+            let timeoutGate = CLIAsyncGate()
+            let cancellationDeliveryGate = CLIAsyncGate()
+            let cancellationDrainStarted = CLIAsyncSignal()
+            let recorder = CLICancellationSettlementRecorder()
+            let fixture = try await makeFixture(
+                cancellationBehavior: .ignoreUntilReleased,
+                cancellationDeliveryOverride: { _, _, reason in
+                    await recorder.recordDelivery(reason: reason)
+                    await cancellationDeliveryGate.arriveAndWait()
+                },
+                timeoutSleep: { _ in await timeoutGate.arriveAndWait() },
+                cancellationDeliveryDrainSleep: { _ in
+                    await recorder.recordDrain()
+                    await cancellationDrainStarted.signal()
+                    try await Task.sleep(for: .seconds(60))
+                }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "slow_tool",
+                        arguments: nil,
+                        timeout: .seconds(42)
+                    )
+                }
+                await fixture.handlerStarted.wait()
+                await timeoutGate.waitUntilArrived()
+                await timeoutGate.release()
+                await cancellationDeliveryGate.waitUntilArrived()
+                call.cancel()
+                await cancellationDrainStarted.wait()
+                await cancellationDeliveryGate.release()
+
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected tool timeout")
+                } catch let error as InteractiveSessionError {
+                    guard case let .toolCallTimeout(toolName, seconds) = error else {
+                        XCTFail("Expected tool timeout, got \(error)")
+                        await fixture.cleanup()
+                        return
+                    }
+                    XCTAssertEqual(toolName, "slow_tool")
+                    XCTAssertEqual(seconds, 42)
+                }
+
+                let recorded = await recorder.snapshot()
+                XCTAssertEqual(recorded.deliveryReasons, ["CLI tool call timed out after 42.0 seconds"])
+                XCTAssertEqual(recorded.drainCount, 1)
+                await fixture.cleanup()
+            } catch {
+                await timeoutGate.release()
+                await cancellationDeliveryGate.release()
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
+        func testCallerCancellationWinsSettlementAndCancelsAndDrainsExactlyOnce() async throws {
+            let timeoutGate = CLIAsyncGate()
+            let cancellationDeliveryGate = CLIAsyncGate()
+            let cancellationDrainStarted = CLIAsyncSignal()
+            let recorder = CLICancellationSettlementRecorder()
+            let fixture = try await makeFixture(
+                cancellationBehavior: .ignoreUntilReleased,
+                cancellationDeliveryOverride: { _, _, reason in
+                    await recorder.recordDelivery(reason: reason)
+                    await cancellationDeliveryGate.arriveAndWait()
+                },
+                timeoutSleep: { _ in await timeoutGate.arriveAndWait() },
+                cancellationDeliveryDrainSleep: { _ in
+                    await recorder.recordDrain()
+                    await cancellationDrainStarted.signal()
+                    try await Task.sleep(for: .seconds(60))
+                }
+            )
+            do {
+                let call = Task {
+                    try await fixture.session.callTool(
+                        name: "slow_tool",
+                        arguments: nil,
+                        timeout: .seconds(42)
+                    )
+                }
+                await fixture.handlerStarted.wait()
+                await timeoutGate.waitUntilArrived()
+                call.cancel()
+                await cancellationDeliveryGate.waitUntilArrived()
+                await timeoutGate.release()
+                await cancellationDrainStarted.wait()
+                await cancellationDeliveryGate.release()
+
+                do {
+                    _ = try await call.value
+                    XCTFail("Expected caller cancellation")
+                } catch is CancellationError {
+                    // Expected.
+                }
+
+                let recorded = await recorder.snapshot()
+                XCTAssertEqual(recorded.deliveryReasons, ["CLI caller cancelled tool request"])
+                XCTAssertEqual(recorded.drainCount, 1)
+                await fixture.cleanup()
+            } catch {
+                await timeoutGate.release()
+                await cancellationDeliveryGate.release()
+                await fixture.cleanup()
+                throw error
+            }
+        }
+
         func testPromptExportImplicitTimeoutDeliversCancellationWithoutIndefiniteWait() async throws {
             let cancellationDeliveryFinished = CLIAsyncSignal()
+            let timeoutGate = CLIAsyncGate()
             let fixture = try await makeFixture(
                 cancellationBehavior: .ignoreUntilReleased,
                 cancellationDeliveryOverride: { client, requestID, reason in
                     try? await client.cancelRequest(requestID, reason: reason)
                     await cancellationDeliveryFinished.signal()
                 },
-                timeoutSleep: { _ in }
+                timeoutSleep: { _ in await timeoutGate.arriveAndWait() }
             )
             do {
                 let call = Task {
@@ -246,6 +563,8 @@ import XCTest
                         arguments: ["op": .string("export")]
                     )
                 }
+                await fixture.handlerStarted.wait()
+                await timeoutGate.release()
                 do {
                     _ = try await call.value
                     XCTFail("Expected prompt export timeout")
@@ -404,6 +723,7 @@ import XCTest
         private func makeFixture(
             cancellationBehavior: CLICancellationBehavior = .cooperative,
             requestSendWillStart: (@Sendable () async -> Void)? = nil,
+            requestSendDidRegister: (@Sendable () async -> Void)? = nil,
             cancellationDeliveryOverride: InteractiveMCPClientSession.CancellationDeliveryOverride? = nil,
             timeoutSleep: @escaping @Sendable (UInt64) async throws -> Void = { nanoseconds in
                 try await Task.sleep(nanoseconds: nanoseconds)
@@ -459,6 +779,7 @@ import XCTest
                 connectedClientForTesting: client,
                 requestSendBarrier: requestSendBarrier,
                 requestSendWillStart: requestSendWillStart,
+                requestSendDidRegister: requestSendDidRegister,
                 cancellationDeliveryOverride: cancellationDeliveryOverride,
                 timeoutSleep: timeoutSleep,
                 cancellationDeliveryDrainTimeoutNanoseconds: cancellationDeliveryDrainTimeoutNanoseconds,
@@ -555,6 +876,35 @@ import XCTest
 
         func isSignalled() -> Bool {
             signalled
+        }
+    }
+
+    private actor CLICancellationSettlementRecorder {
+        private var deliveryReasons: [String] = []
+        private var drainCount = 0
+
+        func recordDelivery(reason: String) {
+            deliveryReasons.append(reason)
+        }
+
+        func recordDrain() {
+            drainCount += 1
+        }
+
+        func snapshot() -> (deliveryReasons: [String], drainCount: Int) {
+            (deliveryReasons, drainCount)
+        }
+    }
+
+    private actor CLIToolArgumentsRecorder {
+        private var calls: [[String: Value]] = []
+
+        func record(_ arguments: [String: Value]) {
+            calls.append(arguments)
+        }
+
+        func snapshot() -> [[String: Value]] {
+            calls
         }
     }
 

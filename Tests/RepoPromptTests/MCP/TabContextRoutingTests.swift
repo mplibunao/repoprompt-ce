@@ -3,6 +3,7 @@ import Foundation
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptShared
 import XCTest
 
 final class TabContextRoutingTests: XCTestCase {
@@ -2178,6 +2179,111 @@ final class TabContextRoutingTests: XCTestCase {
             explicitWindowID: 7,
             authorization: authorization
         ))
+    }
+
+    func testExecutionEnvelopeIsExtractedAndNeverReachesDomainArguments() {
+        let envelopeValue: Value = .object([
+            "kind": .string(MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue),
+            "timeout_mode": .string(MCPToolCallDeadlineEnvelope.TimeoutMode.ordinaryDefault.rawValue),
+            "expires_at_unix_milliseconds": .int(1_800_000_000_123)
+        ])
+        let direct = MCPToolArgsNormalizer.normalize(
+            params: [
+                "op": .string("export"),
+                MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: envelopeValue
+            ],
+            originalToolName: "prompt",
+            canonicalToolName: "prompt"
+        )
+        XCTAssertEqual(
+            direct.executionEnvelopeState,
+            .valid(MCPToolCallDeadlineEnvelope(
+                kind: .ordinaryPromptExportV1,
+                expiresAtUnixMilliseconds: 1_800_000_000_123
+            ))
+        )
+        XCTAssertNil(direct.payload[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+        XCTAssertEqual(direct.payload["op"]?.stringValue, "export")
+
+        let nested = MCPToolArgsNormalizer.normalize(
+            params: [
+                "args": .object([
+                    "op": .string("snapshot"),
+                    MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: envelopeValue
+                ])
+            ],
+            originalToolName: "workspace_context",
+            canonicalToolName: "workspace_context"
+        )
+        XCTAssertEqual(nested.executionEnvelopeState, .absent)
+        XCTAssertNil(nested.payload[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+        XCTAssertNil(
+            nested.payload["args"]?.objectValue?[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]
+        )
+        XCTAssertEqual(nested.payload["op"]?.stringValue, "snapshot")
+
+        let objectWrapperConflict = MCPToolArgsNormalizer.normalize(
+            params: [
+                MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: envelopeValue,
+                "prompt": .object([
+                    "op": .string("export"),
+                    MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .object([
+                        "kind": .string(MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue),
+                        "timeout_mode": .string(MCPToolCallDeadlineEnvelope.TimeoutMode.ordinaryDefault.rawValue),
+                        "expires_at_unix_milliseconds": .int(1)
+                    ])
+                ])
+            ],
+            originalToolName: "prompt",
+            canonicalToolName: "prompt"
+        )
+        XCTAssertEqual(
+            objectWrapperConflict.executionEnvelopeState,
+            .valid(MCPToolCallDeadlineEnvelope(
+                kind: .ordinaryPromptExportV1,
+                expiresAtUnixMilliseconds: 1_800_000_000_123
+            ))
+        )
+        XCTAssertNil(objectWrapperConflict.payload[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+        XCTAssertEqual(objectWrapperConflict.payload["op"]?.stringValue, "export")
+
+        let stringWrapperConflict = MCPToolArgsNormalizer.normalize(
+            params: [
+                MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: envelopeValue,
+                "prompt": .string(
+                    #"{"op":"export","_repoprompt_execution_envelope":{"kind":"ordinary_prompt_export_v1","timeout_mode":"explicit_unbounded"}}"#
+                )
+            ],
+            originalToolName: "prompt",
+            canonicalToolName: "prompt"
+        )
+        XCTAssertEqual(
+            stringWrapperConflict.executionEnvelopeState,
+            .valid(MCPToolCallDeadlineEnvelope(
+                kind: .ordinaryPromptExportV1,
+                expiresAtUnixMilliseconds: 1_800_000_000_123
+            ))
+        )
+        XCTAssertNil(stringWrapperConflict.payload[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+        XCTAssertEqual(stringWrapperConflict.payload["op"]?.stringValue, "export")
+
+        let malformedDirectConflict = MCPToolArgsNormalizer.normalize(
+            params: [
+                MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .object([
+                    "kind": .string("future_version"),
+                    "expires_at_unix_milliseconds": .int(1_800_000_000_123)
+                ]),
+                "prompt": .object([
+                    "op": .string("get"),
+                    MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: envelopeValue
+                ])
+            ],
+            originalToolName: "prompt",
+            canonicalToolName: "prompt"
+        )
+        XCTAssertEqual(malformedDirectConflict.executionEnvelopeState, .invalid)
+        XCTAssertNil(malformedDirectConflict.payload[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+        XCTAssertEqual(malformedDirectConflict.payload["op"]?.stringValue, "get")
     }
 
     func testWrappedMutationArgumentsPreserveOperationIdentity() {

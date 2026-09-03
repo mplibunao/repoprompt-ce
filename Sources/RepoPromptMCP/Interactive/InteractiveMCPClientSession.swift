@@ -9,6 +9,7 @@
 import Foundation
 import Logging
 import MCP
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 // MARK: - Progress Notification (CLI-side)
@@ -222,6 +223,42 @@ private final class ToolCatalogSharedTask<Value: Sendable>: @unchecked Sendable 
     }
 }
 
+private struct ResolvedToolCallDeadline {
+    let timeoutSeconds: TimeInterval?
+    let startedAtNanoseconds: UInt64
+    let expiresAtNanoseconds: UInt64?
+    let wireEnvelope: MCPToolCallDeadlineEnvelope?
+    let isSharedOrdinaryExportEnvelope: Bool
+
+    func remainingNanoseconds(now: UInt64) -> UInt64? {
+        guard let expiresAtNanoseconds else { return nil }
+        return expiresAtNanoseconds > now ? expiresAtNanoseconds - now : 0
+    }
+}
+
+private final class ToolCallTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
+
+    func install(_ task: Task<Void, Never>) {
+        let shouldCancel = lock.withLock {
+            guard !isCancelled else { return true }
+            self.task = task
+            return false
+        }
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        let capturedTask = lock.withLock {
+            isCancelled = true
+            return self.task
+        }
+        capturedTask?.cancel()
+    }
+}
+
 private final class ToolCallSettlementState: @unchecked Sendable {
     enum Outcome {
         case pending
@@ -238,6 +275,9 @@ private final class ToolCallSettlementState: @unchecked Sendable {
 
     private var outcome: Outcome = .pending
     private var responseResult: Result<CallTool.Result, Error>?
+    private var registeredRequestID: ID?
+    private var requestSendDidSucceed: Bool?
+    private var requestSendContinuations: [CheckedContinuation<Bool, Never>] = []
     private var outcomeContinuation: CheckedContinuation<Outcome, Never>?
     private var cancellationDelivery: CancellationDelivery?
 
@@ -262,6 +302,42 @@ private final class ToolCallSettlementState: @unchecked Sendable {
         lock.unlock()
         continuation?.resume(returning: candidate)
         return true
+    }
+
+    func recordRegisteredRequest(_ requestID: ID) -> Bool {
+        lock.withLock {
+            guard case .pending = outcome else { return false }
+            registeredRequestID = requestID
+            return true
+        }
+    }
+
+    func registeredRequest() -> ID? {
+        lock.withLock { registeredRequestID }
+    }
+
+    func recordRequestSendCompletion(succeeded: Bool) {
+        let continuations = lock.withLock {
+            guard requestSendDidSucceed == nil else { return [CheckedContinuation<Bool, Never>]() }
+            requestSendDidSucceed = succeeded
+            let continuations = requestSendContinuations
+            requestSendContinuations.removeAll()
+            return continuations
+        }
+        continuations.forEach { $0.resume(returning: succeeded) }
+    }
+
+    func waitForRequestSendCompletion() async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let requestSendDidSucceed {
+                lock.unlock()
+                continuation.resume(returning: requestSendDidSucceed)
+            } else {
+                requestSendContinuations.append(continuation)
+                lock.unlock()
+            }
+        }
     }
 
     func complete(with result: Result<CallTool.Result, Error>) {
@@ -355,6 +431,8 @@ actor InteractiveMCPClientSession {
     private let clientName: String
     private let logger: Logger
     private let timeoutSleep: TimeoutSleep
+    private let timeoutNowNanoseconds: @Sendable () -> UInt64
+    private let wallNowUnixMilliseconds: @Sendable () -> Int64
     private let cancellationDeliveryDrainSleep: TimeoutSleep
     private let cancellationDeliveryDrainTimeoutNanoseconds: UInt64
 
@@ -373,6 +451,7 @@ actor InteractiveMCPClientSession {
 
     #if DEBUG
         private let requestSendWillStart: (@Sendable () async -> Void)?
+        private let requestSendDidRegister: (@Sendable () async -> Void)?
         private let toolListRefreshWillAwait: (@Sendable () async -> Void)?
         private let cancellationDeliveryOverride: CancellationDeliveryOverride?
     #endif
@@ -402,12 +481,17 @@ actor InteractiveMCPClientSession {
         timeoutSleep = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
         }
+        timeoutNowNanoseconds = { DispatchTime.now().uptimeNanoseconds }
+        wallNowUnixMilliseconds = {
+            Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        }
         cancellationDeliveryDrainSleep = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
         }
         cancellationDeliveryDrainTimeoutNanoseconds = Self.cancellationDeliveryDrainTimeoutNanoseconds
         #if DEBUG
             requestSendWillStart = nil
+            requestSendDidRegister = nil
             toolListRefreshWillAwait = nil
             cancellationDeliveryOverride = nil
         #endif
@@ -418,10 +502,15 @@ actor InteractiveMCPClientSession {
             connectedClientForTesting client: MCP.Client,
             requestSendBarrier: MCPRequestSendBarrier,
             requestSendWillStart: (@Sendable () async -> Void)? = nil,
+            requestSendDidRegister: (@Sendable () async -> Void)? = nil,
             toolListRefreshWillAwait: (@Sendable () async -> Void)? = nil,
             cancellationDeliveryOverride: CancellationDeliveryOverride? = nil,
             timeoutSleep: @escaping TimeoutSleep = { nanoseconds in
                 try await Task.sleep(nanoseconds: nanoseconds)
+            },
+            timeoutNowNanoseconds: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            wallNowUnixMilliseconds: @escaping @Sendable () -> Int64 = {
+                Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
             },
             cancellationDeliveryDrainTimeoutNanoseconds: UInt64 = InteractiveMCPClientSession.cancellationDeliveryDrainTimeoutNanoseconds,
             cancellationDeliveryDrainSleep: @escaping TimeoutSleep = { nanoseconds in
@@ -434,11 +523,14 @@ actor InteractiveMCPClientSession {
                 SwiftLogNoOpLogHandler()
             }
             self.timeoutSleep = timeoutSleep
+            self.timeoutNowNanoseconds = timeoutNowNanoseconds
+            self.wallNowUnixMilliseconds = wallNowUnixMilliseconds
             self.cancellationDeliveryDrainSleep = cancellationDeliveryDrainSleep
             self.cancellationDeliveryDrainTimeoutNanoseconds = cancellationDeliveryDrainTimeoutNanoseconds
             self.client = client
             self.requestSendBarrier = requestSendBarrier
             self.requestSendWillStart = requestSendWillStart
+            self.requestSendDidRegister = requestSendDidRegister
             self.toolListRefreshWillAwait = toolListRefreshWillAwait
             self.cancellationDeliveryOverride = cancellationDeliveryOverride
         }
@@ -770,8 +862,22 @@ actor InteractiveMCPClientSession {
             throw InteractiveSessionError.notConnected
         }
 
-        // Inject hidden parameters if we have window selection
+        let deadlineStartedAtNanoseconds = timeoutNowNanoseconds()
         var args = arguments ?? [:]
+        args.removeValue(forKey: MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey)
+        let resolvedDeadline = resolvedToolCallDeadline(
+            timeout,
+            toolName: name,
+            arguments: args,
+            startedAtNanoseconds: deadlineStartedAtNanoseconds,
+            wallNowUnixMilliseconds: wallNowUnixMilliseconds()
+        )
+        if let wireEnvelope = resolvedDeadline.wireEnvelope {
+            args[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey] =
+                MCPToolCallDeadlineEnvelopeValueCodec.encode(wireEnvelope)
+        }
+
+        // Inject hidden parameters if we have window selection
         let suppressWindowInjection = shouldSuppressWindowInjection(toolName: name, args: args)
         let suppressContextInjection = shouldSuppressContextInjection(toolName: name)
         if let windowID = selectedWindowID, !suppressWindowInjection {
@@ -790,24 +896,33 @@ actor InteractiveMCPClientSession {
         let requestMetadata = progressEnabled
             ? Metadata(progressToken: .unique())
             : nil
-        let registeredCall = try await registerAndSendToolCall(
-            client: client,
-            requestSendBarrier: requestSendBarrier,
+        let request = CallTool.request(.init(
             name: name,
             arguments: args.isEmpty ? nil : args,
-            metadata: requestMetadata
-        )
-        let effectiveTimeout = resolvedTimeout(
-            timeout,
-            toolName: name,
-            arguments: args
-        )
-        let result = try await awaitToolCallResult(
-            registeredCall,
-            client: client,
-            toolName: name,
-            timeoutSeconds: effectiveTimeout
-        )
+            meta: requestMetadata
+        ))
+        let result: CallTool.Result
+        if resolvedDeadline.isSharedOrdinaryExportEnvelope {
+            result = try await performToolCall(
+                request,
+                client: client,
+                requestSendBarrier: requestSendBarrier,
+                toolName: name,
+                deadline: resolvedDeadline
+            )
+        } else {
+            let registeredCall = try await registerAndSendToolCall(
+                request,
+                client: client,
+                requestSendBarrier: requestSendBarrier
+            )
+            result = try await awaitRegisteredToolCallResult(
+                registeredCall,
+                client: client,
+                toolName: name,
+                timeoutSeconds: resolvedDeadline.timeoutSeconds
+            )
+        }
 
         if result.isError != true, shouldClearWindowSelectionAfterCall(toolName: name, args: args) {
             selectedWindowID = nil
@@ -818,11 +933,9 @@ actor InteractiveMCPClientSession {
     }
 
     private func registerAndSendToolCall(
+        _ request: Request<CallTool>,
         client: MCP.Client,
-        requestSendBarrier: MCPRequestSendBarrier,
-        name: String,
-        arguments: [String: Value]?,
-        metadata: Metadata?
+        requestSendBarrier: MCPRequestSendBarrier
     ) async throws -> RegisteredToolCall {
         #if DEBUG
             if let requestSendWillStart {
@@ -830,7 +943,6 @@ actor InteractiveMCPClientSession {
             }
         #endif
         try Task.checkCancellation()
-        let request = CallTool.request(.init(name: name, arguments: arguments, meta: metadata))
         await requestSendBarrier.register(requestID: request.id)
         do {
             let context = try await client.send(request)
@@ -842,7 +954,41 @@ actor InteractiveMCPClientSession {
         }
     }
 
-    private func awaitToolCallResult(
+    private func registerAndSendSharedExportToolCall(
+        _ request: Request<CallTool>,
+        client: MCP.Client,
+        requestSendBarrier: MCPRequestSendBarrier,
+        settlement: ToolCallSettlementState
+    ) async throws -> RegisteredToolCall {
+        #if DEBUG
+            if let requestSendWillStart {
+                await requestSendWillStart()
+            }
+        #endif
+        try Task.checkCancellation()
+        await requestSendBarrier.register(requestID: request.id)
+        guard settlement.recordRegisteredRequest(request.id) else {
+            await requestSendBarrier.cancel(requestID: request.id)
+            throw CancellationError()
+        }
+        #if DEBUG
+            if let requestSendDidRegister {
+                await requestSendDidRegister()
+            }
+        #endif
+        do {
+            let context = try await client.send(request)
+            try await requestSendBarrier.waitUntilSent(requestID: request.id)
+            settlement.recordRequestSendCompletion(succeeded: true)
+            return RegisteredToolCall(context: context)
+        } catch {
+            await requestSendBarrier.cancel(requestID: request.id)
+            settlement.recordRequestSendCompletion(succeeded: false)
+            throw error
+        }
+    }
+
+    private func awaitRegisteredToolCallResult(
         _ registeredCall: RegisteredToolCall,
         client: MCP.Client,
         toolName: String,
@@ -895,7 +1041,8 @@ actor InteractiveMCPClientSession {
             settlement: settlement,
             outcome: outcome,
             requestID: registeredCall.requestID,
-            toolName: toolName
+            toolName: toolName,
+            sharedDeadline: nil
         )
 
         switch outcome {
@@ -916,8 +1063,109 @@ actor InteractiveMCPClientSession {
         }
     }
 
+    private func performToolCall(
+        _ request: Request<CallTool>,
+        client: MCP.Client,
+        requestSendBarrier: MCPRequestSendBarrier,
+        toolName: String,
+        deadline: ResolvedToolCallDeadline
+    ) async throws -> CallTool.Result {
+        let settlement = ToolCallSettlementState()
+        let responseTaskID = UUID()
+        let responseTaskBox = ToolCallTaskBox()
+        let responseTask = Task { [weak self] in
+            guard let self else { return }
+            let result: Result<CallTool.Result, Error>
+            do {
+                let registeredCall = try await registerAndSendSharedExportToolCall(
+                    request,
+                    client: client,
+                    requestSendBarrier: requestSendBarrier,
+                    settlement: settlement
+                )
+                result = try await .success(registeredCall.context.value)
+            } catch {
+                result = .failure(error)
+            }
+            settlement.complete(with: result)
+            await removeToolCallResponseTask(responseTaskID)
+        }
+        responseTaskBox.install(responseTask)
+        pendingToolCallResponseTasks[responseTaskID] = responseTask
+
+        let timeoutTask = deadline.remainingNanoseconds(now: timeoutNowNanoseconds()).map { remaining in
+            Task { [timeoutSleep] in
+                do {
+                    try await timeoutSleep(remaining)
+                } catch {
+                    return
+                }
+                _ = settlement.claim(.timedOut) { [weak self] in
+                    await self?.cancelSharedExportRequest(
+                        client: client,
+                        settlement: settlement,
+                        responseTaskBox: responseTaskBox,
+                        reason: "CLI tool call timed out after \(deadline.timeoutSeconds ?? 0) seconds"
+                    )
+                }
+            }
+        }
+        defer { timeoutTask?.cancel() }
+
+        let outcome = await withTaskCancellationHandler {
+            await settlement.waitForOutcome()
+        } onCancel: {
+            _ = settlement.claim(.callerCancelled) { [weak self] in
+                await self?.cancelSharedExportRequest(
+                    client: client,
+                    settlement: settlement,
+                    responseTaskBox: responseTaskBox,
+                    reason: "CLI caller cancelled tool request"
+                )
+            }
+        }
+        await waitForCancellationDeliveryIfNeeded(
+            settlement: settlement,
+            outcome: outcome,
+            requestID: request.id,
+            toolName: toolName,
+            sharedDeadline: deadline
+        )
+
+        switch outcome {
+        case .completed:
+            guard let result = settlement.completedResult() else {
+                throw InteractiveSessionError.cancelled
+            }
+            return try result.get()
+        case .timedOut:
+            throw InteractiveSessionError.toolCallTimeout(
+                toolName: toolName,
+                seconds: deadline.timeoutSeconds ?? 0
+            )
+        case .callerCancelled:
+            throw CancellationError()
+        case .pending:
+            preconditionFailure("Tool-call outcome waiter resumed before settlement")
+        }
+    }
+
     private func removeToolCallResponseTask(_ id: UUID) {
         pendingToolCallResponseTasks.removeValue(forKey: id)
+    }
+
+    private func cancelSharedExportRequest(
+        client: MCP.Client,
+        settlement: ToolCallSettlementState,
+        responseTaskBox: ToolCallTaskBox,
+        reason: String
+    ) async {
+        guard let requestID = settlement.registeredRequest() else {
+            responseTaskBox.cancel()
+            return
+        }
+        guard await settlement.waitForRequestSendCompletion(), !Task.isCancelled else { return }
+        await deliverCancellation(client: client, requestID: requestID, reason: reason)
     }
 
     private func deliverCancellation(
@@ -938,7 +1186,8 @@ actor InteractiveMCPClientSession {
         settlement: ToolCallSettlementState,
         outcome: ToolCallSettlementState.Outcome,
         requestID: ID,
-        toolName: String
+        toolName: String,
+        sharedDeadline: ResolvedToolCallDeadline?
     ) async {
         switch outcome {
         case .timedOut, .callerCancelled:
@@ -946,8 +1195,12 @@ actor InteractiveMCPClientSession {
         case .pending, .completed:
             return
         }
+        let remainingEnvelope = sharedDeadline?.remainingNanoseconds(now: timeoutNowNanoseconds())
+        let drainTimeout = remainingEnvelope.map {
+            min(cancellationDeliveryDrainTimeoutNanoseconds, $0)
+        } ?? cancellationDeliveryDrainTimeoutNanoseconds
         let delivered = await settlement.waitForCancellationDelivery(
-            timeoutNanoseconds: cancellationDeliveryDrainTimeoutNanoseconds,
+            timeoutNanoseconds: drainTimeout,
             timeoutSleep: cancellationDeliveryDrainSleep
         )
         if !delivered {
@@ -961,18 +1214,86 @@ actor InteractiveMCPClientSession {
         return UInt64((clampedSeconds * 1_000_000_000).rounded(.up))
     }
 
-    private func resolvedTimeout(
+    private func resolvedToolCallDeadline(
         _ policy: ToolCallTimeoutPolicy,
         toolName: String,
-        arguments: [String: Value]
-    ) -> TimeInterval? {
-        let effectivePolicy: ToolCallTimeoutPolicy = switch policy {
+        arguments: [String: Value],
+        startedAtNanoseconds: UInt64,
+        wallNowUnixMilliseconds: Int64
+    ) -> ResolvedToolCallDeadline {
+        let timeoutSeconds = resolvedTimeout(policy, toolName: toolName, arguments: arguments)
+        let timeoutNanoseconds = timeoutSeconds.map(Self.nanoseconds(forTimeoutSeconds:))
+        let expiresAtNanoseconds = timeoutNanoseconds.map {
+            startedAtNanoseconds.addingReportingOverflow($0).overflow
+                ? UInt64.max
+                : startedAtNanoseconds + $0
+        }
+        let isPromptContextTool = toolName == "prompt" || toolName == "workspace_context"
+        // Reuse domain normalization so every accepted wrapper shape enters the same
+        // pre-registration deadline lifecycle as its direct argument form.
+        let normalizedOperationArguments = isPromptContextTool
+            ? MCPToolArgsNormalizer.normalize(
+                params: arguments,
+                originalToolName: toolName,
+                canonicalToolName: toolName
+            ).payload
+            : arguments
+        let effectivePolicy = effectiveTimeoutPolicy(policy)
+        let isPromptExport = isPromptContextTool
+            && MCPPromptContextOperation.parse(
+                toolName: toolName,
+                arguments: normalizedOperationArguments
+            ) == .export
+        let isOrdinaryDefaultExport = isPromptExport && effectivePolicy == .default
+        let wireEnvelope: MCPToolCallDeadlineEnvelope?
+        if isPromptExport {
+            switch effectivePolicy {
+            case .default:
+                let envelopeMilliseconds = Int64(MCPTimeoutPolicy.promptExportTotalEnvelopeSeconds * 1000)
+                let expiration = wallNowUnixMilliseconds.addingReportingOverflow(envelopeMilliseconds)
+                wireEnvelope = MCPToolCallDeadlineEnvelope(
+                    kind: .ordinaryPromptExportV1,
+                    expiresAtUnixMilliseconds: expiration.overflow ? .max : expiration.partialValue,
+                    timeoutMode: .ordinaryDefault
+                )
+            case .seconds:
+                wireEnvelope = MCPToolCallDeadlineEnvelope(
+                    kind: .ordinaryPromptExportV1,
+                    timeoutMode: .explicitFinite
+                )
+            case .none:
+                wireEnvelope = MCPToolCallDeadlineEnvelope(
+                    kind: .ordinaryPromptExportV1,
+                    timeoutMode: .explicitUnbounded
+                )
+            }
+        } else {
+            wireEnvelope = nil
+        }
+        return ResolvedToolCallDeadline(
+            timeoutSeconds: timeoutSeconds,
+            startedAtNanoseconds: startedAtNanoseconds,
+            expiresAtNanoseconds: expiresAtNanoseconds,
+            wireEnvelope: wireEnvelope,
+            isSharedOrdinaryExportEnvelope: isOrdinaryDefaultExport
+        )
+    }
+
+    private func effectiveTimeoutPolicy(_ policy: ToolCallTimeoutPolicy) -> ToolCallTimeoutPolicy {
+        switch policy {
         case .default:
             defaultToolCallTimeout
         case .seconds, .none:
             policy
         }
-        switch effectivePolicy {
+    }
+
+    private func resolvedTimeout(
+        _ policy: ToolCallTimeoutPolicy,
+        toolName: String,
+        arguments: [String: Value]
+    ) -> TimeInterval? {
+        switch effectiveTimeoutPolicy(policy) {
         case .default:
             if MCPTimeoutPolicy.cliDefaultUnboundedToolNames.contains(toolName) {
                 return nil
@@ -1042,6 +1363,10 @@ actor InteractiveMCPClientSession {
             arguments: [String: Value] = [:]
         ) -> TimeInterval? {
             resolvedTimeout(policy, toolName: toolName, arguments: arguments)
+        }
+
+        func test_pendingToolCallResponseTaskCount() -> Int {
+            pendingToolCallResponseTasks.count
         }
 
         func test_markToolsDirty() {

@@ -4,6 +4,85 @@ import RepoPromptShared
 import XCTest
 
 final class MCPToolExecutionWatchdogTests: XCTestCase {
+    func testCleanupGraceIsCappedByOuterEnvelopeWithoutDetaching() async throws {
+        let clock = ExecutionWatchdogManualClock()
+        let events = ExecutionWatchdogEventRecorder()
+        let operationGate = ExecutionWatchdogUncooperativeGate()
+        let task = Task<Int, Error> {
+            try await MCPToolExecutionWatchdog.execute(
+                deadline: .seconds(30),
+                cancellationGrace: .seconds(5),
+                cleanupNotAfter: .seconds(32),
+                cleanupDisposition: .forceDisconnect,
+                environment: clock.environment,
+                onEvent: { await events.append($0) }
+            ) {
+                await operationGate.wait()
+                return 42
+            }
+        }
+
+        try await clock.waitForSleeperCount(1)
+        try await clock.advanceNext(expected: .seconds(30))
+        try await clock.waitForSleeperCount(1)
+        try await clock.advanceNext(expected: .seconds(2))
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected force-disconnect cleanup escalation")
+        } catch let error as MCPToolExecutionWatchdogError {
+            XCTAssertEqual(error, .cleanupUnresponsive)
+        }
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(recordedEvents, [
+            .deadlineExpired,
+            .cancellationRequested(origin: .watchdogDeadline),
+            .cleanupGraceCappedByOuterEnvelope,
+            .cleanupGraceExpired(resolvedDisposition: .forceDisconnect)
+        ])
+        await operationGate.release()
+    }
+
+    func testExhaustedOuterEnvelopeSkipsGraceAndDiagnosesBeforeForceDisconnect() async throws {
+        let clock = ExecutionWatchdogManualClock()
+        let events = ExecutionWatchdogEventRecorder()
+        let operationGate = ExecutionWatchdogUncooperativeGate()
+        let task = Task<Int, Error> {
+            try await MCPToolExecutionWatchdog.execute(
+                deadline: .seconds(30),
+                cancellationGrace: .seconds(5),
+                cleanupNotAfter: .seconds(30),
+                cleanupDisposition: .forceDisconnect,
+                environment: clock.environment,
+                onEvent: { await events.append($0) }
+            ) {
+                await operationGate.wait()
+                return 42
+            }
+        }
+
+        try await clock.waitForSleeperCount(1)
+        try await clock.advanceNext(expected: .seconds(30))
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected immediate force-disconnect cleanup escalation")
+        } catch let error as MCPToolExecutionWatchdogError {
+            XCTAssertEqual(error, .cleanupUnresponsive)
+        }
+
+        let sleeperCount = await clock.sleeperCount()
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(sleeperCount, 0)
+        XCTAssertEqual(recordedEvents, [
+            .deadlineExpired,
+            .cancellationRequested(origin: .watchdogDeadline),
+            .cleanupGraceCappedByOuterEnvelope,
+            .cleanupGraceExpired(resolvedDisposition: .forceDisconnect)
+        ])
+        await operationGate.release()
+    }
+
     func testPromptContextExportsCompleteJustBeforeExtendedDeadlineWithoutTimeoutOrDetach() async throws {
         for scenario in promptContextExportWatchdogScenarios() {
             let operationGate = ExecutionWatchdogUncooperativeGate()
@@ -1203,6 +1282,14 @@ actor ExecutionWatchdogManualClock {
         sleeper.continuation.resume()
     }
 
+    func advanceSleeper(expected: Duration) throws {
+        guard let sleeper = sleeperState.pop(duration: expected) else {
+            throw ManualClockError.noSleeper
+        }
+        timeState.advance(toAtLeast: sleeper.wakeTime)
+        sleeper.continuation.resume()
+    }
+
     private enum ManualClockError: Error {
         case noSleeper
         case nonPositiveAdvance(Duration)
@@ -1293,5 +1380,33 @@ private final class ManualClockSleeperState: @unchecked Sendable {
         sleeperOrder.removeFirst()
         guard let sleeper = sleepers.removeValue(forKey: id) else { return nil }
         return (sleeper.duration, sleeper.wakeTime, sleeper.continuation)
+    }
+
+    func pop(duration: Duration) -> (
+        duration: Duration,
+        wakeTime: Duration,
+        continuation: CheckedContinuation<Void, Error>
+    )? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = sleeperOrder.firstIndex(where: { sleepers[$0]?.duration == duration }) else {
+            return nil
+        }
+        let id = sleeperOrder.remove(at: index)
+        guard let sleeper = sleepers.removeValue(forKey: id) else { return nil }
+        return (sleeper.duration, sleeper.wakeTime, sleeper.continuation)
+    }
+}
+
+private final class ExecutionWatchdogLockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var marked = false
+
+    func mark() {
+        lock.withLock { marked = true }
+    }
+
+    func isMarked() -> Bool {
+        lock.withLock { marked }
     }
 }
