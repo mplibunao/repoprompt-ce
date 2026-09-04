@@ -33,6 +33,7 @@ enum MCPToolWorkCountDiagnostics {
             private let lock = NSLock()
             let operation: String
             let requestIdentity: MCPRequestTimelineIdentity?
+            let historyEpoch: UInt64
             private var repositories: [String] = []
             private var commandCount = 0
             private var commandCountsByRepository: [String: Int] = [:]
@@ -43,9 +44,10 @@ enum MCPToolWorkCountDiagnostics {
             private var commands: [String] = []
             private var inlinePathspecCounts: [Int] = []
 
-            init(operation: String, requestIdentity: MCPRequestTimelineIdentity?) {
+            init(operation: String, requestIdentity: MCPRequestTimelineIdentity?, historyEpoch: UInt64) {
                 self.operation = operation
                 self.requestIdentity = requestIdentity
+                self.historyEpoch = historyEpoch
             }
 
             func setRepositories(_ values: [String]) {
@@ -110,6 +112,7 @@ enum MCPToolWorkCountDiagnostics {
         private final class ReadFileInvocationCapture: @unchecked Sendable {
             private let lock = NSLock()
             let requestIdentity: MCPRequestTimelineIdentity?
+            let historyEpoch: UInt64
             private var source = "unknown"
             private var readBytes = 0
             private var returnedBytes = 0
@@ -117,8 +120,9 @@ enum MCPToolWorkCountDiagnostics {
             private var decodeMicroseconds = 0
             private var cacheHit = false
 
-            init(requestIdentity: MCPRequestTimelineIdentity?) {
+            init(requestIdentity: MCPRequestTimelineIdentity?, historyEpoch: UInt64) {
                 self.requestIdentity = requestIdentity
+                self.historyEpoch = historyEpoch
             }
 
             func recordDiskRead(bytes: Int, decodeMicroseconds: Int) {
@@ -167,34 +171,72 @@ enum MCPToolWorkCountDiagnostics {
         private final class History: @unchecked Sendable {
             private let lock = NSLock()
             private let limit = 64
+            private var epoch: UInt64 = 0
             private var git: [GitInvocationSnapshot] = []
             private var readFile: [ReadFileInvocationSnapshot] = []
 
-            func append(_ snapshot: GitInvocationSnapshot) {
-                lock.lock()
-                git.append(snapshot)
-                if git.count > limit { git.removeFirst(git.count - limit) }
-                lock.unlock()
+            func append(_ snapshot: GitInvocationSnapshot, epoch: UInt64) {
+                guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+                MCPDiagnosticCaptureCoordinator.withBoundary(operation: .workCountPublication) {
+                    guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard epoch == self.epoch else { return }
+                    git.append(snapshot)
+                    if git.count > limit {
+                        let overflow = git.count - limit
+                        git.removeFirst(overflow)
+                        for _ in 0 ..< overflow {
+                            MCPDiagnosticCaptureCoordinator.recordLoss(.workHistorySnapshotCapacity)
+                        }
+                    }
+                }
             }
 
-            func append(_ snapshot: ReadFileInvocationSnapshot) {
-                lock.lock()
-                readFile.append(snapshot)
-                if readFile.count > limit { readFile.removeFirst(readFile.count - limit) }
-                lock.unlock()
+            func append(_ snapshot: ReadFileInvocationSnapshot, epoch: UInt64) {
+                guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+                MCPDiagnosticCaptureCoordinator.withBoundary(operation: .workCountPublication) {
+                    guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard epoch == self.epoch else { return }
+                    readFile.append(snapshot)
+                    if readFile.count > limit {
+                        let overflow = readFile.count - limit
+                        readFile.removeFirst(overflow)
+                        for _ in 0 ..< overflow {
+                            MCPDiagnosticCaptureCoordinator.recordLoss(.workHistorySnapshotCapacity)
+                        }
+                    }
+                }
             }
 
             func snapshots() -> (git: [GitInvocationSnapshot], readFile: [ReadFileInvocationSnapshot]) {
-                lock.lock()
-                defer { lock.unlock() }
-                return (git, readFile)
+                MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return (git, readFile)
+                }
+            }
+
+            func captureEpochIfActive() -> UInt64? {
+                guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return nil }
+                return MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                    guard MCPDiagnosticCaptureCoordinator.isCaptureActive else { return nil }
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return epoch
+                }
             }
 
             func reset() {
-                lock.lock()
-                git.removeAll(keepingCapacity: false)
-                readFile.removeAll(keepingCapacity: false)
-                lock.unlock()
+                MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                    lock.lock()
+                    epoch &+= 1
+                    git.removeAll(keepingCapacity: false)
+                    readFile.removeAll(keepingCapacity: false)
+                    lock.unlock()
+                }
             }
         }
 
@@ -208,17 +250,24 @@ enum MCPToolWorkCountDiagnostics {
         _ body: () async throws -> T
     ) async rethrows -> T {
         #if DEBUG
+            guard let historyEpoch = history.captureEpochIfActive() else {
+                return try await body()
+            }
             let capture = GitInvocationCapture(
                 operation: operation,
-                requestIdentity: MCPRequestTimelineContext.current
+                requestIdentity: MCPRequestTimelineContext.current,
+                historyEpoch: historyEpoch
             )
             return try await $currentGitCapture.withValue(capture) {
                 do {
                     let value = try await body()
-                    history.append(capture.snapshot(outcome: "success"))
+                    history.append(capture.snapshot(outcome: "success"), epoch: capture.historyEpoch)
                     return value
                 } catch {
-                    history.append(capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"))
+                    history.append(
+                        capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"),
+                        epoch: capture.historyEpoch
+                    )
                     throw error
                 }
             }
@@ -269,14 +318,23 @@ enum MCPToolWorkCountDiagnostics {
 
     static func withReadFileInvocation<T>(_ body: () async throws -> T) async rethrows -> T {
         #if DEBUG
-            let capture = ReadFileInvocationCapture(requestIdentity: MCPRequestTimelineContext.current)
+            guard let historyEpoch = history.captureEpochIfActive() else {
+                return try await body()
+            }
+            let capture = ReadFileInvocationCapture(
+                requestIdentity: MCPRequestTimelineContext.current,
+                historyEpoch: historyEpoch
+            )
             return try await $currentReadFileCapture.withValue(capture) {
                 do {
                     let value = try await body()
-                    history.append(capture.snapshot(outcome: "success"))
+                    history.append(capture.snapshot(outcome: "success"), epoch: capture.historyEpoch)
                     return value
                 } catch {
-                    history.append(capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"))
+                    history.append(
+                        capture.snapshot(outcome: error is CancellationError ? "cancelled" : "error"),
+                        epoch: capture.historyEpoch
+                    )
                     throw error
                 }
             }

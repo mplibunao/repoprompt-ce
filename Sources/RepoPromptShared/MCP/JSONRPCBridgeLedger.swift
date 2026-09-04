@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 public enum JSONRPCBridgeDirection: String, Codable, Sendable {
@@ -13,6 +14,51 @@ public enum JSONRPCBridgeDirection: String, Codable, Sendable {
     }
 }
 
+#if DEBUG
+    public struct MCPDiagnosticBoundedString: Equatable, Sendable {
+        public static let maximumUTF8ByteCount = 128
+
+        public let value: String?
+        public let omitted: Bool
+        public let truncated: Bool
+        public let originalUTF8ByteCount: Int?
+
+        public init(_ rawValue: String?) {
+            originalUTF8ByteCount = rawValue?.utf8.count
+            if let rawValue, rawValue.utf8.count <= Self.maximumUTF8ByteCount {
+                value = rawValue
+                omitted = false
+            } else {
+                value = nil
+                omitted = rawValue != nil
+            }
+            truncated = false
+        }
+
+        init(prefix: String, rawValue: String?) {
+            originalUTF8ByteCount = rawValue?.utf8.count
+            guard let rawValue else {
+                value = nil
+                omitted = false
+                truncated = false
+                return
+            }
+
+            let prefixByteCount = prefix.utf8.count
+            if prefixByteCount <= Self.maximumUTF8ByteCount,
+               rawValue.utf8.count <= Self.maximumUTF8ByteCount - prefixByteCount
+            {
+                value = prefix + rawValue
+                omitted = false
+            } else {
+                value = nil
+                omitted = true
+            }
+            truncated = false
+        }
+    }
+#endif
+
 public enum JSONRPCBridgeID: Hashable, Codable, Sendable, CustomStringConvertible {
     case number(Int64)
     case string(String)
@@ -25,6 +71,36 @@ public enum JSONRPCBridgeID: Hashable, Codable, Sendable, CustomStringConvertibl
         case .null: "null"
         }
     }
+
+    #if DEBUG
+        public var boundedDiagnosticDescription: String? {
+            switch self {
+            case .number, .null:
+                description
+            case let .string(value):
+                MCPDiagnosticBoundedString(prefix: "string:", rawValue: value).value
+            }
+        }
+
+        public var diagnosticStringOmitted: Bool {
+            if case let .string(value) = self {
+                return MCPDiagnosticBoundedString(prefix: "string:", rawValue: value).omitted
+            }
+            return false
+        }
+
+        public var diagnosticStringTruncated: Bool {
+            if case let .string(value) = self {
+                return MCPDiagnosticBoundedString(prefix: "string:", rawValue: value).truncated
+            }
+            return false
+        }
+
+        public var diagnosticStringUTF8ByteCount: Int? {
+            if case let .string(value) = self { return value.utf8.count }
+            return nil
+        }
+    #endif
 
     public static func parseFaultSelector(_ raw: String) -> JSONRPCBridgeID? {
         if raw == "null" { return .null }
@@ -135,6 +211,131 @@ public struct JSONRPCBridgeMessageMetadata: Equatable, Sendable {
     }
 }
 
+#if DEBUG
+    public enum MCPResponseDeliveryCaptureLossReason: Sendable {
+        case coordinatorBoundaryContention
+        case tracerLockContention
+        case historyCapacity
+    }
+
+    public struct MCPResponseDeliveryCaptureHooks: Sendable {
+        public let isActive: @Sendable () -> Bool
+        public let tryWithBoundary: @Sendable (@Sendable () -> Bool) -> Bool?
+        public let recordLoss: @Sendable (MCPResponseDeliveryCaptureLossReason) -> Void
+
+        public init(
+            isActive: @escaping @Sendable () -> Bool,
+            tryWithBoundary: @escaping @Sendable (@Sendable () -> Bool) -> Bool?,
+            recordLoss: @escaping @Sendable (MCPResponseDeliveryCaptureLossReason) -> Void
+        ) {
+            self.isActive = isActive
+            self.tryWithBoundary = tryWithBoundary
+            self.recordLoss = recordLoss
+        }
+    }
+
+    public enum MCPResponseDeliveryCapturePublicationTestEvent: Sendable {
+        case hookLookupLockFailed
+        case captureDeactivated
+    }
+
+    public enum MCPResponseDeliveryCapturePublication {
+        private static let hooksLock = NSLock()
+        private nonisolated(unsafe) static var installedHooks: MCPResponseDeliveryCaptureHooks?
+        private nonisolated(unsafe) static var captureActive: Int32 = 0
+        private nonisolated(unsafe) static var hookLookupRecorderCount: Int32 = 0
+        private nonisolated(unsafe) static var hookLookupContention: Int64 = 0
+        private static let testEventSinkLock = NSLock()
+        private nonisolated(unsafe) static var testEventSink: (@Sendable (MCPResponseDeliveryCapturePublicationTestEvent) -> Void)?
+
+        public static func install(_ hooks: MCPResponseDeliveryCaptureHooks) {
+            hooksLock.lock()
+            installedHooks = hooks
+            hooksLock.unlock()
+        }
+
+        static var isCaptureActive: Bool {
+            OSAtomicAdd32Barrier(0, &captureActive) == 1
+        }
+
+        public static func beginCapture() {
+            OSAtomicCompareAndSwap32Barrier(1, 0, &captureActive)
+            waitForHookLookupRecorders()
+            _ = drainHookLookupContention()
+            OSAtomicCompareAndSwap32Barrier(0, 1, &captureActive)
+        }
+
+        public static func finishCaptureAndDrainHookLookupContention() -> UInt64 {
+            OSAtomicCompareAndSwap32Barrier(1, 0, &captureActive)
+            notifyTestEvent(.captureDeactivated)
+            waitForHookLookupRecorders()
+            return UInt64(max(0, drainHookLookupContention()))
+        }
+
+        public static func hookLookupContentionSnapshot() -> UInt64 {
+            UInt64(max(0, OSAtomicAdd64Barrier(0, &hookLookupContention)))
+        }
+
+        static func currentHooks() -> MCPResponseDeliveryCaptureHooks? {
+            OSAtomicIncrement32Barrier(&hookLookupRecorderCount)
+            defer { OSAtomicDecrement32Barrier(&hookLookupRecorderCount) }
+            let captureWasActive = isCaptureActive
+            guard hooksLock.try() else {
+                // Diagnostic lookup must not delay transport writes or dereference
+                // closure-bearing state while another thread is replacing it.
+                notifyTestEvent(.hookLookupLockFailed)
+                if captureWasActive {
+                    OSAtomicIncrement64Barrier(&hookLookupContention)
+                }
+                return nil
+            }
+            defer { hooksLock.unlock() }
+            return installedHooks
+        }
+
+        public static func setTestEventSink(
+            _ sink: (@Sendable (MCPResponseDeliveryCapturePublicationTestEvent) -> Void)?
+        ) {
+            testEventSinkLock.lock()
+            testEventSink = sink
+            testEventSinkLock.unlock()
+        }
+
+        public static func withInstalledHooksForTesting<T>(
+            _ hooks: MCPResponseDeliveryCaptureHooks,
+            _ body: () throws -> T
+        ) rethrows -> T {
+            hooksLock.lock()
+            let previousHooks = installedHooks
+            installedHooks = hooks
+            defer {
+                installedHooks = previousHooks
+                hooksLock.unlock()
+            }
+            return try body()
+        }
+
+        private static func drainHookLookupContention() -> Int64 {
+            let count = OSAtomicAdd64Barrier(0, &hookLookupContention)
+            OSAtomicAdd64Barrier(-count, &hookLookupContention)
+            return count
+        }
+
+        private static func waitForHookLookupRecorders() {
+            while OSAtomicAdd32Barrier(0, &hookLookupRecorderCount) != 0 {
+                sched_yield()
+            }
+        }
+
+        private static func notifyTestEvent(_ event: MCPResponseDeliveryCapturePublicationTestEvent) {
+            guard testEventSinkLock.try() else { return }
+            let sink = testEventSink
+            testEventSinkLock.unlock()
+            sink?(event)
+        }
+    }
+#endif
+
 public struct MCPResponseDeliveryTraceEvent: Equatable, Sendable, CustomStringConvertible {
     public let layer: String
     public let phase: String
@@ -227,26 +428,52 @@ public struct MCPResponseDeliveryTraceEvent: Equatable, Sendable, CustomStringCo
     public var payload: [String: Any] {
         var value: [String: Any] = [
             "layer": layer,
-            "phase": phase,
-            "connection_id": connectionID ?? NSNull(),
-            "connection_generation": connectionGeneration ?? NSNull(),
-            "direction": direction?.rawValue ?? NSNull(),
-            "jsonrpc_request_id": id?.description ?? NSNull(),
-            "method": method ?? NSNull(),
-            "tool": tool ?? NSNull(),
-            "app_invocation_id": requestIdentity?.appInvocationID ?? invocationID ?? NSNull(),
-            "lifecycle_state": lifecycleState ?? NSNull(),
-            "request_ordinal": requestOrdinal ?? NSNull(),
-            "framed_byte_count": framedByteCount ?? NSNull(),
-            "active_request_count": activeRequestCount ?? NSNull(),
-            "response_in_delivery_count": responseInDeliveryCount ?? NSNull(),
-            "terminal_reason": terminalReason ?? NSNull(),
-            "provider_active": providerActive ?? NSNull(),
-            "network_scope_active": networkScopeActive ?? NSNull(),
-            "permit_active": permitActive ?? NSNull(),
-            "publication_pending": publicationPending ?? NSNull(),
-            "terminal_barrier": terminalBarrier ?? NSNull()
+            "phase": phase
         ]
+        #if DEBUG
+            let connectionIdentity = MCPDiagnosticBoundedString(connectionID)
+            value["connection_id"] = connectionIdentity.value ?? NSNull()
+            value["connection_id_omitted"] = connectionIdentity.omitted
+            value["connection_id_truncated"] = connectionIdentity.truncated
+            value["connection_id_utf8_byte_count"] = connectionIdentity.originalUTF8ByteCount ?? NSNull()
+        #else
+            value["connection_id"] = connectionID ?? NSNull()
+        #endif
+        value["connection_generation"] = connectionGeneration ?? NSNull()
+        value["direction"] = direction?.rawValue ?? NSNull()
+        #if DEBUG
+            value["jsonrpc_request_id"] = id?.boundedDiagnosticDescription ?? NSNull()
+            value["jsonrpc_request_id_omitted"] = id?.diagnosticStringOmitted ?? false
+            value["jsonrpc_request_id_truncated"] = id?.diagnosticStringTruncated ?? false
+            value["jsonrpc_request_id_utf8_byte_count"] = id?.diagnosticStringUTF8ByteCount ?? NSNull()
+        #else
+            value["jsonrpc_request_id"] = id?.description ?? NSNull()
+        #endif
+        value["method"] = method ?? NSNull()
+        value["tool"] = tool ?? NSNull()
+        #if DEBUG
+            let invocationIdentity = MCPDiagnosticBoundedString(requestIdentity?.appInvocationID ?? invocationID)
+            value["app_invocation_id"] = invocationIdentity.value ?? NSNull()
+            value["app_invocation_id_omitted"] = invocationIdentity.omitted
+            value["app_invocation_id_truncated"] = invocationIdentity.truncated
+            value["app_invocation_id_utf8_byte_count"] = invocationIdentity.originalUTF8ByteCount ?? NSNull()
+        #else
+            value["app_invocation_id"] = requestIdentity?.appInvocationID ?? invocationID ?? NSNull()
+        #endif
+        value["lifecycle_state"] = lifecycleState ?? NSNull()
+        value["request_ordinal"] = requestOrdinal ?? NSNull()
+        value["framed_byte_count"] = framedByteCount ?? NSNull()
+        #if DEBUG
+            value["framed_sha256"] = framedSHA256 ?? NSNull()
+        #endif
+        value["active_request_count"] = activeRequestCount ?? NSNull()
+        value["response_in_delivery_count"] = responseInDeliveryCount ?? NSNull()
+        value["terminal_reason"] = terminalReason ?? NSNull()
+        value["provider_active"] = providerActive ?? NSNull()
+        value["network_scope_active"] = networkScopeActive ?? NSNull()
+        value["permit_active"] = permitActive ?? NSNull()
+        value["publication_pending"] = publicationPending ?? NSNull()
+        value["terminal_barrier"] = terminalBarrier ?? NSNull()
         #if DEBUG
             value["monotonic_uptime_ms"] = monotonicUptimeMS
         #endif
@@ -255,13 +482,46 @@ public struct MCPResponseDeliveryTraceEvent: Equatable, Sendable, CustomStringCo
 
     public var description: String {
         var fields = ["layer=\(layer)", "phase=\(phase)"]
-        if let connectionID { fields.append("connection_id=\(connectionID)") }
+        #if DEBUG
+            func appendIdentity(_ rawValue: String?, field: String) {
+                let identity = MCPDiagnosticBoundedString(rawValue)
+                if let value = identity.value {
+                    fields.append("\(field)=\(value)")
+                } else if identity.omitted {
+                    fields.append("\(field)=<omitted>")
+                    if let byteCount = identity.originalUTF8ByteCount {
+                        fields.append("\(field)_utf8_bytes=\(byteCount)")
+                    }
+                }
+            }
+
+            appendIdentity(connectionID, field: "connection_id")
+        #else
+            if let connectionID { fields.append("connection_id=\(connectionID)") }
+        #endif
         if let connectionGeneration { fields.append("generation=\(connectionGeneration)") }
         if let direction { fields.append("direction=\(direction.rawValue)") }
-        if let id { fields.append("id=\(id)") }
+        #if DEBUG
+            if let id {
+                if let boundedID = id.boundedDiagnosticDescription {
+                    fields.append("id=\(boundedID)")
+                } else {
+                    fields.append("id=<omitted>")
+                    if let byteCount = id.diagnosticStringUTF8ByteCount {
+                        fields.append("id_utf8_bytes=\(byteCount)")
+                    }
+                }
+            }
+        #else
+            if let id { fields.append("id=\(id)") }
+        #endif
         if let method { fields.append("method=\(method)") }
         if let tool { fields.append("tool=\(tool)") }
-        if let invocationID { fields.append("invocation_id=\(invocationID)") }
+        #if DEBUG
+            appendIdentity(requestIdentity?.appInvocationID ?? invocationID, field: "app_invocation_id")
+        #else
+            if let invocationID { fields.append("invocation_id=\(invocationID)") }
+        #endif
         if let lifecycleState { fields.append("state=\(lifecycleState)") }
         if let requestOrdinal { fields.append("ordinal=\(requestOrdinal)") }
         if let framedByteCount { fields.append("bytes=\(framedByteCount)") }
@@ -274,9 +534,11 @@ public struct MCPResponseDeliveryTraceEvent: Equatable, Sendable, CustomStringCo
         if let permitActive { fields.append("permit_active=\(permitActive)") }
         if let publicationPending { fields.append("publication_pending=\(publicationPending)") }
         if let terminalBarrier { fields.append("terminal_barrier=\(terminalBarrier)") }
-        if let appInvocationID = requestIdentity?.appInvocationID, invocationID == nil {
-            fields.append("app_invocation_id=\(appInvocationID)")
-        }
+        #if !DEBUG
+            if let appInvocationID = requestIdentity?.appInvocationID, invocationID == nil {
+                fields.append("app_invocation_id=\(appInvocationID)")
+            }
+        #endif
         return fields.joined(separator: " ")
     }
 }
@@ -302,24 +564,105 @@ public enum MCPResponseDeliveryTracer {
         _ event: MCPResponseDeliveryTraceEvent,
         to descriptor: Int32 = STDERR_FILENO
     ) {
-        guard event.terminalReason != nil || successTracingEnabled else { return }
-        guard let data = "[MCPResponseDelivery] \(event)\n".data(using: .utf8) else { return }
-        // Terminal tracing must not wait behind another diagnostic emitter or
-        // a full stderr pipe. Dropping a contended/unwritable trace is safer
-        // than delaying the transport's required terminal exit.
-        guard lock.try() else { return }
-        defer { lock.unlock() }
+        let writeToStderr = event.terminalReason != nil || successTracingEnabled
         #if DEBUG
-            if debugEvents.count < maximumDebugEvents {
-                debugEvents.append(event)
+            guard writeToStderr || MCPResponseDeliveryCapturePublication.isCaptureActive else { return }
+            guard let data = "[MCPResponseDelivery] \(event)\n".data(using: .utf8) else { return }
+            if let captureHooks = MCPResponseDeliveryCapturePublication.currentHooks(),
+               captureHooks.isActive()
+            {
+                if let emitted = captureHooks.tryWithBoundary({
+                    emitUnderTracerLock(
+                        event,
+                        data: data,
+                        descriptor: descriptor,
+                        captureEvent: captureHooks.isActive(),
+                        writeToStderr: writeToStderr,
+                        captureHooks: captureHooks
+                    )
+                }) {
+                    _ = emitted
+                } else {
+                    captureHooks.recordLoss(.coordinatorBoundaryContention)
+                    _ = emitUnderTracerLock(
+                        event,
+                        data: data,
+                        descriptor: descriptor,
+                        captureEvent: false,
+                        writeToStderr: writeToStderr,
+                        captureHooks: captureHooks
+                    )
+                }
+            } else {
+                _ = emitUnderTracerLock(
+                    event,
+                    data: data,
+                    descriptor: descriptor,
+                    captureEvent: false,
+                    writeToStderr: writeToStderr,
+                    captureHooks: nil
+                )
             }
+        #else
+            guard writeToStderr else { return }
+            guard let data = "[MCPResponseDelivery] \(event)\n".data(using: .utf8) else { return }
+            _ = emitUnderTracerLock(event, data: data, descriptor: descriptor, captureEvent: false)
         #endif
-        // Terminal events are emitted even with success tracing disabled, so
-        // this path runs during transport failure handling when stderr may
-        // already be closed. Best-effort raw write; never FileHandle.write,
-        // whose ObjC exception on a broken pipe would abort the process.
-        BestEffortStderrWriter.writeNonBlocking(data, to: descriptor)
     }
+
+    #if DEBUG
+        private static func emitUnderTracerLock(
+            _ event: MCPResponseDeliveryTraceEvent,
+            data: Data,
+            descriptor: Int32,
+            captureEvent: Bool,
+            writeToStderr: Bool,
+            captureHooks: MCPResponseDeliveryCaptureHooks?
+        ) -> Bool {
+            // Terminal tracing must not wait behind another diagnostic emitter or
+            // a full stderr pipe. Dropping a contended/unwritable trace is safer
+            // than delaying the transport's required terminal exit.
+            guard lock.try() else {
+                if captureEvent || captureHooks?.isActive() == true {
+                    captureHooks?.recordLoss(.tracerLockContention)
+                }
+                return false
+            }
+            defer { lock.unlock() }
+            if captureEvent {
+                if debugEvents.count < maximumDebugEvents {
+                    debugEvents.append(event)
+                } else {
+                    captureHooks?.recordLoss(.historyCapacity)
+                }
+            }
+            if writeToStderr {
+                // Terminal events run during transport failure handling when stderr
+                // may already be closed, so writing remains best effort and nonblocking.
+                BestEffortStderrWriter.writeNonBlocking(data, to: descriptor)
+            }
+            return true
+        }
+    #else
+        private static func emitUnderTracerLock(
+            _: MCPResponseDeliveryTraceEvent,
+            data: Data,
+            descriptor: Int32,
+            captureEvent _: Bool
+        ) -> Bool {
+            // Terminal tracing must not wait behind another diagnostic emitter or
+            // a full stderr pipe. Dropping a contended/unwritable trace is safer
+            // than delaying the transport's required terminal exit.
+            guard lock.try() else { return false }
+            defer { lock.unlock() }
+            // Terminal events are emitted even with success tracing disabled, so
+            // this path runs during transport failure handling when stderr may
+            // already be closed. Best-effort raw write; never FileHandle.write,
+            // whose ObjC exception on a broken pipe would abort the process.
+            BestEffortStderrWriter.writeNonBlocking(data, to: descriptor)
+            return true
+        }
+    #endif
 
     #if DEBUG
         public static func resetDebugEvents() {
@@ -332,6 +675,18 @@ public enum MCPResponseDeliveryTracer {
             lock.lock()
             defer { lock.unlock() }
             return debugEvents
+        }
+
+        public static func withDebugTracerLockForTesting<T>(_ body: () throws -> T) rethrows -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return try body()
+        }
+
+        public static func fillDebugEventHistoryToCapacityForTesting(with event: MCPResponseDeliveryTraceEvent) {
+            lock.lock()
+            debugEvents = Array(repeating: event, count: maximumDebugEvents)
+            lock.unlock()
         }
     #endif
 
@@ -347,7 +702,11 @@ public enum MCPResponseDeliveryTracer {
         publicationPending: Bool? = nil,
         terminalBarrier: Bool? = nil
     ) {
-        guard terminalReason != nil || successTracingEnabled else { return }
+        #if DEBUG
+            guard terminalReason != nil || successTracingEnabled || MCPResponseDeliveryCapturePublication.isCaptureActive else { return }
+        #else
+            guard terminalReason != nil || successTracingEnabled else { return }
+        #endif
         let messages = prepared.messages.isEmpty ? [nil] : prepared.messages.map(Optional.some)
         for message in messages {
             emit(MCPResponseDeliveryTraceEvent(
@@ -379,7 +738,11 @@ public enum MCPResponseDeliveryTracer {
         connectionGeneration: UInt64? = nil,
         terminalReason: String? = nil
     ) {
-        guard terminalReason != nil || successTracingEnabled else { return }
+        #if DEBUG
+            guard terminalReason != nil || successTracingEnabled || MCPResponseDeliveryCapturePublication.isCaptureActive else { return }
+        #else
+            guard terminalReason != nil || successTracingEnabled else { return }
+        #endif
         let summaries = JSONRPCBridgeFrameInspector.inspectPermissively(frame, direction: direction)
         let metadata = summaries.isEmpty ? [nil] : summaries.map(Optional.some)
         for summary in metadata {
@@ -540,15 +903,45 @@ public enum JSONRPCBridgeLedgerError: Swift.Error, Equatable, CustomStringConver
         switch self {
         case let .terminal(reason): "bridge session is terminal: \(reason)"
         case .malformedBackendFrame: "malformed backend JSON-RPC frame"
-        case let .duplicateActiveID(direction, id): "duplicate active JSON-RPC id \(id) in \(direction.rawValue)"
-        case let .unknownResponse(direction, id): "unknown JSON-RPC response id \(id) in \(direction.rawValue)"
-        case let .cancelledIDReuse(direction, id): "cancelled JSON-RPC id \(id) cannot be reused yet in \(direction.rawValue)"
+        #if DEBUG
+            case let .duplicateActiveID(direction, id):
+                "duplicate active JSON-RPC \(Self.diagnosticIDDescription(id)) in \(direction.rawValue)"
+            case let .unknownResponse(direction, id):
+                "unknown JSON-RPC response \(Self.diagnosticIDDescription(id)) in \(direction.rawValue)"
+            case let .cancelledIDReuse(direction, id):
+                "cancelled JSON-RPC \(Self.diagnosticIDDescription(id)) cannot be reused yet in \(direction.rawValue)"
+        #else
+            case let .duplicateActiveID(direction, id): "duplicate active JSON-RPC id \(id) in \(direction.rawValue)"
+            case let .unknownResponse(direction, id): "unknown JSON-RPC response id \(id) in \(direction.rawValue)"
+            case let .cancelledIDReuse(direction, id): "cancelled JSON-RPC id \(id) cannot be reused yet in \(direction.rawValue)"
+        #endif
         case let .activeCapacityExceeded(limit): "active JSON-RPC request limit exceeded (\(limit))"
         case let .tombstoneCapacityExceeded(limit): "JSON-RPC cancellation tombstone limit exceeded (\(limit))"
         case .invalidTransaction: "invalid or completed JSON-RPC bridge transaction"
-        case let .injectedFault(direction, id): "injected JSON-RPC bridge write failure direction=\(direction.rawValue) id=\(id?.description ?? "none")"
+        #if DEBUG
+            case let .injectedFault(direction, id):
+                "injected JSON-RPC bridge write failure direction=\(direction.rawValue) \(Self.diagnosticIDDescription(id))"
+        #else
+            case let .injectedFault(direction, id):
+                "injected JSON-RPC bridge write failure direction=\(direction.rawValue) id=\(id?.description ?? "none")"
+        #endif
         }
     }
+
+    #if DEBUG
+        private static func diagnosticIDDescription(_ id: JSONRPCBridgeID?) -> String {
+            guard let id else { return "id=none" }
+            if let boundedID = id.boundedDiagnosticDescription {
+                return "id=\(boundedID)"
+            }
+            return [
+                "id=<omitted>",
+                "id_omitted=\(id.diagnosticStringOmitted)",
+                "id_truncated=\(id.diagnosticStringTruncated)",
+                "id_utf8_byte_count=\(id.diagnosticStringUTF8ByteCount ?? 0)"
+            ].joined(separator: " ")
+        }
+    #endif
 }
 
 public actor JSONRPCBridgeLedger {

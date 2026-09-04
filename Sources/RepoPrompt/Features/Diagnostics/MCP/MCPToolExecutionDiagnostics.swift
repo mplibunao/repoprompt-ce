@@ -47,15 +47,43 @@ final class MCPToolExecutionHandlerPhaseRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private let origin: Duration
     private let now: @Sendable () async -> Duration
-    private var latest: MCPToolExecutionHandlerPhaseSnapshot?
+    private var latestSnapshot: MCPToolExecutionHandlerPhaseSnapshot?
 
-    init(
-        origin: Duration,
-        now: @escaping @Sendable () async -> Duration
-    ) {
-        self.origin = origin
-        self.now = now
-    }
+    #if DEBUG
+        private let operationIdentity: MCPToolOperationIdentity
+        private let appConnectionID: UUID
+        private let correlationConnectionID: MCPDiagnosticBoundedString
+        private let invocationID: UUID
+        let historyEpoch: UInt64?
+        private let phaseHistory: MCPToolExecutionPhaseHistoryRecorder
+
+        init(
+            operationIdentity: MCPToolOperationIdentity,
+            appConnectionID: UUID,
+            correlationConnectionID: MCPDiagnosticBoundedString,
+            invocationID: UUID,
+            origin: Duration,
+            now: @escaping @Sendable () async -> Duration,
+            phaseHistory: MCPToolExecutionPhaseHistoryRecorder = .shared
+        ) {
+            self.operationIdentity = operationIdentity
+            self.appConnectionID = appConnectionID
+            self.correlationConnectionID = correlationConnectionID
+            self.invocationID = invocationID
+            historyEpoch = phaseHistory.captureEpochForRecorder()
+            self.origin = origin
+            self.now = now
+            self.phaseHistory = phaseHistory
+        }
+    #else
+        init(
+            origin: Duration,
+            now: @escaping @Sendable () async -> Duration
+        ) {
+            self.origin = origin
+            self.now = now
+        }
+    #endif
 
     func report(
         _ phase: MCPToolExecutionHandlerPhase,
@@ -72,15 +100,280 @@ final class MCPToolExecutionHandlerPhaseRecorder: @unchecked Sendable {
     func snapshot() -> MCPToolExecutionHandlerPhaseSnapshot? {
         lock.lock()
         defer { lock.unlock() }
-        return latest
+        return latestSnapshot
     }
+
+    #if DEBUG
+        func reset() {
+            lock.lock()
+            latestSnapshot = nil
+            lock.unlock()
+        }
+    #endif
 
     private func store(_ snapshot: MCPToolExecutionHandlerPhaseSnapshot) {
         lock.lock()
-        latest = snapshot
-        lock.unlock()
+        latestSnapshot = snapshot
+        #if DEBUG
+            defer { lock.unlock() }
+            if let historyEpoch {
+                phaseHistory.recordHandlerPhase(
+                    snapshot,
+                    operationIdentity: operationIdentity,
+                    appConnectionID: appConnectionID,
+                    correlationConnectionID: correlationConnectionID,
+                    invocationID: invocationID,
+                    epoch: historyEpoch
+                )
+            }
+        #else
+            lock.unlock()
+        #endif
     }
 }
+
+#if DEBUG
+    struct MCPToolExecutionPhaseHistoryEvent: Equatable {
+        enum Kind: String, Equatable {
+            case handlerPhase = "handler_phase"
+            case executionLifecycle = "execution_lifecycle"
+        }
+
+        enum TerminalOutcome: String, Equatable {
+            case success
+            case cancellation
+            case error
+            case detached
+            case forceDisconnected = "force_disconnected"
+        }
+
+        let ingestionSequence: UInt64
+        let observedElapsedMilliseconds: Double
+        let kind: Kind
+        let handlerPhase: MCPToolExecutionHandlerPhase?
+        let handlerTransition: MCPToolExecutionHandlerPhaseTransition?
+        let executionPhase: MCPToolExecutionTraceEvent.Phase?
+        let cancellationRequested: Bool?
+        let cancellationOrigin: MCPToolExecutionCancellationOrigin?
+        let terminalOutcome: TerminalOutcome?
+    }
+
+    struct MCPToolExecutionPhaseInvocationHistory: Equatable {
+        let canonicalToolName: String
+        let appConnectionID: UUID
+        let correlationConnectionID: MCPDiagnosticBoundedString
+        let invocationID: UUID
+        let droppedEventCount: UInt64
+        let events: [MCPToolExecutionPhaseHistoryEvent]
+    }
+
+    final class MCPToolExecutionPhaseHistoryRecorder: @unchecked Sendable {
+        static let shared = MCPToolExecutionPhaseHistoryRecorder(requiresActiveCapture: true)
+        static let defaultMaximumEventsPerInvocation = 128
+
+        private struct InvocationKey: Hashable {
+            let appConnectionID: UUID
+            let invocationID: UUID
+        }
+
+        private struct InvocationState {
+            let operationIdentity: MCPToolOperationIdentity
+            let correlationConnectionID: MCPDiagnosticBoundedString
+            var nextSequence: UInt64 = 0
+            var droppedEventCount: UInt64 = 0
+            var events: [MCPToolExecutionPhaseHistoryEvent] = []
+        }
+
+        private let lock = NSLock()
+        private let maximumInvocationCount: Int
+        private let maximumEventsPerInvocation: Int
+        private let requiresActiveCapture: Bool
+        private var epoch: UInt64 = 0
+        private var invocationOrder: [InvocationKey] = []
+        private var states: [InvocationKey: InvocationState] = [:]
+
+        init(
+            maximumInvocationCount: Int = 64,
+            maximumEventsPerInvocation: Int = MCPToolExecutionPhaseHistoryRecorder.defaultMaximumEventsPerInvocation,
+            requiresActiveCapture: Bool = false
+        ) {
+            self.maximumInvocationCount = max(1, maximumInvocationCount)
+            self.maximumEventsPerInvocation = max(1, maximumEventsPerInvocation)
+            self.requiresActiveCapture = requiresActiveCapture
+        }
+
+        func recordHandlerPhase(
+            _ snapshot: MCPToolExecutionHandlerPhaseSnapshot,
+            operationIdentity: MCPToolOperationIdentity,
+            appConnectionID: UUID,
+            correlationConnectionID: MCPDiagnosticBoundedString,
+            invocationID: UUID,
+            epoch: UInt64
+        ) {
+            append(
+                operationIdentity: operationIdentity,
+                appConnectionID: appConnectionID,
+                correlationConnectionID: correlationConnectionID,
+                invocationID: invocationID,
+                epoch: epoch,
+                observedElapsedMilliseconds: snapshot.elapsedMilliseconds,
+                kind: .handlerPhase,
+                handlerPhase: snapshot.phase,
+                handlerTransition: snapshot.transition
+            )
+        }
+
+        func recordExecutionTrace(_ trace: MCPToolExecutionTraceEvent) {
+            guard let historyEpoch = trace.historyEpoch,
+                  !requiresActiveCapture || MCPDiagnosticCaptureCoordinator.isCaptureActive
+            else { return }
+            append(
+                operationIdentity: trace.operationIdentity,
+                appConnectionID: trace.connectionID,
+                correlationConnectionID: trace.correlationConnectionID,
+                invocationID: trace.invocationID,
+                epoch: historyEpoch,
+                observedElapsedMilliseconds: trace.elapsedMilliseconds,
+                kind: .executionLifecycle,
+                executionPhase: trace.phase,
+                cancellationRequested: trace.cancellationRequested,
+                cancellationOrigin: trace.cancellationOrigin,
+                terminalOutcome: Self.terminalOutcome(for: trace)
+            )
+        }
+
+        func snapshot() -> [MCPToolExecutionPhaseInvocationHistory] {
+            MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                lock.lock()
+                defer { lock.unlock() }
+                return invocationOrder.compactMap { key in
+                    guard let state = states[key] else { return nil }
+                    return MCPToolExecutionPhaseInvocationHistory(
+                        canonicalToolName: state.operationIdentity.canonicalTool,
+                        appConnectionID: key.appConnectionID,
+                        correlationConnectionID: state.correlationConnectionID,
+                        invocationID: key.invocationID,
+                        droppedEventCount: state.droppedEventCount,
+                        events: state.events
+                    )
+                }
+            }
+        }
+
+        func reset() {
+            MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                lock.lock()
+                epoch &+= 1
+                invocationOrder.removeAll(keepingCapacity: true)
+                states.removeAll(keepingCapacity: true)
+                lock.unlock()
+            }
+        }
+
+        func captureEpoch() -> UInt64 {
+            MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                lock.lock()
+                defer { lock.unlock() }
+                return epoch
+            }
+        }
+
+        func captureEpochForRecorder() -> UInt64? {
+            guard !requiresActiveCapture || MCPDiagnosticCaptureCoordinator.isCaptureActive else { return nil }
+            return MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                guard !requiresActiveCapture || MCPDiagnosticCaptureCoordinator.isCaptureActive else { return nil }
+                lock.lock()
+                defer { lock.unlock() }
+                return epoch
+            }
+        }
+
+        private func append(
+            operationIdentity: MCPToolOperationIdentity,
+            appConnectionID: UUID,
+            correlationConnectionID: MCPDiagnosticBoundedString,
+            invocationID: UUID,
+            epoch: UInt64,
+            observedElapsedMilliseconds: Double,
+            kind: MCPToolExecutionPhaseHistoryEvent.Kind,
+            handlerPhase: MCPToolExecutionHandlerPhase? = nil,
+            handlerTransition: MCPToolExecutionHandlerPhaseTransition? = nil,
+            executionPhase: MCPToolExecutionTraceEvent.Phase? = nil,
+            cancellationRequested: Bool? = nil,
+            cancellationOrigin: MCPToolExecutionCancellationOrigin? = nil,
+            terminalOutcome: MCPToolExecutionPhaseHistoryEvent.TerminalOutcome? = nil
+        ) {
+            guard !requiresActiveCapture || MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+            MCPDiagnosticCaptureCoordinator.withBoundary(operation: .phasePublication) {
+                guard !requiresActiveCapture || MCPDiagnosticCaptureCoordinator.isCaptureActive else { return }
+                let key = InvocationKey(appConnectionID: appConnectionID, invocationID: invocationID)
+                lock.lock()
+                defer { lock.unlock() }
+                guard epoch == self.epoch else { return }
+
+                if states[key] == nil {
+                    if invocationOrder.count == maximumInvocationCount,
+                       let droppedKey = invocationOrder.first
+                    {
+                        invocationOrder.removeFirst()
+                        states.removeValue(forKey: droppedKey)
+                        MCPDiagnosticCaptureCoordinator.recordLoss(.phaseHistoryInvocationCapacity)
+                    }
+                    invocationOrder.append(key)
+                    states[key] = InvocationState(
+                        operationIdentity: operationIdentity,
+                        correlationConnectionID: correlationConnectionID
+                    )
+                }
+                guard var state = states[key] else { return }
+                state.nextSequence &+= 1
+                state.events.append(MCPToolExecutionPhaseHistoryEvent(
+                    ingestionSequence: state.nextSequence,
+                    observedElapsedMilliseconds: observedElapsedMilliseconds,
+                    kind: kind,
+                    handlerPhase: handlerPhase,
+                    handlerTransition: handlerTransition,
+                    executionPhase: executionPhase,
+                    cancellationRequested: cancellationRequested,
+                    cancellationOrigin: cancellationOrigin,
+                    terminalOutcome: terminalOutcome
+                ))
+                if state.events.count > maximumEventsPerInvocation {
+                    let overflow = state.events.count - maximumEventsPerInvocation
+                    state.events.removeFirst(overflow)
+                    state.droppedEventCount &+= UInt64(overflow)
+                    for _ in 0 ..< overflow {
+                        MCPDiagnosticCaptureCoordinator.recordLoss(.phaseHistoryEventCapacity)
+                    }
+                }
+                states[key] = state
+            }
+        }
+
+        private static func terminalOutcome(
+            for trace: MCPToolExecutionTraceEvent
+        ) -> MCPToolExecutionPhaseHistoryEvent.TerminalOutcome? {
+            switch trace.phase {
+            case .detachedForSettlement:
+                return .detached
+            case .connectionForceDisconnectRequested:
+                return .forceDisconnected
+            case .handlerCompleted, .settledDuringGrace, .detachedSettled:
+                guard let rawOutcome = trace.cancellationOutcome,
+                      let settlement = MCPToolExecutionSettlement(rawValue: rawOutcome)
+                else { return nil }
+                switch settlement {
+                case .success: return .success
+                case .cancellation: return .cancellation
+                case .error: return .error
+                }
+            case .contractSelected, .started, .deadlineExpired, .cancellationRequested,
+                 .cleanupGraceExpired:
+                return nil
+            }
+        }
+    }
+#endif
 
 enum MCPToolExecutionHandlerPhaseContext {
     @TaskLocal
@@ -96,7 +389,7 @@ enum MCPToolExecutionHandlerPhaseContext {
 }
 
 struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
-    enum Phase: String {
+    enum Phase: String, Equatable {
         case contractSelected = "execution_contract_selected"
         case started = "execution_started"
         case handlerCompleted = "execution_handler_completed"
@@ -123,6 +416,9 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
     let toolName: String
     let operationIdentity: MCPToolOperationIdentity
     let connectionID: UUID
+    #if DEBUG
+        let correlationConnectionID: MCPDiagnosticBoundedString
+    #endif
     let invocationID: UUID
     let runID: UUID?
     let contractKind: MCPToolExecutionContract.Kind
@@ -139,6 +435,13 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
     let escalationReason: String?
     let handlerPhase: MCPToolExecutionHandlerPhaseSnapshot?
     let handlerPhaseAgeMilliseconds: Double?
+    #if DEBUG
+        var historyEpoch: UInt64?
+
+        static func boundedCorrelationConnectionID(_ identifier: String?) -> MCPDiagnosticBoundedString {
+            MCPDiagnosticBoundedString(identifier)
+        }
+    #endif
 
     var isAlwaysEmitted: Bool {
         phase.isAlwaysEmitted
@@ -148,12 +451,30 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
         var fields = [
             "phase=\(phase.rawValue)",
             "tool=\(toolName)",
-            "operation=\(operationIdentity.normalizedOperation)",
-            "connection_id=\(connectionID.uuidString)",
+            "operation=\(operationIdentity.normalizedOperation)"
+        ]
+        #if DEBUG
+            fields.append("app_connection_id=\(connectionID.uuidString)")
+        #else
+            fields.append("connection_id=\(connectionID.uuidString)")
+        #endif
+        fields += [
             "invocation_id=\(invocationID.uuidString)",
             "contract=\(contractKind.rawValue)",
             "elapsed_ms=\(String(format: "%.3f", elapsedMilliseconds))"
         ]
+        #if DEBUG
+            if let correlationConnectionID = correlationConnectionID.value {
+                fields.append("correlation_connection_id=\(correlationConnectionID)")
+            } else if correlationConnectionID.omitted {
+                fields.append("correlation_connection_id=<omitted>")
+                fields.append("correlation_connection_id_omitted=true")
+                fields.append("correlation_connection_id_truncated=\(correlationConnectionID.truncated)")
+                if let byteCount = correlationConnectionID.originalUTF8ByteCount {
+                    fields.append("correlation_connection_id_utf8_byte_count=\(byteCount)")
+                }
+            }
+        #endif
         if let runID { fields.append("run_id=\(runID.uuidString)") }
         if let executionDeadlineSeconds { fields.append("deadline_s=\(executionDeadlineSeconds)") }
         if let cleanupGraceSeconds { fields.append("grace_s=\(cleanupGraceSeconds)") }
@@ -194,6 +515,9 @@ enum MCPToolExecutionTracer {
     }
 
     static func emit(_ event: MCPToolExecutionTraceEvent) {
+        #if DEBUG
+            MCPToolExecutionPhaseHistoryRecorder.shared.recordExecutionTrace(event)
+        #endif
         // Release-safe concurrency evidence ingestion (counts and bounded latency
         // aggregates only; see MCPToolConcurrencyEvidenceRecorder).
         MCPToolConcurrencyEvidenceRecorder.shared.recordExecutionTraceEvent(event)

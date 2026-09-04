@@ -1,8 +1,214 @@
 // MARK: - DEBUG MCP Read/Search Latency Diagnostics
 
+import Darwin
 import Foundation
 import MCP
 import RepoPromptShared
+
+enum MCPDiagnosticCaptureCoordinationOperation {
+    case captureMutation
+    case phasePublication
+    case deliveryPublication
+    case workCountPublication
+}
+
+struct MCPDiagnosticCaptureLossSnapshot: Equatable {
+    let coordinatorBoundaryContention: UInt64
+    let tracerLockContention: UInt64
+    let deliveryHistoryCapacity: UInt64
+    let phaseHistoryInvocationCapacity: UInt64
+    let phaseHistoryEventCapacity: UInt64
+    let workHistorySnapshotCapacity: UInt64
+
+    var incompleteCapture: Bool {
+        coordinatorBoundaryContention > 0
+            || tracerLockContention > 0
+            || deliveryHistoryCapacity > 0
+            || phaseHistoryInvocationCapacity > 0
+            || phaseHistoryEventCapacity > 0
+            || workHistorySnapshotCapacity > 0
+    }
+}
+
+enum MCPDiagnosticCaptureLossReason {
+    case coordinatorBoundaryContention
+    case tracerLockContention
+    case deliveryHistoryCapacity
+    case phaseHistoryInvocationCapacity
+    case phaseHistoryEventCapacity
+    case workHistorySnapshotCapacity
+}
+
+enum MCPDiagnosticCaptureCoordinator {
+    #if DEBUG
+        private static let boundary = NSRecursiveLock()
+        private nonisolated(unsafe) static var active: Int32 = 0
+        private nonisolated(unsafe) static var lossRecorderCount: Int32 = 0
+        private nonisolated(unsafe) static var coordinatorBoundaryContention: Int64 = 0
+        private nonisolated(unsafe) static var tracerLockContention: Int64 = 0
+        private nonisolated(unsafe) static var deliveryHistoryCapacity: Int64 = 0
+        private nonisolated(unsafe) static var phaseHistoryInvocationCapacity: Int64 = 0
+        private nonisolated(unsafe) static var phaseHistoryEventCapacity: Int64 = 0
+        private nonisolated(unsafe) static var workHistorySnapshotCapacity: Int64 = 0
+        private static let testSinkLock = NSLock()
+        private nonisolated(unsafe) static var testWillEnterSink: (@Sendable (MCPDiagnosticCaptureCoordinationOperation) -> Void)?
+        private static let deliveryHooks = MCPResponseDeliveryCaptureHooks(
+            isActive: { isCaptureActive },
+            tryWithBoundary: { body in
+                tryWithBoundary(operation: .deliveryPublication, body)
+            },
+            recordLoss: { reason in
+                switch reason {
+                case .coordinatorBoundaryContention:
+                    recordLoss(.coordinatorBoundaryContention)
+                case .tracerLockContention:
+                    recordLoss(.tracerLockContention)
+                case .historyCapacity:
+                    recordLoss(.deliveryHistoryCapacity)
+                }
+            }
+        )
+        private static let deliveryHooksInstallation: Void = {
+            MCPResponseDeliveryCapturePublication.install(deliveryHooks)
+        }()
+    #endif
+
+    static func withBoundary<T>(
+        operation: MCPDiagnosticCaptureCoordinationOperation,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        #if DEBUG
+            notifyWillEnter(operation)
+            boundary.lock()
+            defer { boundary.unlock() }
+            return try body()
+        #else
+            return try body()
+        #endif
+    }
+
+    static func tryWithBoundary<T>(
+        operation: MCPDiagnosticCaptureCoordinationOperation,
+        _ body: () throws -> T
+    ) rethrows -> T? {
+        #if DEBUG
+            notifyWillEnter(operation)
+            guard boundary.try() else { return nil }
+            defer { boundary.unlock() }
+            return try body()
+        #else
+            return try body()
+        #endif
+    }
+
+    static var isCaptureActive: Bool {
+        #if DEBUG
+            OSAtomicAdd32Barrier(0, &active) == 1
+        #else
+            false
+        #endif
+    }
+
+    static func beginCapture() {
+        #if DEBUG
+            ensureDeliveryHooksInstalled()
+            OSAtomicCompareAndSwap32Barrier(1, 0, &active)
+            waitForLossRecorders()
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &coordinatorBoundaryContention), &coordinatorBoundaryContention)
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &tracerLockContention), &tracerLockContention)
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &deliveryHistoryCapacity), &deliveryHistoryCapacity)
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &phaseHistoryInvocationCapacity), &phaseHistoryInvocationCapacity)
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &phaseHistoryEventCapacity), &phaseHistoryEventCapacity)
+            OSAtomicAdd64Barrier(-OSAtomicAdd64Barrier(0, &workHistorySnapshotCapacity), &workHistorySnapshotCapacity)
+            MCPResponseDeliveryCapturePublication.beginCapture()
+            OSAtomicCompareAndSwap32Barrier(0, 1, &active)
+        #endif
+    }
+
+    static func finishCapture() -> MCPDiagnosticCaptureLossSnapshot {
+        #if DEBUG
+            OSAtomicCompareAndSwap32Barrier(1, 0, &active)
+            let hookLookupContention = MCPResponseDeliveryCapturePublication.finishCaptureAndDrainHookLookupContention()
+            if hookLookupContention > 0 {
+                OSAtomicAdd64Barrier(Int64(hookLookupContention), &coordinatorBoundaryContention)
+            }
+            waitForLossRecorders()
+        #endif
+        return lossSnapshot()
+    }
+
+    static func lossSnapshot() -> MCPDiagnosticCaptureLossSnapshot {
+        #if DEBUG
+            MCPDiagnosticCaptureLossSnapshot(
+                coordinatorBoundaryContention: UInt64(max(0, OSAtomicAdd64Barrier(0, &coordinatorBoundaryContention)))
+                    + MCPResponseDeliveryCapturePublication.hookLookupContentionSnapshot(),
+                tracerLockContention: UInt64(max(0, OSAtomicAdd64Barrier(0, &tracerLockContention))),
+                deliveryHistoryCapacity: UInt64(max(0, OSAtomicAdd64Barrier(0, &deliveryHistoryCapacity))),
+                phaseHistoryInvocationCapacity: UInt64(max(0, OSAtomicAdd64Barrier(0, &phaseHistoryInvocationCapacity))),
+                phaseHistoryEventCapacity: UInt64(max(0, OSAtomicAdd64Barrier(0, &phaseHistoryEventCapacity))),
+                workHistorySnapshotCapacity: UInt64(max(0, OSAtomicAdd64Barrier(0, &workHistorySnapshotCapacity)))
+            )
+        #else
+            MCPDiagnosticCaptureLossSnapshot(
+                coordinatorBoundaryContention: 0,
+                tracerLockContention: 0,
+                deliveryHistoryCapacity: 0,
+                phaseHistoryInvocationCapacity: 0,
+                phaseHistoryEventCapacity: 0,
+                workHistorySnapshotCapacity: 0
+            )
+        #endif
+    }
+
+    static func recordLoss(_ reason: MCPDiagnosticCaptureLossReason) {
+        #if DEBUG
+            OSAtomicIncrement32Barrier(&lossRecorderCount)
+            defer { OSAtomicDecrement32Barrier(&lossRecorderCount) }
+            guard OSAtomicAdd32Barrier(0, &active) == 1 else { return }
+            switch reason {
+            case .coordinatorBoundaryContention:
+                OSAtomicIncrement64Barrier(&coordinatorBoundaryContention)
+            case .tracerLockContention:
+                OSAtomicIncrement64Barrier(&tracerLockContention)
+            case .deliveryHistoryCapacity:
+                OSAtomicIncrement64Barrier(&deliveryHistoryCapacity)
+            case .phaseHistoryInvocationCapacity:
+                OSAtomicIncrement64Barrier(&phaseHistoryInvocationCapacity)
+            case .phaseHistoryEventCapacity:
+                OSAtomicIncrement64Barrier(&phaseHistoryEventCapacity)
+            case .workHistorySnapshotCapacity:
+                OSAtomicIncrement64Barrier(&workHistorySnapshotCapacity)
+            }
+        #endif
+    }
+
+    #if DEBUG
+        static func setTestWillEnterSink(
+            _ sink: (@Sendable (MCPDiagnosticCaptureCoordinationOperation) -> Void)?
+        ) {
+            testSinkLock.lock()
+            testWillEnterSink = sink
+            testSinkLock.unlock()
+        }
+
+        private static func ensureDeliveryHooksInstalled() {
+            _ = deliveryHooksInstallation
+        }
+
+        private static func notifyWillEnter(_ operation: MCPDiagnosticCaptureCoordinationOperation) {
+            testSinkLock.lock()
+            let sink = testWillEnterSink
+            testSinkLock.unlock()
+            sink?(operation)
+        }
+
+        private static func waitForLossRecorders() {
+            while OSAtomicAdd32Barrier(0, &lossRecorderCount) != 0 {
+                sched_yield()
+            }
+        }
+    #endif
+}
 
 #if DEBUG
     extension ServerNetworkManager {
@@ -21,34 +227,68 @@ import RepoPromptShared
                 return debugDiagnosticsError(op: op, code: "invalid_params", message: "`max_samples` must be an integer between 100 and 100000.")
             }
 
-            MCPResponseDeliveryTracer.resetDebugEvents()
-            MCPToolWorkCountDiagnostics.resetDebugHistory()
-            switch EditFlowPerf.beginDebugCapture(label: label, maxSamples: maxSamples) {
-            case let .started(snapshot):
-                return debugDiagnosticsResult([
-                    "ok": true,
-                    "op": op,
-                    "capture": snapshot.payload()
-                ])
-            case let .busy(snapshot):
-                return debugDiagnosticsError(
-                    op: op,
-                    code: "capture_busy",
-                    message: "A read/search latency capture is already active with label `\(snapshot.label)`."
-                )
+            return MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                switch EditFlowPerf.beginDebugCapture(label: label, maxSamples: maxSamples) {
+                case let .started(snapshot):
+                    MCPDiagnosticCaptureCoordinator.beginCapture()
+                    MCPResponseDeliveryTracer.resetDebugEvents()
+                    MCPToolExecutionPhaseHistoryRecorder.shared.reset()
+                    MCPToolWorkCountDiagnostics.resetDebugHistory()
+                    return debugDiagnosticsResult([
+                        "ok": true,
+                        "op": op,
+                        "capture": snapshot.payload()
+                    ])
+                case let .busy(snapshot):
+                    return debugDiagnosticsError(
+                        op: op,
+                        code: "capture_busy",
+                        message: "A read/search latency capture is already active with label `\(snapshot.label)`."
+                    )
+                }
             }
         }
 
         func debugMCPReadSearchCaptureSnapshotPayload(op: String, arguments: [String: Value]) -> CallTool.Result {
             let finish = debugBool(arguments, "finish") ?? true
             let includeTimeline = debugBool(arguments, "include_timeline") ?? true
-            let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: finish)
-            return debugDiagnosticsResult([
-                "ok": true,
-                "op": op,
-                "capture": snapshot.payload(includeTimeline: includeTimeline),
-                "delivery_events": MCPResponseDeliveryTracer.debugEventSnapshot().map(\.payload)
-            ])
+            return MCPDiagnosticCaptureCoordinator.withBoundary(operation: .captureMutation) {
+                let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: finish)
+                let deliveryEvents = MCPResponseDeliveryTracer.debugEventSnapshot()
+                let phaseHistories = MCPToolExecutionPhaseHistoryRecorder.shared.snapshot()
+                let workCounts = MCPToolWorkCountDiagnostics.debugSnapshots()
+                let losses = finish
+                    ? MCPDiagnosticCaptureCoordinator.finishCapture()
+                    : MCPDiagnosticCaptureCoordinator.lossSnapshot()
+                return debugDiagnosticsResult([
+                    "ok": true,
+                    "op": op,
+                    "capture": snapshot.payload(includeTimeline: includeTimeline),
+                    "capture_scope": [
+                        "process": "app",
+                        "coordinated_delivery_through": "app_uds_transport.transport_write_completed",
+                        "proxy_stdout_evidence": "external_cli_completion_or_timeout_required",
+                        "same_process_proxy_coverage": "unit_tests_only"
+                    ],
+                    "delivery_event_losses": [
+                        "coordinator_boundary_contention": losses.coordinatorBoundaryContention,
+                        "tracer_lock_contention": losses.tracerLockContention,
+                        "history_capacity": losses.deliveryHistoryCapacity
+                    ],
+                    "evidence_retention_losses": [
+                        "phase_history_invocation_capacity": losses.phaseHistoryInvocationCapacity,
+                        "phase_history_event_capacity": losses.phaseHistoryEventCapacity,
+                        "work_history_snapshot_capacity": losses.workHistorySnapshotCapacity
+                    ],
+                    "incomplete_capture": losses.incompleteCapture || !finish,
+                    "delivery_events": Self.debugPhaseAttributionDeliveryPayloads(deliveryEvents),
+                    "phase_histories": phaseHistories.map(\.debugPayload),
+                    "work_count_evidence": [
+                        "git": workCounts.git.map(gitWorkPayload),
+                        "read_file": workCounts.readFile.map(readFileWorkPayload)
+                    ]
+                ])
+            }
         }
 
         func debugMCPReadFileAutoSelectionProbeBeginPayload(
@@ -765,11 +1005,23 @@ import RepoPromptShared
 
         private func workRequestIdentityPayload(_ identity: MCPRequestTimelineIdentity?) -> Any {
             guard let identity else { return NSNull() }
+            let requestID = identity.jsonRPCRequestID
+            let connectionID = MCPDiagnosticBoundedString(identity.connectionID)
+            let invocationID = MCPDiagnosticBoundedString(identity.appInvocationID)
             return [
-                "jsonrpc_request_id": Self.debugOptionalValue(identity.jsonRPCRequestID?.description),
-                "connection_id": Self.debugOptionalValue(identity.connectionID),
+                "jsonrpc_request_id": requestID?.boundedDiagnosticDescription ?? NSNull(),
+                "jsonrpc_request_id_omitted": requestID?.diagnosticStringOmitted ?? false,
+                "jsonrpc_request_id_truncated": requestID?.diagnosticStringTruncated ?? false,
+                "jsonrpc_request_id_utf8_byte_count": requestID?.diagnosticStringUTF8ByteCount ?? NSNull(),
+                "connection_id": connectionID.value ?? NSNull(),
+                "connection_id_omitted": connectionID.omitted,
+                "connection_id_truncated": connectionID.truncated,
+                "connection_id_utf8_byte_count": connectionID.originalUTF8ByteCount ?? NSNull(),
                 "connection_generation": Self.debugOptionalValue(identity.connectionGeneration),
-                "app_invocation_id": Self.debugOptionalValue(identity.appInvocationID),
+                "app_invocation_id": invocationID.value ?? NSNull(),
+                "app_invocation_id_omitted": invocationID.omitted,
+                "app_invocation_id_truncated": invocationID.truncated,
+                "app_invocation_id_utf8_byte_count": invocationID.originalUTF8ByteCount ?? NSNull(),
                 "request_ordinal": Self.debugOptionalValue(identity.requestOrdinal)
             ] as [String: Any]
         }
@@ -1160,6 +1412,163 @@ import RepoPromptShared
             ]
         }
 
+        static func debugPhaseAttributionDeliveryPayloads(
+            _ events: [MCPResponseDeliveryTraceEvent]
+        ) -> [[String: Any]] {
+            var authoritativeIDs: [PhaseAttributionDeliveryJoinKey: BoundedInvocationIDCandidates] = [:]
+            for event in events where event.layer == "app_tool_handler" {
+                guard let key = PhaseAttributionDeliveryJoinKey(event),
+                      let appInvocationID = event.requestIdentity?.appInvocationID ?? event.invocationID
+                else { continue }
+                authoritativeIDs[key, default: BoundedInvocationIDCandidates()].insert(appInvocationID)
+            }
+
+            return events.map { event in
+                guard let key = PhaseAttributionDeliveryJoinKey(event) else {
+                    return event.phaseAttributionPayload(
+                        attributionStatus: .unsupported,
+                        attributionCandidateCount: 0,
+                        attributionCandidateCountTruncated: false
+                    )
+                }
+                let candidates = authoritativeIDs[key] ?? BoundedInvocationIDCandidates()
+                switch candidates.resolution {
+                case let .unique(appInvocationID):
+                    return event.phaseAttributionPayload(
+                        appInvocationID: appInvocationID,
+                        attributionStatus: .joined,
+                        attributionCandidateCount: candidates.countLowerBound,
+                        attributionCandidateCountTruncated: candidates.isCountTruncated
+                    )
+                case .ambiguous:
+                    return event.phaseAttributionPayload(
+                        attributionStatus: .ambiguous,
+                        attributionCandidateCount: candidates.countLowerBound,
+                        attributionCandidateCountTruncated: candidates.isCountTruncated
+                    )
+                case .unsupported:
+                    return event.phaseAttributionPayload(
+                        attributionStatus: .unsupported,
+                        attributionCandidateCount: candidates.countLowerBound,
+                        attributionCandidateCountTruncated: candidates.isCountTruncated
+                    )
+                case .none:
+                    return event.phaseAttributionPayload(
+                        attributionStatus: .unattributed,
+                        attributionCandidateCount: 0,
+                        attributionCandidateCountTruncated: false
+                    )
+                }
+            }
+        }
+
+        fileprivate enum PhaseAttributionStatus: String {
+            case joined
+            case ambiguous
+            case unattributed
+            case unsupported
+        }
+
+        private struct BoundedInvocationIDCandidates {
+            enum Resolution {
+                case none
+                case unique(String)
+                case ambiguous
+                case unsupported
+            }
+
+            private static let retainedCandidateLimit = 8
+            private var retainedValues: Set<String> = []
+            private var canonicalValues: Set<String> = []
+            private var hasMalformedValue = false
+            private(set) var isCountTruncated = false
+
+            var countLowerBound: Int {
+                retainedValues.count + (isCountTruncated ? 1 : 0)
+            }
+
+            var resolution: Resolution {
+                guard countLowerBound > 0 else { return .none }
+                if hasMalformedValue {
+                    return canonicalValues.isEmpty ? .unsupported : .ambiguous
+                }
+                guard !isCountTruncated, canonicalValues.count == 1,
+                      let value = canonicalValues.first
+                else { return .ambiguous }
+                return .unique(value)
+            }
+
+            mutating func insert(_ rawValue: String) {
+                guard let boundedValue = MCPDiagnosticBoundedString(rawValue).value else {
+                    hasMalformedValue = true
+                    isCountTruncated = true
+                    return
+                }
+                let canonicalValue = UUID(uuidString: boundedValue)?.uuidString
+                let distinctValue = canonicalValue ?? boundedValue
+                guard !retainedValues.contains(distinctValue) else { return }
+                guard retainedValues.count < Self.retainedCandidateLimit else {
+                    isCountTruncated = true
+                    return
+                }
+                retainedValues.insert(distinctValue)
+                if let canonicalValue {
+                    canonicalValues.insert(canonicalValue)
+                } else {
+                    hasMalformedValue = true
+                }
+            }
+        }
+
+        private enum PhaseAttributionGenerationDomain {
+            case appOneBased
+            case bridgeZeroBased
+
+            init?(layer: String) {
+                switch layer {
+                case "app_tool_handler", "app_sdk", "app_uds_transport":
+                    self = .appOneBased
+                case "proxy_app_uds", "proxy_stdout":
+                    self = .bridgeZeroBased
+                default:
+                    return nil
+                }
+            }
+
+            func normalizedGeneration(_ generation: UInt64) -> UInt64? {
+                switch self {
+                case .appOneBased:
+                    guard generation > 0 else { return nil }
+                    return generation - 1
+                case .bridgeZeroBased:
+                    return generation
+                }
+            }
+        }
+
+        private struct PhaseAttributionDeliveryJoinKey: Hashable {
+            let correlationConnectionID: String
+            let normalizedConnectionGeneration: UInt64
+            let jsonRPCRequestID: String
+            let requestOrdinal: UInt64
+
+            init?(_ event: MCPResponseDeliveryTraceEvent) {
+                guard let domain = PhaseAttributionGenerationDomain(layer: event.layer),
+                      let correlationConnectionID = MCPDiagnosticBoundedString(
+                          event.connectionID ?? event.requestIdentity?.connectionID
+                      ).value,
+                      let generation = event.connectionGeneration ?? event.requestIdentity?.connectionGeneration,
+                      let normalizedGeneration = domain.normalizedGeneration(generation),
+                      let jsonRPCRequestID = (event.id ?? event.requestIdentity?.jsonRPCRequestID)?.boundedDiagnosticDescription,
+                      let requestOrdinal = event.requestOrdinal ?? event.requestIdentity?.requestOrdinal
+                else { return nil }
+                self.correlationConnectionID = correlationConnectionID
+                normalizedConnectionGeneration = normalizedGeneration
+                self.jsonRPCRequestID = jsonRPCRequestID
+                self.requestOrdinal = requestOrdinal
+            }
+        }
+
         private func debugMCPReadSearchCaptureLabel(_ raw: String) -> String? {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
@@ -1302,6 +1711,73 @@ import RepoPromptShared
             for entry in expired {
                 await expire(entry.probeID)
             }
+        }
+    }
+
+    extension MCPToolExecutionPhaseInvocationHistory {
+        var debugPayload: [String: Any] {
+            [
+                "tool": canonicalToolName,
+                "app_connection_id": appConnectionID.uuidString,
+                "correlation_connection_id": correlationConnectionID.value ?? NSNull(),
+                "correlation_connection_id_omitted": correlationConnectionID.omitted,
+                "correlation_connection_id_truncated": correlationConnectionID.truncated,
+                "correlation_connection_id_utf8_byte_count": correlationConnectionID.originalUTF8ByteCount ?? NSNull(),
+                "app_invocation_id": invocationID.uuidString,
+                "dropped_event_count": droppedEventCount,
+                "events": events.map(\.debugPayload)
+            ]
+        }
+    }
+
+    extension MCPToolExecutionPhaseHistoryEvent {
+        var debugPayload: [String: Any] {
+            [
+                "ingestion_sequence": ingestionSequence,
+                "observed_elapsed_ms": ServerNetworkManager.debugRoundedMS(observedElapsedMilliseconds),
+                "kind": kind.rawValue,
+                "handler_phase": handlerPhase?.rawValue ?? NSNull(),
+                "handler_transition": handlerTransition?.rawValue ?? NSNull(),
+                "execution_phase": executionPhase?.rawValue ?? NSNull(),
+                "cancellation_requested": cancellationRequested ?? NSNull(),
+                "cancellation_origin": cancellationOrigin?.rawValue ?? NSNull(),
+                "terminal_outcome": terminalOutcome?.rawValue ?? NSNull()
+            ]
+        }
+    }
+
+    fileprivate extension MCPResponseDeliveryTraceEvent {
+        func phaseAttributionPayload(
+            appInvocationID: String? = nil,
+            attributionStatus: ServerNetworkManager.PhaseAttributionStatus,
+            attributionCandidateCount: Int,
+            attributionCandidateCountTruncated: Bool
+        ) -> [String: Any] {
+            var result = payload
+            result.removeValue(forKey: "connection_id")
+            result.removeValue(forKey: "connection_id_omitted")
+            result.removeValue(forKey: "connection_id_truncated")
+            result.removeValue(forKey: "connection_id_utf8_byte_count")
+            let correlationIdentity = MCPDiagnosticBoundedString(connectionID ?? requestIdentity?.connectionID)
+            let rawInvocationIdentity = MCPDiagnosticBoundedString(requestIdentity?.appInvocationID ?? invocationID)
+            let attributedInvocationIdentity = MCPDiagnosticBoundedString(appInvocationID)
+            let exportedInvocationIdentity = appInvocationID == nil ? rawInvocationIdentity : attributedInvocationIdentity
+            result["correlation_connection_id"] = correlationIdentity.value ?? NSNull()
+            result["correlation_connection_id_omitted"] = correlationIdentity.omitted
+            result["correlation_connection_id_truncated"] = correlationIdentity.truncated
+            result["correlation_connection_id_utf8_byte_count"] = correlationIdentity.originalUTF8ByteCount ?? NSNull()
+            result["raw_app_invocation_id"] = rawInvocationIdentity.value ?? NSNull()
+            result["raw_app_invocation_id_omitted"] = rawInvocationIdentity.omitted
+            result["raw_app_invocation_id_truncated"] = rawInvocationIdentity.truncated
+            result["raw_app_invocation_id_utf8_byte_count"] = rawInvocationIdentity.originalUTF8ByteCount ?? NSNull()
+            result["app_invocation_id"] = exportedInvocationIdentity.value ?? NSNull()
+            result["app_invocation_id_omitted"] = exportedInvocationIdentity.omitted
+            result["app_invocation_id_truncated"] = exportedInvocationIdentity.truncated
+            result["app_invocation_id_utf8_byte_count"] = exportedInvocationIdentity.originalUTF8ByteCount ?? NSNull()
+            result["attribution_status"] = attributionStatus.rawValue
+            result["attribution_candidate_count"] = attributionCandidateCount
+            result["attribution_candidate_count_truncated"] = attributionCandidateCountTruncated
+            return result
         }
     }
 

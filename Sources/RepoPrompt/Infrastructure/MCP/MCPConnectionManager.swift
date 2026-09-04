@@ -1005,6 +1005,18 @@ actor ServerNetworkManager {
         return CallTool.Result(content: [.text(text: ToolOutputFormatter.rawJSONString(value), annotations: nil, _meta: nil)], isError: true)
     }
 
+    #if DEBUG
+        static func executionTimeoutAttributionMetadata(
+            invocationID: UUID,
+            lastHandlerPhase: String?
+        ) -> [String: Value] {
+            [
+                "app_invocation_id": .string(invocationID.uuidString),
+                "last_handler_phase": .string(lastHandlerPhase ?? "unreported")
+            ]
+        }
+    #endif
+
     static func executionContractToolErrorResult(
         rawJSON: Bool,
         code: String,
@@ -11821,10 +11833,24 @@ actor ServerNetworkManager {
                                 )
                                 let executionWatchdogEnvironment = await self.toolExecutionWatchdogEnvironment
                                 let executionTraceOrigin = executionWatchdogEnvironment.now()
-                                let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
-                                    origin: executionTraceOrigin,
-                                    now: { executionWatchdogEnvironment.now() }
-                                )
+                                #if DEBUG
+                                    let executionCorrelationConnectionID = MCPToolExecutionTraceEvent.boundedCorrelationConnectionID(
+                                        resolvedRequestIdentity?.connectionID
+                                    )
+                                    let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
+                                        operationIdentity: evidenceOperationIdentity,
+                                        appConnectionID: connectionID,
+                                        correlationConnectionID: executionCorrelationConnectionID,
+                                        invocationID: invocationID,
+                                        origin: executionTraceOrigin,
+                                        now: { executionWatchdogEnvironment.now() }
+                                    )
+                                #else
+                                    let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
+                                        origin: executionTraceOrigin,
+                                        now: { executionWatchdogEnvironment.now() }
+                                    )
+                                #endif
 
                                 @Sendable func dispatchResolvedProvider(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
                                     guard await self.isCurrentConnectionCallLimiterResolution(
@@ -11898,27 +11924,56 @@ actor ServerNetworkManager {
                                         let handlerPhaseAgeMilliseconds = handlerPhase.map {
                                             max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds - $0.elapsedMilliseconds)
                                         }
-                                        MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
-                                            toolName: toolName,
-                                            operationIdentity: evidenceOperationIdentity,
-                                            connectionID: connectionID,
-                                            invocationID: invocationID,
-                                            runID: observerRunIDForCallbacksFinal,
-                                            contractKind: contract.kind,
-                                            executionDeadlineSeconds: contract.deadline?.mcpSeconds,
-                                            cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
-                                            cleanupDisposition: resolvedCleanupDisposition ?? settlementAdmission.cleanupDisposition,
-                                            phase: phase,
-                                            elapsedMilliseconds: max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds),
-                                            cancellationRequested: cancellationRequested,
-                                            cancellationOutcome: cancellationOutcome,
-                                            cancellationOrigin: cancellationOrigin,
-                                            settlement: settlement,
-                                            graceOutcome: graceOutcome,
-                                            escalationReason: escalationReason,
-                                            handlerPhase: handlerPhase,
-                                            handlerPhaseAgeMilliseconds: handlerPhaseAgeMilliseconds
-                                        ))
+                                        #if DEBUG
+                                            var executionTrace = MCPToolExecutionTraceEvent(
+                                                toolName: toolName,
+                                                operationIdentity: evidenceOperationIdentity,
+                                                connectionID: connectionID,
+                                                correlationConnectionID: executionCorrelationConnectionID,
+                                                invocationID: invocationID,
+                                                runID: observerRunIDForCallbacksFinal,
+                                                contractKind: contract.kind,
+                                                executionDeadlineSeconds: contract.deadline?.mcpSeconds,
+                                                cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
+                                                cleanupDisposition: resolvedCleanupDisposition ?? settlementAdmission.cleanupDisposition,
+                                                phase: phase,
+                                                elapsedMilliseconds: max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds),
+                                                cancellationRequested: cancellationRequested,
+                                                cancellationOutcome: cancellationOutcome,
+                                                cancellationOrigin: cancellationOrigin,
+                                                settlement: settlement,
+                                                graceOutcome: graceOutcome,
+                                                escalationReason: escalationReason,
+                                                handlerPhase: handlerPhase,
+                                                handlerPhaseAgeMilliseconds: handlerPhaseAgeMilliseconds
+                                            )
+                                        #else
+                                            let executionTrace = MCPToolExecutionTraceEvent(
+                                                toolName: toolName,
+                                                operationIdentity: evidenceOperationIdentity,
+                                                connectionID: connectionID,
+                                                invocationID: invocationID,
+                                                runID: observerRunIDForCallbacksFinal,
+                                                contractKind: contract.kind,
+                                                executionDeadlineSeconds: contract.deadline?.mcpSeconds,
+                                                cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
+                                                cleanupDisposition: resolvedCleanupDisposition ?? settlementAdmission.cleanupDisposition,
+                                                phase: phase,
+                                                elapsedMilliseconds: max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds),
+                                                cancellationRequested: cancellationRequested,
+                                                cancellationOutcome: cancellationOutcome,
+                                                cancellationOrigin: cancellationOrigin,
+                                                settlement: settlement,
+                                                graceOutcome: graceOutcome,
+                                                escalationReason: escalationReason,
+                                                handlerPhase: handlerPhase,
+                                                handlerPhaseAgeMilliseconds: handlerPhaseAgeMilliseconds
+                                            )
+                                        #endif
+                                        #if DEBUG
+                                            executionTrace.historyEpoch = handlerPhaseRecorder.historyEpoch
+                                        #endif
+                                        MCPToolExecutionTracer.emit(executionTrace)
                                     }
 
                                     await emitExecutionTrace(.contractSelected)
@@ -12266,10 +12321,20 @@ actor ServerNetworkManager {
                                         message = "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract and settled as \(settlement.rawValue) during cancellation grace."
                                         outcome = "executionTimeout"
                                         shouldForceDisconnect = false
-                                        errorMetadata = [
-                                            "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
-                                            "settlement": .string(settlement.rawValue)
-                                        ]
+                                        #if DEBUG
+                                            errorMetadata = Self.executionTimeoutAttributionMetadata(
+                                                invocationID: invocationID,
+                                                lastHandlerPhase: handlerPhaseRecorder.snapshot()?.phase.rawValue
+                                            ).merging([
+                                                "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
+                                                "settlement": .string(settlement.rawValue)
+                                            ]) { _, timeoutMetadata in timeoutMetadata }
+                                        #else
+                                            errorMetadata = [
+                                                "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
+                                                "settlement": .string(settlement.rawValue)
+                                            ]
+                                        #endif
                                     case MCPToolExecutionWatchdogError.executionDetached:
                                         let mutationOutcomeMayStillReconcile = toolName == MCPWindowToolName.fileActions
                                         code = "tool_execution_timeout"
@@ -12278,11 +12343,22 @@ actor ServerNetworkManager {
                                             : "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract. Watchdog cancellation did not settle the read-only provider during grace, so it was detached for eventual cleanup."
                                         outcome = "executionDetached"
                                         shouldForceDisconnect = false
-                                        errorMetadata = [
-                                            "retryable": .bool(!mutationOutcomeMayStillReconcile),
-                                            "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
-                                            "settlement": .string("detached")
-                                        ]
+                                        #if DEBUG
+                                            errorMetadata = Self.executionTimeoutAttributionMetadata(
+                                                invocationID: invocationID,
+                                                lastHandlerPhase: handlerPhaseRecorder.snapshot()?.phase.rawValue
+                                            ).merging([
+                                                "retryable": .bool(!mutationOutcomeMayStillReconcile),
+                                                "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
+                                                "settlement": .string("detached")
+                                            ]) { _, timeoutMetadata in timeoutMetadata }
+                                        #else
+                                            errorMetadata = [
+                                                "retryable": .bool(!mutationOutcomeMayStillReconcile),
+                                                "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
+                                                "settlement": .string("detached")
+                                            ]
+                                        #endif
                                     case MCPToolExecutionWatchdogError.cleanupUnresponsive:
                                         code = "tool_execution_cleanup_unresponsive"
                                         message = "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract and did not stop during cancellation grace. The MCP connection was force-disconnected."
