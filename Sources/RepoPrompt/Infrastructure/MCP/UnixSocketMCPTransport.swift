@@ -162,6 +162,203 @@ private final class MCPTransportIngressGate: @unchecked Sendable {
 
 typealias MCPTransportResponseDeliveryGate = MCPDomainResponseDeliveryTracker
 
+final class MCPExportResponseDeliveryDeadlineRegistry: @unchecked Sendable {
+    struct Token: Hashable {
+        fileprivate let connectionID: String
+        fileprivate let connectionGeneration: UInt64
+        fileprivate let requestID: JSONRPCBridgeID
+    }
+
+    struct DispatchIdentity: Equatable {
+        let connectionID: String
+        let connectionGeneration: UInt64
+        let requestID: JSONRPCBridgeID
+    }
+
+    struct Deadline: @unchecked Sendable {
+        let instant: Duration
+        let now: @Sendable () -> Duration
+
+        var hasExpired: Bool {
+            now() >= instant
+        }
+
+        var remainingSeconds: TimeInterval {
+            let remaining = instant - now()
+            guard remaining > .zero else { return 0 }
+            let components = remaining.components
+            return TimeInterval(components.seconds)
+                + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+        }
+    }
+
+    static let shared = MCPExportResponseDeliveryDeadlineRegistry()
+
+    static let requestIdentityArgumentKey = "_repoprompt_transport_request_identity"
+
+    private let lock = NSLock()
+    private var pendingRequests: Set<Token> = []
+    private var deadlines: [Token: Deadline] = [:]
+
+    private init() {}
+
+    /// Carries the transport-observed JSON-RPC identity through SDK dispatch without
+    /// relying on handler admission order, which may differ from socket frame order.
+    @discardableResult
+    func recordAcceptedClientFrame(
+        _ frame: Data,
+        connectionID: String,
+        connectionGeneration: UInt64
+    ) -> Data {
+        let hadNewline = frame.last == UInt8(ascii: "\n")
+        guard let json = try? JSONSerialization.jsonObject(with: frame) else { return frame }
+        var recordedTokens: [Token] = []
+
+        func annotate(_ value: Any) -> Any {
+            if var object = value as? [String: Any] {
+                guard object["method"] as? String == "tools/call",
+                      let requestID = JSONRPCBridgeID.parseJSONValue(object["id"]),
+                      requestID != .null,
+                      var params = object["params"] as? [String: Any],
+                      let toolName = params["name"] as? String,
+                      toolName == "prompt" || toolName == "workspace_context"
+                else { return object }
+                var arguments = params["arguments"] as? [String: Any] ?? [:]
+                arguments[Self.requestIdentityArgumentKey] = [
+                    "connection_id": connectionID,
+                    "connection_generation": String(connectionGeneration),
+                    "request_id": requestID.description
+                ]
+                params["arguments"] = arguments
+                object["params"] = params
+                recordedTokens.append(Token(
+                    connectionID: connectionID,
+                    connectionGeneration: connectionGeneration,
+                    requestID: requestID
+                ))
+                return object
+            }
+            if let batch = value as? [Any] {
+                return batch.map(annotate)
+            }
+            return value
+        }
+
+        let annotated = annotate(json)
+        guard !recordedTokens.isEmpty,
+              var encoded = try? JSONSerialization.data(withJSONObject: annotated, options: [.sortedKeys])
+        else { return frame }
+        if hadNewline { encoded.append(UInt8(ascii: "\n")) }
+        lock.withLock { pendingRequests.formUnion(recordedTokens) }
+        return encoded
+    }
+
+    static func dispatchIdentity(from value: Value?) -> DispatchIdentity? {
+        guard let object = value?.objectValue,
+              let connectionID = object["connection_id"]?.stringValue,
+              let generationString = object["connection_generation"]?.stringValue,
+              let connectionGeneration = UInt64(generationString),
+              let requestIDString = object["request_id"]?.stringValue,
+              let requestID = JSONRPCBridgeID.parseFaultSelector(requestIDString),
+              requestID != .null
+        else { return nil }
+        return DispatchIdentity(
+            connectionID: connectionID,
+            connectionGeneration: connectionGeneration,
+            requestID: requestID
+        )
+    }
+
+    func claimToolRequest(
+        connectionID: String,
+        connectionGeneration: UInt64,
+        requestID: JSONRPCBridgeID
+    ) -> Token? {
+        let token = Token(
+            connectionID: connectionID,
+            connectionGeneration: connectionGeneration,
+            requestID: requestID
+        )
+        return lock.withLock {
+            guard pendingRequests.remove(token) != nil else { return nil }
+            return token
+        }
+    }
+
+    #if DEBUG
+        func deadlineForTesting(
+            connectionID: String,
+            connectionGeneration: UInt64,
+            requestID: JSONRPCBridgeID
+        ) -> Deadline? {
+            lock.withLock {
+                deadlines[Token(
+                    connectionID: connectionID,
+                    connectionGeneration: connectionGeneration,
+                    requestID: requestID
+                )]
+            }
+        }
+    #endif
+
+    func install(_ deadline: Deadline, for token: Token) {
+        lock.withLock { deadlines[token] = deadline }
+    }
+
+    func deadline(
+        forServerFrame frame: Data,
+        connectionID: String,
+        connectionGeneration: UInt64
+    ) -> Deadline? {
+        let responseIDs = JSONRPCBridgeFrameInspector.inspectPermissively(
+            frame,
+            direction: .serverToClient
+        ).compactMap(\.id)
+        return lock.withLock {
+            responseIDs.compactMap { requestID in
+                deadlines[Token(
+                    connectionID: connectionID,
+                    connectionGeneration: connectionGeneration,
+                    requestID: requestID
+                )]
+            }.min { $0.instant < $1.instant }
+        }
+    }
+
+    func completeServerFrame(
+        _ frame: Data,
+        connectionID: String,
+        connectionGeneration: UInt64
+    ) {
+        let responseIDs = JSONRPCBridgeFrameInspector.inspectPermissively(
+            frame,
+            direction: .serverToClient
+        ).compactMap(\.id)
+        lock.withLock {
+            for requestID in responseIDs {
+                deadlines.removeValue(forKey: Token(
+                    connectionID: connectionID,
+                    connectionGeneration: connectionGeneration,
+                    requestID: requestID
+                ))
+            }
+        }
+    }
+
+    func removeConnection(connectionID: String, connectionGeneration: UInt64) {
+        lock.withLock {
+            pendingRequests = pendingRequests.filter {
+                $0.connectionID != connectionID
+                    || $0.connectionGeneration != connectionGeneration
+            }
+            deadlines = deadlines.filter {
+                $0.key.connectionID != connectionID
+                    || $0.key.connectionGeneration != connectionGeneration
+            }
+        }
+    }
+}
+
 /// A Transport implementation using UNIX domain sockets for local MCP communication.
 ///
 /// This transport connects to a UNIX socket created by the CLI within a connection folder.
@@ -262,6 +459,8 @@ public actor UnixSocketMCPTransport: Transport {
         private var failNextExistingFDConnectBeforeReaderStart = false
         /// Leaves a selected overflow pending so tests can race it with another teardown path.
         private var deferNextReceiveOverflowTeardown = false
+        private var debugBeforeInboundFrameOfferForTesting: (@Sendable () -> Void)?
+        private var debugAfterWriteProgressForTesting: (@Sendable (_ bytesWritten: Int) -> Void)?
     #endif
 
     /// Generation counter that increments on each connection close/open cycle.
@@ -463,6 +662,15 @@ public actor UnixSocketMCPTransport: Transport {
         }
 
         let framed = Self.frameWithNewlineIfNeeded(message)
+        let responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline? = if let timelineConnectionID {
+            MCPExportResponseDeliveryDeadlineRegistry.shared.deadline(
+                forServerFrame: framed,
+                connectionID: timelineConnectionID,
+                connectionGeneration: timelineConnectionGeneration
+            )
+        } else {
+            nil
+        }
         #if DEBUG
             let recordedResponses: [MCPRequestTimelineRegistry.RecordedMessage] = if let timelineConnectionID {
                 MCPRequestTimelineRegistry.shared.recordedResponses(
@@ -526,12 +734,20 @@ public actor UnixSocketMCPTransport: Transport {
         }
 
         emitResponseWriteTrace(phase: "sdk_encode_completed")
-        // Encoding proves the SDK produced a response frame; this boundary proves the
-        // transport began attempting the write, which distinguishes a later stall or close.
-        emitResponseWriteTrace(phase: "transport_write_started")
         do {
-            try await writeAll(framed)
+            try Task.checkCancellation()
+            try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: framed.count)
+            // Encoding proves the SDK produced a response frame; this boundary proves the
+            // transport began attempting the write, which distinguishes a later stall or close.
+            emitResponseWriteTrace(phase: "transport_write_started")
+            try await writeAll(framed, responseDeadline: responseDeadline)
+            try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: framed.count)
         } catch {
+            // A cancelled partial frame cannot leave the connection reusable because its
+            // remaining bytes would corrupt the next JSON-RPC frame.
+            if isConnected {
+                closeAfterSendFailure(error, cause: .writeFailure)
+            }
             // writeAll may close the transport before returning. Keep the response identities
             // captured before the write so terminal failure still joins to its invocation.
             emitResponseWriteTrace(
@@ -542,6 +758,13 @@ public actor UnixSocketMCPTransport: Transport {
         }
         responseDeliveryGate.recordDeliveredServerFrame(framed)
         lastActivityTime = Date()
+        if let timelineConnectionID {
+            MCPExportResponseDeliveryDeadlineRegistry.shared.completeServerFrame(
+                framed,
+                connectionID: timelineConnectionID,
+                connectionGeneration: timelineConnectionGeneration
+            )
+        }
         emitResponseWriteTrace(phase: "transport_write_completed")
         #if DEBUG
             if let timelineConnectionID {
@@ -705,6 +928,12 @@ public actor UnixSocketMCPTransport: Transport {
     ) {
         guard !streamFinished else { return }
         responseDeliveryGate.close()
+        if let timelineConnectionID {
+            MCPExportResponseDeliveryDeadlineRegistry.shared.removeConnection(
+                connectionID: timelineConnectionID,
+                connectionGeneration: timelineConnectionGeneration
+            )
+        }
         #if DEBUG
             if let timelineConnectionID {
                 MCPRequestTimelineRegistry.shared.removeConnection(
@@ -857,6 +1086,18 @@ public actor UnixSocketMCPTransport: Transport {
             callbackGate.release(.cancellation)
         }
 
+        func debugSetBeforeInboundFrameOfferForTesting(
+            _ handler: (@Sendable () -> Void)?
+        ) {
+            debugBeforeInboundFrameOfferForTesting = handler
+        }
+
+        func debugSetAfterWriteProgressForTesting(
+            _ handler: (@Sendable (_ bytesWritten: Int) -> Void)?
+        ) {
+            debugAfterWriteProgressForTesting = handler
+        }
+
         func debugTriggerReadErrorForCleanupTest(_ code: POSIXErrorCode = .EIO) {
             guard let identity = activeReaderOwnership?.identity else { return }
             handleReaderTerminal(.error(POSIXError(code)), from: identity)
@@ -911,7 +1152,10 @@ public actor UnixSocketMCPTransport: Transport {
     /// Uses non-blocking writes plus bounded POLLOUT waits for backpressure.
     /// The stall deadline resets whenever any bytes are successfully written.
     /// Guards against FD reuse races by checking fdGeneration after each sleep.
-    private func writeAll(_ data: Data) async throws {
+    private func writeAll(
+        _ data: Data,
+        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?
+    ) async throws {
         // Fast-fail if we're obviously disconnected
         guard isConnected, socketFD >= 0 else {
             throw MCPError.connectionClosed
@@ -932,6 +1176,8 @@ public actor UnixSocketMCPTransport: Transport {
         var lastProgressAt = Date()
 
         while !remaining.isEmpty {
+            try Task.checkCancellation()
+            try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: data.count)
             // Re-check that we're still talking to the same connection epoch.
             guard isConnected, fdGeneration == gen else {
                 throw MCPError.connectionClosed
@@ -960,7 +1206,8 @@ public actor UnixSocketMCPTransport: Transport {
                         generation: gen,
                         lastProgressAt: lastProgressAt,
                         totalBytes: data.count,
-                        bytesRemaining: remaining.count
+                        bytesRemaining: remaining.count,
+                        responseDeadline: responseDeadline
                     )
                     continue
                 } else if Self.isPeerWriteHangupErrno(err) {
@@ -979,6 +1226,10 @@ public actor UnixSocketMCPTransport: Transport {
 
             remaining = remaining.dropFirst(written)
             lastProgressAt = Date()
+            #if DEBUG
+                debugAfterWriteProgressForTesting?(written)
+            #endif
+            try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: data.count)
         }
     }
 
@@ -987,9 +1238,12 @@ public actor UnixSocketMCPTransport: Transport {
         generation: UInt64,
         lastProgressAt: Date,
         totalBytes: Int,
-        bytesRemaining: Int
+        bytesRemaining: Int,
+        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?
     ) throws {
         while true {
+            try Task.checkCancellation()
+            try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: totalBytes)
             guard isConnected, fdGeneration == generation else {
                 throw MCPError.connectionClosed
             }
@@ -1007,7 +1261,10 @@ public actor UnixSocketMCPTransport: Transport {
 
             var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
             let remainingMs = max(1, Int32(remainingStallSeconds * 1000))
-            let pollTimeout = min(writePollIntervalMilliseconds, remainingMs)
+            let deadlineMs = responseDeadline.map {
+                max(0, Int32(min(TimeInterval(Int32.max), $0.remainingSeconds * 1000)))
+            } ?? Int32.max
+            let pollTimeout = min(writePollIntervalMilliseconds, min(remainingMs, deadlineMs))
             let result = poll(&pfd, 1, pollTimeout)
 
             if result < 0 {
@@ -1039,6 +1296,18 @@ public actor UnixSocketMCPTransport: Transport {
         }
     }
 
+    private func enforceResponseDeliveryDeadline(
+        _ deadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?,
+        framedByteCount: Int
+    ) throws {
+        guard deadline?.hasExpired == true else { return }
+        let error = MCPError.transportError(UnixSocketResponseDeliveryDeadlineExceededError(
+            framedByteCount: framedByteCount
+        ))
+        closeAfterSendFailure(error, cause: .writeFailure)
+        throw error
+    }
+
     private func closeAfterSendFailure(
         _ error: Swift.Error,
         cause: MCPTransportTerminalCause,
@@ -1052,6 +1321,14 @@ public actor UnixSocketMCPTransport: Transport {
             initiator: initiator,
             errno: errno
         )
+    }
+
+    private struct UnixSocketResponseDeliveryDeadlineExceededError: Swift.Error, CustomStringConvertible {
+        let framedByteCount: Int
+
+        var description: String {
+            "Unix socket response delivery exceeded its absolute deadline (frame bytes: \(framedByteCount))"
+        }
     }
 
     private struct UnixSocketWriteStalledError: Swift.Error, CustomStringConvertible {
@@ -1080,6 +1357,9 @@ public actor UnixSocketMCPTransport: Transport {
 
         let inboundChannel = inboundChannel
         let log = logger
+        #if DEBUG
+            let debugBeforeInboundFrameOfferForTesting = debugBeforeInboundFrameOfferForTesting
+        #endif
 
         let newReader = NewlineDelimitedSocketReader(
             fd: fd,
@@ -1088,17 +1368,35 @@ public actor UnixSocketMCPTransport: Transport {
             onFrame: { [weak self] frame in
                 guard let self else { return }
                 responseDeliveryGate.recordAcceptedClientFrame(frame)
-                switch inboundChannel.gate.offer(frame, to: inboundChannel.continuation) {
+                let dispatchFrame: Data = if let timelineConnectionID {
+                    MCPExportResponseDeliveryDeadlineRegistry.shared.recordAcceptedClientFrame(
+                        frame,
+                        connectionID: timelineConnectionID,
+                        connectionGeneration: timelineConnectionGeneration
+                    )
+                } else {
+                    frame
+                }
+                #if DEBUG
+                    let recordedTimelineRequests: [MCPRequestTimelineRegistry.RecordedMessage] = if let timelineConnectionID {
+                        MCPRequestTimelineRegistry.shared.recordAcceptedFrame(
+                            frame,
+                            connectionID: timelineConnectionID,
+                            correlationConnectionID: timelineCorrelationConnectionID ?? timelineConnectionID,
+                            connectionGeneration: timelineConnectionGeneration
+                        )
+                    } else {
+                        []
+                    }
+                    // Handler dispatch can run as soon as offer resumes a waiting consumer,
+                    // so correlation identity must already be claimable at this boundary.
+                    debugBeforeInboundFrameOfferForTesting?()
+                #endif
+                switch inboundChannel.gate.offer(dispatchFrame, to: inboundChannel.continuation) {
                 case .accepted:
                     #if DEBUG
                         if let timelineConnectionID {
-                            let recorded = MCPRequestTimelineRegistry.shared.recordAcceptedFrame(
-                                frame,
-                                connectionID: timelineConnectionID,
-                                correlationConnectionID: timelineCorrelationConnectionID ?? timelineConnectionID,
-                                connectionGeneration: timelineConnectionGeneration
-                            )
-                            for request in recorded {
+                            for request in recordedTimelineRequests {
                                 MCPResponseDeliveryTracer.emit(MCPResponseDeliveryTraceEvent(
                                     layer: "app_uds_transport",
                                     phase: "frame_accepted",

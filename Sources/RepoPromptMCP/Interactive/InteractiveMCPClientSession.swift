@@ -102,6 +102,32 @@ private final class MCPInitializationSettlementState: @unchecked Sendable {
     }
 }
 
+private final class CancellationDeliveryAuthorization: @unchecked Sendable {
+    private enum State {
+        case available
+        case claimed
+        case revoked
+    }
+
+    private let lock = NSLock()
+    private var state: State = .available
+
+    func claim() -> Bool {
+        lock.withLock {
+            guard case .available = state else { return false }
+            state = .claimed
+            return true
+        }
+    }
+
+    func revoke() {
+        lock.withLock {
+            guard case .available = state else { return }
+            state = .revoked
+        }
+    }
+}
+
 private final class CancellationDeliveryCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var delivered: Bool?
@@ -270,6 +296,7 @@ private final class ToolCallSettlementState: @unchecked Sendable {
     private let lock = NSLock()
     private struct CancellationDelivery {
         let task: Task<Void, Never>
+        let authorization: CancellationDeliveryAuthorization
         let completion: CancellationDeliveryCompletion
     }
 
@@ -277,13 +304,14 @@ private final class ToolCallSettlementState: @unchecked Sendable {
     private var responseResult: Result<CallTool.Result, Error>?
     private var registeredRequestID: ID?
     private var requestSendDidSucceed: Bool?
-    private var requestSendContinuations: [CheckedContinuation<Bool, Never>] = []
+    private var requestSendContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var cancelledRequestSendWaiterIDs: Set<UUID> = []
     private var outcomeContinuation: CheckedContinuation<Outcome, Never>?
     private var cancellationDelivery: CancellationDelivery?
 
     func claim(
         _ candidate: Outcome,
-        deliverCancellation: @escaping @Sendable () async -> Void
+        deliverCancellation: @escaping @Sendable (CancellationDeliveryAuthorization) async -> Bool?
     ) -> Bool {
         lock.lock()
         guard case .pending = outcome else {
@@ -291,12 +319,18 @@ private final class ToolCallSettlementState: @unchecked Sendable {
             return false
         }
         outcome = candidate
+        let authorization = CancellationDeliveryAuthorization()
         let completion = CancellationDeliveryCompletion()
         let task = Task.detached {
-            await deliverCancellation()
-            completion.resolve(delivered: true)
+            if let delivered = await deliverCancellation(authorization) {
+                completion.resolve(delivered: delivered)
+            }
         }
-        cancellationDelivery = CancellationDelivery(task: task, completion: completion)
+        cancellationDelivery = CancellationDelivery(
+            task: task,
+            authorization: authorization,
+            completion: completion
+        )
         let continuation = outcomeContinuation
         outcomeContinuation = nil
         lock.unlock()
@@ -320,23 +354,41 @@ private final class ToolCallSettlementState: @unchecked Sendable {
         let continuations = lock.withLock {
             guard requestSendDidSucceed == nil else { return [CheckedContinuation<Bool, Never>]() }
             requestSendDidSucceed = succeeded
-            let continuations = requestSendContinuations
+            let continuations = Array(requestSendContinuations.values)
             requestSendContinuations.removeAll()
+            cancelledRequestSendWaiterIDs.removeAll()
             return continuations
         }
         continuations.forEach { $0.resume(returning: succeeded) }
     }
 
-    func waitForRequestSendCompletion() async -> Bool {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if let requestSendDidSucceed {
-                lock.unlock()
-                continuation.resume(returning: requestSendDidSucceed)
-            } else {
-                requestSendContinuations.append(continuation)
-                lock.unlock()
+    func waitForRequestSendCompletion(
+        didSuspend: @escaping @Sendable () -> Void = {}
+    ) async -> Bool {
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let requestSendDidSucceed {
+                    lock.unlock()
+                    continuation.resume(returning: requestSendDidSucceed)
+                } else if cancelledRequestSendWaiterIDs.remove(waiterID) != nil || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(returning: false)
+                } else {
+                    requestSendContinuations[waiterID] = continuation
+                    lock.unlock()
+                    didSuspend()
+                }
             }
+        } onCancel: {
+            lock.lock()
+            let continuation = requestSendContinuations.removeValue(forKey: waiterID)
+            if continuation == nil, requestSendDidSucceed == nil {
+                cancelledRequestSendWaiterIDs.insert(waiterID)
+            }
+            lock.unlock()
+            continuation?.resume(returning: false)
         }
     }
 
@@ -376,12 +428,17 @@ private final class ToolCallSettlementState: @unchecked Sendable {
 
     func waitForCancellationDelivery(
         timeoutNanoseconds: UInt64,
-        timeoutSleep: @escaping @Sendable (UInt64) async throws -> Void
+        timeoutSleep: @escaping @Sendable (UInt64) async throws -> Void,
+        authorizationDidRevoke: @escaping @Sendable () async -> Void = {}
     ) async -> Bool {
         guard let cancellationDelivery = cancellationDeliverySnapshot() else { return true }
         let timeoutTask = Task {
             do {
                 try await timeoutSleep(timeoutNanoseconds)
+                // Revocation and the delivery task's claim share one lock, so expiry has
+                // authority before the timeout result can resume the caller.
+                cancellationDelivery.authorization.revoke()
+                await authorizationDidRevoke()
                 cancellationDelivery.completion.resolve(delivered: false)
             } catch {}
         }
@@ -452,6 +509,9 @@ actor InteractiveMCPClientSession {
     #if DEBUG
         private let requestSendWillStart: (@Sendable () async -> Void)?
         private let requestSendDidRegister: (@Sendable () async -> Void)?
+        private let requestSendCompletionWaitDidStart: (@Sendable () -> Void)?
+        private let cancellationDeliveryAuthorizationDidRevoke: (@Sendable () async -> Void)?
+        private let cancellationDeliveryDidFinish: (@Sendable () -> Void)?
         private let toolListRefreshWillAwait: (@Sendable () async -> Void)?
         private let cancellationDeliveryOverride: CancellationDeliveryOverride?
     #endif
@@ -492,6 +552,9 @@ actor InteractiveMCPClientSession {
         #if DEBUG
             requestSendWillStart = nil
             requestSendDidRegister = nil
+            requestSendCompletionWaitDidStart = nil
+            cancellationDeliveryAuthorizationDidRevoke = nil
+            cancellationDeliveryDidFinish = nil
             toolListRefreshWillAwait = nil
             cancellationDeliveryOverride = nil
         #endif
@@ -503,6 +566,9 @@ actor InteractiveMCPClientSession {
             requestSendBarrier: MCPRequestSendBarrier,
             requestSendWillStart: (@Sendable () async -> Void)? = nil,
             requestSendDidRegister: (@Sendable () async -> Void)? = nil,
+            requestSendCompletionWaitDidStart: (@Sendable () -> Void)? = nil,
+            cancellationDeliveryAuthorizationDidRevoke: (@Sendable () async -> Void)? = nil,
+            cancellationDeliveryDidFinish: (@Sendable () -> Void)? = nil,
             toolListRefreshWillAwait: (@Sendable () async -> Void)? = nil,
             cancellationDeliveryOverride: CancellationDeliveryOverride? = nil,
             timeoutSleep: @escaping TimeoutSleep = { nanoseconds in
@@ -531,6 +597,9 @@ actor InteractiveMCPClientSession {
             self.requestSendBarrier = requestSendBarrier
             self.requestSendWillStart = requestSendWillStart
             self.requestSendDidRegister = requestSendDidRegister
+            self.requestSendCompletionWaitDidStart = requestSendCompletionWaitDidStart
+            self.cancellationDeliveryAuthorizationDidRevoke = cancellationDeliveryAuthorizationDidRevoke
+            self.cancellationDeliveryDidFinish = cancellationDeliveryDidFinish
             self.toolListRefreshWillAwait = toolListRefreshWillAwait
             self.cancellationDeliveryOverride = cancellationDeliveryOverride
         }
@@ -1015,12 +1084,15 @@ actor InteractiveMCPClientSession {
                 } catch {
                     return
                 }
-                _ = settlement.claim(.timedOut) { [weak self] in
-                    await self?.deliverCancellation(
+                _ = settlement.claim(.timedOut) { [weak self] authorization in
+                    guard authorization.claim() else { return nil }
+                    guard let self else { return true }
+                    await deliverCancellation(
                         client: client,
                         requestID: registeredCall.requestID,
                         reason: "CLI tool call timed out after \(seconds) seconds"
                     )
+                    return true
                 }
             }
         }
@@ -1029,20 +1101,22 @@ actor InteractiveMCPClientSession {
         let outcome = await withTaskCancellationHandler {
             await settlement.waitForOutcome()
         } onCancel: {
-            _ = settlement.claim(.callerCancelled) { [weak self] in
-                await self?.deliverCancellation(
+            _ = settlement.claim(.callerCancelled) { [weak self] authorization in
+                guard authorization.claim() else { return nil }
+                guard let self else { return true }
+                await deliverCancellation(
                     client: client,
                     requestID: registeredCall.requestID,
                     reason: "CLI caller cancelled tool request"
                 )
+                return true
             }
         }
         await waitForCancellationDeliveryIfNeeded(
             settlement: settlement,
             outcome: outcome,
             requestID: registeredCall.requestID,
-            toolName: toolName,
-            sharedDeadline: nil
+            toolName: toolName
         )
 
         switch outcome {
@@ -1100,8 +1174,9 @@ actor InteractiveMCPClientSession {
                 } catch {
                     return
                 }
-                _ = settlement.claim(.timedOut) { [weak self] in
+                _ = settlement.claim(.timedOut) { [weak self] authorization in
                     await self?.cancelSharedExportRequest(
+                        authorization: authorization,
                         client: client,
                         settlement: settlement,
                         responseTaskBox: responseTaskBox,
@@ -1115,8 +1190,9 @@ actor InteractiveMCPClientSession {
         let outcome = await withTaskCancellationHandler {
             await settlement.waitForOutcome()
         } onCancel: {
-            _ = settlement.claim(.callerCancelled) { [weak self] in
+            _ = settlement.claim(.callerCancelled) { [weak self] authorization in
                 await self?.cancelSharedExportRequest(
+                    authorization: authorization,
                     client: client,
                     settlement: settlement,
                     responseTaskBox: responseTaskBox,
@@ -1128,8 +1204,7 @@ actor InteractiveMCPClientSession {
             settlement: settlement,
             outcome: outcome,
             requestID: request.id,
-            toolName: toolName,
-            sharedDeadline: deadline
+            toolName: toolName
         )
 
         switch outcome {
@@ -1155,17 +1230,33 @@ actor InteractiveMCPClientSession {
     }
 
     private func cancelSharedExportRequest(
+        authorization: CancellationDeliveryAuthorization,
         client: MCP.Client,
         settlement: ToolCallSettlementState,
         responseTaskBox: ToolCallTaskBox,
         reason: String
-    ) async {
+    ) async -> Bool? {
+        #if DEBUG
+            defer { cancellationDeliveryDidFinish?() }
+        #endif
         guard let requestID = settlement.registeredRequest() else {
             responseTaskBox.cancel()
-            return
+            return true
         }
-        guard await settlement.waitForRequestSendCompletion(), !Task.isCancelled else { return }
+        #if DEBUG
+            let requestSendCompletionWaitDidStart = requestSendCompletionWaitDidStart ?? {}
+        #else
+            let requestSendCompletionWaitDidStart: @Sendable () -> Void = {}
+        #endif
+        guard await settlement.waitForRequestSendCompletion(
+            didSuspend: requestSendCompletionWaitDidStart
+        ) else { return true }
+        // Send completion and drain expiry may become runnable together; only the
+        // authorization claim decides whether cancellation may begin. A denied claim
+        // leaves timeout resolution to the task that revoked authorization.
+        guard authorization.claim() else { return nil }
         await deliverCancellation(client: client, requestID: requestID, reason: reason)
+        return true
     }
 
     private func deliverCancellation(
@@ -1186,8 +1277,7 @@ actor InteractiveMCPClientSession {
         settlement: ToolCallSettlementState,
         outcome: ToolCallSettlementState.Outcome,
         requestID: ID,
-        toolName: String,
-        sharedDeadline: ResolvedToolCallDeadline?
+        toolName: String
     ) async {
         switch outcome {
         case .timedOut, .callerCancelled:
@@ -1195,13 +1285,15 @@ actor InteractiveMCPClientSession {
         case .pending, .completed:
             return
         }
-        let remainingEnvelope = sharedDeadline?.remainingNanoseconds(now: timeoutNowNanoseconds())
-        let drainTimeout = remainingEnvelope.map {
-            min(cancellationDeliveryDrainTimeoutNanoseconds, $0)
-        } ?? cancellationDeliveryDrainTimeoutNanoseconds
+        #if DEBUG
+            let authorizationDidRevoke = cancellationDeliveryAuthorizationDidRevoke ?? {}
+        #else
+            let authorizationDidRevoke: @Sendable () async -> Void = {}
+        #endif
         let delivered = await settlement.waitForCancellationDelivery(
-            timeoutNanoseconds: drainTimeout,
-            timeoutSleep: cancellationDeliveryDrainSleep
+            timeoutNanoseconds: cancellationDeliveryDrainTimeoutNanoseconds,
+            timeoutSleep: cancellationDeliveryDrainSleep,
+            authorizationDidRevoke: authorizationDidRevoke
         )
         if !delivered {
             logger.warning("Timed out draining cancellation for tool \(toolName), request \(String(describing: requestID))")
@@ -1512,11 +1604,51 @@ actor InteractiveMCPClientSession {
         return CallTool.Result(content: [.text("Local window/context selection cleared.")], isError: false)
     }
 
-    func bindContextID(_ contextID: String, windowID: Int? = nil) async throws -> CallTool.Result {
+    func establishStartupRouting(contextID: String?, tabID: String?, windowID: Int?) async throws {
+        if let contextID {
+            let result = try await bindContextID(
+                contextID,
+                windowID: windowID,
+                requestRawJSON: true
+            )
+            let binding = try confirmedBinding(from: result)
+            guard binding.contextID?.uuidString.caseInsensitiveCompare(contextID) == .orderedSame else {
+                throw InteractiveSessionError.handshakeFailed(
+                    reason: "bind_context returned a different context than requested"
+                )
+            }
+            return
+        }
+
+        if let tabID {
+            let result = try await bindTab(
+                selector: tabID,
+                windowID: windowID,
+                requestRawJSON: true
+            )
+            let binding = try confirmedBinding(from: result)
+            guard let selectedContextID,
+                  binding.contextID?.uuidString.caseInsensitiveCompare(selectedContextID) == .orderedSame
+            else {
+                throw InteractiveSessionError.handshakeFailed(
+                    reason: "bind_context returned a different context than the selected tab"
+                )
+            }
+        }
+    }
+
+    func bindContextID(
+        _ contextID: String,
+        windowID: Int? = nil,
+        requestRawJSON: Bool = false
+    ) async throws -> CallTool.Result {
         var args: [String: Value] = [
             "op": .string("bind"),
             "context_id": .string(contextID)
         ]
+        if requestRawJSON {
+            args["_rawJSON"] = .bool(true)
+        }
         if let windowID {
             args["window_id"] = .int(windowID)
         }
@@ -1548,14 +1680,22 @@ actor InteractiveMCPClientSession {
         return result
     }
 
-    func bindTab(selector: String, windowID: Int? = nil) async throws -> CallTool.Result {
+    func bindTab(
+        selector: String,
+        windowID: Int? = nil,
+        requestRawJSON: Bool = false
+    ) async throws -> CallTool.Result {
         let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw InteractiveSessionError.handshakeFailed(reason: "Empty context selector")
         }
 
         if let contextID = UUID(uuidString: trimmed) {
-            return try await bindContextID(contextID.uuidString, windowID: windowID)
+            return try await bindContextID(
+                contextID.uuidString,
+                windowID: windowID,
+                requestRawJSON: requestRawJSON
+            )
         }
 
         let preferredWindowID = windowID ?? selectedWindowID
@@ -1591,7 +1731,11 @@ actor InteractiveMCPClientSession {
             throw InteractiveSessionError.handshakeFailed(reason: "Ambiguous compose tab '\(trimmed)': \(details). Re-run with -w or use a context_id.")
         }
 
-        return try await bindContextID(match.tab.contextID.uuidString, windowID: match.windowID)
+        return try await bindContextID(
+            match.tab.contextID.uuidString,
+            windowID: match.windowID,
+            requestRawJSON: requestRawJSON
+        )
     }
 
     func bindingStatus() async throws -> BindContextBinding {
@@ -1625,6 +1769,17 @@ actor InteractiveMCPClientSession {
         }
         let data = Data(text.utf8)
         return try JSONDecoder().decode(BindContextResponse.self, from: data)
+    }
+
+    private func confirmedBinding(from result: CallTool.Result) throws -> BindContextBinding {
+        guard result.isError != true else {
+            let reason = result.content.compactMap {
+                if case let .text(text, _, _) = $0 { return text }
+                return nil
+            }.first ?? "bind_context failed"
+            throw InteractiveSessionError.handshakeFailed(reason: reason)
+        }
+        return try decodeBindContextResponse(from: result).binding
     }
 
     // MARK: - Bootstrap Handshake

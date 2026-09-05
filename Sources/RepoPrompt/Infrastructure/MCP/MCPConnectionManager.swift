@@ -1008,6 +1008,7 @@ actor ServerNetworkManager {
     private struct PromptExportExecutionEnvelope {
         let admissionDeadline: MCPDomainAdmissionDeadline
         let cleanupNotAfter: Duration
+        let responseDeliveryDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline
         let cancellationOrigin: MCPToolExecutionCancellationOrigin
     }
 
@@ -1017,7 +1018,7 @@ actor ServerNetworkManager {
     private final class PromptExportProviderEntryBridge: @unchecked Sendable {
         struct ProviderEntry {
             let watchdogEnvironment: MCPToolExecutionWatchdogEnvironment
-            let cleanupNotAfter: Duration
+            let cleanupNotAfter: Duration?
         }
 
         enum InitialEvent {
@@ -1078,7 +1079,7 @@ actor ServerNetworkManager {
         private let environment: MCPToolExecutionWatchdogEnvironment
         private let executionDeadline: Duration
         private let cancellationGrace: Duration
-        private let outerCleanupNotAfter: Duration
+        private let outerCleanupNotAfter: Duration?
         private var initialEvent: InitialEvent?
         private var hostCompletionInstant: Duration?
         private var waiter: CheckedContinuation<InitialEvent, Never>?
@@ -1087,7 +1088,7 @@ actor ServerNetworkManager {
             environment: MCPToolExecutionWatchdogEnvironment,
             executionDeadline: Duration,
             cancellationGrace: Duration,
-            outerCleanupNotAfter: Duration
+            outerCleanupNotAfter: Duration?
         ) {
             self.environment = environment
             self.executionDeadline = executionDeadline
@@ -1097,11 +1098,12 @@ actor ServerNetworkManager {
 
         func providerWillEnter() throws {
             let providerEntry = environment.now()
-            let cleanupNotAfter = providerEntry + executionDeadline + cancellationGrace
-            guard cleanupNotAfter <= outerCleanupNotAfter else {
+            let requestedCleanupNotAfter = providerEntry + executionDeadline + cancellationGrace
+            if let outerCleanupNotAfter, requestedCleanupNotAfter > outerCleanupNotAfter {
                 guard resolve(.providerEntryRejected) else { throw CancellationError() }
                 throw MCPToolExecutionWatchdogError.admissionEnvelopeExpired
             }
+            let cleanupNotAfter = outerCleanupNotAfter.map { _ in requestedCleanupNotAfter }
 
             let rebasedTiming = RebasedWatchdogTiming(
                 providerEntry: providerEntry,
@@ -1448,6 +1450,7 @@ actor ServerNetworkManager {
         private var debugAfterConnectionCallLimiterResolutionForTesting: (@Sendable (UUID) async -> Void)?
         private var debugAfterConnectionCallPermitAcquiredForTesting: (@Sendable (UUID) async -> Void)?
         private var debugAfterConnectionCallLimiterRejectionForTesting: (@Sendable (UUID) async -> Void)?
+        private var debugBeforeToolRequestIdentityClaimForTesting: (@Sendable (UUID, JSONRPCBridgeID) async -> Void)?
         private var debugBeforeToolResultFormattingForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforeToolCompletionObserversForTesting: (@Sendable (UUID, String) async -> Void)?
         private var debugBeforePromptExportPublicationClaimForTesting: (@Sendable (UUID, String) async -> Void)?
@@ -6735,10 +6738,40 @@ actor ServerNetworkManager {
 
     private var bindingResolver: MCPBindingResolver {
         MCPBindingResolver(
-            collectMatchesForContextID: { contextID in
+            collectMatchesForContextID: { connectionID, contextID in
                 await MainActor.run {
-                    WindowStatesManager.shared.allWindows.compactMap { windowState in
-                        guard let candidate = windowState.workspaceManager.storedBindingCandidate(forContextID: contextID) else {
+                    let windows = WindowStatesManager.shared.allWindows
+                    let bindingSnapshots = windows.map { windowState in
+                        (
+                            windowState: windowState,
+                            binding: windowState.mcpServer.connectionBindingSnapshot(forConnection: connectionID)
+                        )
+                    }
+                    let authoritativeBinding = bindingSnapshots.first {
+                        $0.binding.explicitlyBound && $0.binding.runID == nil
+                    } ?? bindingSnapshots.first {
+                        $0.binding.runID != nil
+                    }
+
+                    // Preserve an exact authoritative connection binding before active-workspace discovery
+                    if let authoritativeBinding,
+                       authoritativeBinding.binding.tabID == contextID,
+                       let tabID = authoritativeBinding.binding.tabID,
+                       let workspaceID = authoritativeBinding.binding.workspaceID,
+                       let workspaceName = authoritativeBinding.binding.workspaceName
+                    {
+                        return [MCPContextBindingMatch(
+                            windowID: authoritativeBinding.windowState.windowID,
+                            tabID: tabID,
+                            workspaceID: workspaceID,
+                            workspaceName: workspaceName,
+                            repoPaths: authoritativeBinding.binding.repoPaths
+                        )]
+                    }
+
+                    // Unbound one-shot context IDs share bind_context's active-workspace authority
+                    return windows.compactMap { windowState in
+                        guard let candidate = windowState.workspaceManager.bindingCandidate(forContextID: contextID) else {
                             return nil
                         }
                         return MCPContextBindingMatch(
@@ -9525,6 +9558,12 @@ actor ServerNetworkManager {
                 )
             }
 
+            func debugSetBeforeToolRequestIdentityClaimForTesting(
+                _ handler: (@Sendable (UUID, JSONRPCBridgeID) async -> Void)?
+            ) {
+                debugBeforeToolRequestIdentityClaimForTesting = handler
+            }
+
             func debugSetBeforeToolResultFormattingForTesting(
                 _ handler: (@Sendable (UUID, String) async -> Void)?
             ) {
@@ -11165,19 +11204,51 @@ actor ServerNetworkManager {
                     }
                 }
             #endif
+            var transportAnnotatedArguments = params.arguments ?? [:]
+            let transportDispatchIdentity = MCPExportResponseDeliveryDeadlineRegistry.dispatchIdentity(
+                from: transportAnnotatedArguments.removeValue(
+                    forKey: MCPExportResponseDeliveryDeadlineRegistry.requestIdentityArgumentKey
+                )
+            )
             #if DEBUG
-                let transportRequestIdentity = MCPRequestTimelineRegistry.shared.claimToolRequest(
+                if let transportDispatchIdentity {
+                    await debugBeforeToolRequestIdentityClaimForTesting?(
+                        connectionID,
+                        transportDispatchIdentity.requestID
+                    )
+                }
+            #endif
+            let currentConnectionGeneration = await requestTimelineConnectionGeneration(for: connectionID)
+            let validatedTransportDispatchIdentity: MCPExportResponseDeliveryDeadlineRegistry.DispatchIdentity? = {
+                guard let transportDispatchIdentity,
+                      transportDispatchIdentity.connectionID == connectionID.uuidString
+                else { return nil }
+                return transportDispatchIdentity
+            }()
+            let responseDeliveryRequestToken = validatedTransportDispatchIdentity.flatMap {
+                MCPExportResponseDeliveryDeadlineRegistry.shared.claimToolRequest(
+                    connectionID: $0.connectionID,
+                    connectionGeneration: $0.connectionGeneration,
+                    requestID: $0.requestID
+                )
+            }
+            #if DEBUG
+                let transportTimelineIdentity = MCPRequestTimelineRegistry.shared.claimToolRequest(
                     connectionID: connectionID.uuidString,
                     originalToolName: originalName
                 )
-                let inheritedRequestIdentity = transportRequestIdentity?.fillingMissingFields(
+                let inheritedRequestIdentity = transportTimelineIdentity?.fillingMissingFields(
                     from: MCPRequestTimelineContext.current
                 ) ?? MCPRequestTimelineContext.current
-                let fallbackConnectionGeneration = await requestTimelineConnectionGeneration(for: connectionID)
                 let requestIdentity = MCPRequestTimelineIdentity(
-                    jsonRPCRequestID: inheritedRequestIdentity?.jsonRPCRequestID,
-                    connectionID: inheritedRequestIdentity?.connectionID ?? connectionID.uuidString,
-                    connectionGeneration: inheritedRequestIdentity?.connectionGeneration ?? fallbackConnectionGeneration,
+                    jsonRPCRequestID: validatedTransportDispatchIdentity?.requestID
+                        ?? inheritedRequestIdentity?.jsonRPCRequestID,
+                    connectionID: inheritedRequestIdentity?.connectionID
+                        ?? validatedTransportDispatchIdentity?.connectionID
+                        ?? connectionID.uuidString,
+                    connectionGeneration: validatedTransportDispatchIdentity?.connectionGeneration
+                        ?? inheritedRequestIdentity?.connectionGeneration
+                        ?? currentConnectionGeneration,
                     appInvocationID: inheritedRequestIdentity?.appInvocationID,
                     requestOrdinal: inheritedRequestIdentity?.requestOrdinal
                 )
@@ -11252,7 +11323,7 @@ actor ServerNetworkManager {
                 EditFlowPerf.Dimensions(toolName: toolName)
             ) {
                 MCPToolArgsNormalizer.normalize(
-                    params: params.arguments,
+                    params: transportAnnotatedArguments,
                     originalToolName: originalName,
                     canonicalToolName: toolName
                 )
@@ -11330,6 +11401,10 @@ actor ServerNetworkManager {
                     cleanupNotAfter: outerDeadline - .seconds(
                         MCPTimeoutPolicy.promptExportResponseDeliveryAllowanceSeconds
                     ),
+                    responseDeliveryDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline(
+                        instant: outerDeadline,
+                        now: executionWatchdogEnvironment.now
+                    ),
                     cancellationOrigin: cancellationOrigin
                 )
             }()
@@ -11356,6 +11431,12 @@ actor ServerNetworkManager {
             }
             if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
                 return admissionTimeout
+            }
+            if let responseDeliveryRequestToken, let promptExportExecutionEnvelope {
+                MCPExportResponseDeliveryDeadlineRegistry.shared.install(
+                    promptExportExecutionEnvelope.responseDeliveryDeadline,
+                    for: responseDeliveryRequestToken
+                )
             }
             let evidenceOperationIdentity = MCPToolAdmissionPolicy.operationIdentity(
                 forCanonicalToolName: toolName,
@@ -11669,7 +11750,9 @@ actor ServerNetworkManager {
                 } else {
                     false
                 }
-                let authorityIsCurrent = !Task.isCancelled
+                let responseDeliveryIsCurrent = promptExportExecutionEnvelope?.responseDeliveryDeadline.hasExpired != true
+                let authorityIsCurrent = responseDeliveryIsCurrent
+                    && !Task.isCancelled
                     && limiterIsCurrent
                     && dispatchAuthorizationIsCurrent
                     && windowAuthorityIsCurrent
@@ -12571,14 +12654,15 @@ actor ServerNetworkManager {
                                             let cleanupNotAfter: Duration?
                                             let operationCompletionInstant: @Sendable () -> Duration?
                                             let watchdogOperation: @Sendable () async throws -> Value
-                                            if let promptExportExecutionEnvelope {
+                                            if isPromptExport {
                                                 // Host validation runs in one task before the watchdog supervises
-                                                // that same task from the exact provider-entry instant.
+                                                // that same task from the exact provider-entry instant. Outer-envelope
+                                                // cleanup policy remains absent for explicit client timeout modes.
                                                 let providerEntryBridge = PromptExportProviderEntryBridge(
                                                     environment: executionWatchdogEnvironment,
                                                     executionDeadline: deadline,
                                                     cancellationGrace: cancellationGrace,
-                                                    outerCleanupNotAfter: promptExportExecutionEnvelope.cleanupNotAfter
+                                                    outerCleanupNotAfter: promptExportExecutionEnvelope?.cleanupNotAfter
                                                 )
                                                 #if DEBUG
                                                     let debugHostCompletion = await self.debugAfterPromptExportHostCompletionForTesting
@@ -12731,15 +12815,20 @@ actor ServerNetworkManager {
                                     }
                                 }
 
-                                @Sendable func validatePromptExportPublicationAuthority() async throws {
+                                @Sendable func validatePromptExportPublicationAuthority(
+                                    requiresUncancelledRequest: Bool = true
+                                ) async throws {
                                     guard promptExportMutationObservation != nil else { return }
-                                    guard !Task.isCancelled,
+                                    guard promptExportExecutionEnvelope?.responseDeliveryDeadline.hasExpired != true,
+                                          !requiresUncancelledRequest || !Task.isCancelled,
                                           await self.isCurrentConnectionCallLimiterResolution(
                                               limiterResolution,
                                               connectionID: connectionID
                                           ),
-                                          let authorization = Self.currentToolDispatchAuthorization,
-                                          await self.isCurrentToolDispatchAuthorization(authorization)
+                                          let authorization =
+                                          Self.currentToolDispatchAuthorization
+                                              ?? promptExportPublicationAuthorityObservation?.snapshot(),
+                                              await self.isCurrentToolDispatchAuthorization(authorization)
                                     else {
                                         throw PromptExportPublicationAuthorityLost()
                                     }
@@ -12753,6 +12842,19 @@ actor ServerNetworkManager {
                                 @Sendable func isPromptExportPublicationAuthorityCurrent() async -> Bool {
                                     do {
                                         try await validatePromptExportPublicationAuthority()
+                                        return true
+                                    } catch {
+                                        return false
+                                    }
+                                }
+
+                                @Sendable func isPromptExportCompletionObserverAuthorityCurrent() async -> Bool {
+                                    do {
+                                        // Request cancellation suppresses the response, but the watchdog-owned
+                                        // completion observer remains authoritative until its delivery fence expires.
+                                        try await validatePromptExportPublicationAuthority(
+                                            requiresUncancelledRequest: false
+                                        )
                                         return true
                                     } catch {
                                         return false
@@ -12968,6 +13070,7 @@ actor ServerNetworkManager {
                                     }
                                     let errorJSON = ToolOutputFormatter.rawJSONString(.object(errorJSONObject))
                                     if !isAdmissionExpiry,
+                                       await isPromptExportCompletionObserverAuthorityCurrent(),
                                        let runID = await self.toolTrackingRunIDForCompletion(
                                            callTimeRunID: observerRunIDForCallbacksFinal,
                                            connectionID: connectionID,
@@ -12982,7 +13085,8 @@ actor ServerNetworkManager {
                                             toolName: toolName,
                                             args: nil,
                                             resultJSON: errorJSON,
-                                            isError: true
+                                            isError: true,
+                                            shouldDeliver: isPromptExportCompletionObserverAuthorityCurrent
                                         )
                                     }
 
@@ -13275,7 +13379,15 @@ actor ServerNetworkManager {
                                                 EditFlowPerf.Stage.MCPToolCall.completionObservers,
                                                 EditFlowPerf.Dimensions(toolName: toolName)
                                             ) {
-                                                if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "window-scoped error") {
+                                                if await isPromptExportCompletionObserverAuthorityCurrent(),
+                                                   let runID = await self.toolTrackingRunIDForCompletion(
+                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       connectionID: connectionID,
+                                                       toolName: toolName,
+                                                       invocationID: invocationID,
+                                                       context: "window-scoped error"
+                                                   )
+                                                {
                                                     let errorJSON = EditFlowPerf.measure(
                                                         EditFlowPerf.Stage.MCPToolCall.completionObserverResultEncoding,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
@@ -13286,7 +13398,15 @@ actor ServerNetworkManager {
                                                         EditFlowPerf.Stage.MCPToolCall.completionObserverCallbacks,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
                                                     ) {
-                                                        await self.fireToolCompletedObservers(runID: runID, invocationID: invocationID, toolName: toolName, args: capturedArguments, resultJSON: errorJSON, isError: true)
+                                                        await self.fireToolCompletedObservers(
+                                                            runID: runID,
+                                                            invocationID: invocationID,
+                                                            toolName: toolName,
+                                                            args: capturedArguments,
+                                                            resultJSON: errorJSON,
+                                                            isError: true,
+                                                            shouldDeliver: isPromptExportCompletionObserverAuthorityCurrent
+                                                        )
                                                     }
                                                     #if DEBUG
                                                         if toolName == "agent_run" {
@@ -13347,7 +13467,15 @@ actor ServerNetworkManager {
                                                 EditFlowPerf.Stage.MCPToolCall.completionObservers,
                                                 EditFlowPerf.Dimensions(toolName: toolName)
                                             ) {
-                                                if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "global success") {
+                                                if await isPromptExportPublicationAuthorityCurrent(),
+                                                   let runID = await self.toolTrackingRunIDForCompletion(
+                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       connectionID: connectionID,
+                                                       toolName: toolName,
+                                                       invocationID: invocationID,
+                                                       context: "global success"
+                                                   )
+                                                {
                                                     let resultJSON = EditFlowPerf.measure(
                                                         EditFlowPerf.Stage.MCPToolCall.completionObserverResultEncoding,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
@@ -13397,7 +13525,15 @@ actor ServerNetworkManager {
                                                 EditFlowPerf.Stage.MCPToolCall.completionObservers,
                                                 EditFlowPerf.Dimensions(toolName: toolName)
                                             ) {
-                                                if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "global error") {
+                                                if await isPromptExportCompletionObserverAuthorityCurrent(),
+                                                   let runID = await self.toolTrackingRunIDForCompletion(
+                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       connectionID: connectionID,
+                                                       toolName: toolName,
+                                                       invocationID: invocationID,
+                                                       context: "global error"
+                                                   )
+                                                {
                                                     let errorJSON = EditFlowPerf.measure(
                                                         EditFlowPerf.Stage.MCPToolCall.completionObserverResultEncoding,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
@@ -13408,7 +13544,15 @@ actor ServerNetworkManager {
                                                         EditFlowPerf.Stage.MCPToolCall.completionObserverCallbacks,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
                                                     ) {
-                                                        await self.fireToolCompletedObservers(runID: runID, invocationID: invocationID, toolName: toolName, args: capturedArguments, resultJSON: errorJSON, isError: true)
+                                                        await self.fireToolCompletedObservers(
+                                                            runID: runID,
+                                                            invocationID: invocationID,
+                                                            toolName: toolName,
+                                                            args: capturedArguments,
+                                                            resultJSON: errorJSON,
+                                                            isError: true,
+                                                            shouldDeliver: isPromptExportCompletionObserverAuthorityCurrent
+                                                        )
                                                     }
                                                     #if DEBUG
                                                         if toolName == "agent_run" {
