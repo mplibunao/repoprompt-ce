@@ -573,6 +573,76 @@ import XCTest
             }
         }
 
+        func testPromptContextExportAliasesResolveToCanonicalDeadlineEnvelopeAndSettlementPath() async {
+            let session = makeUnconnectedSession()
+            let startedAtNanoseconds: UInt64 = 10000
+            let wallNowUnixMilliseconds: Int64 = 1000
+            let pairs = [
+                (canonical: "prompt", alias: "discover_prompt"),
+                (canonical: "workspace_context", alias: "discover_workspace_context")
+            ]
+
+            for pair in pairs {
+                let canonical = await session.test_resolvedToolCallDeadline(
+                    toolName: pair.canonical,
+                    arguments: ["op": .string("export")],
+                    startedAtNanoseconds: startedAtNanoseconds,
+                    wallNowUnixMilliseconds: wallNowUnixMilliseconds
+                )
+                let alias = await session.test_resolvedToolCallDeadline(
+                    toolName: pair.alias,
+                    arguments: ["op": .string("export")],
+                    startedAtNanoseconds: startedAtNanoseconds,
+                    wallNowUnixMilliseconds: wallNowUnixMilliseconds
+                )
+
+                XCTAssertEqual(alias.timeoutSeconds, canonical.timeoutSeconds, pair.alias)
+                XCTAssertEqual(alias.expiresAtNanoseconds, canonical.expiresAtNanoseconds, pair.alias)
+                XCTAssertEqual(alias.wireEnvelope, canonical.wireEnvelope, pair.alias)
+                XCTAssertEqual(alias.requestToolName, pair.canonical, pair.alias)
+                XCTAssertEqual(alias.requestToolName, canonical.requestToolName, pair.alias)
+                XCTAssertEqual(
+                    alias.isSharedOrdinaryExportEnvelope,
+                    canonical.isSharedOrdinaryExportEnvelope,
+                    pair.alias
+                )
+                XCTAssertEqual(
+                    alias.timeoutSeconds,
+                    TimeInterval(MCPTimeoutPolicy.promptExportTotalEnvelopeSeconds),
+                    pair.alias
+                )
+                XCTAssertEqual(alias.expiresAtNanoseconds, 300_000_010_000, pair.alias)
+                XCTAssertEqual(alias.wireEnvelope?.timeoutMode, .ordinaryDefault, pair.alias)
+                XCTAssertEqual(alias.wireEnvelope?.expiresAtUnixMilliseconds, 301_000, pair.alias)
+                XCTAssertTrue(alias.isSharedOrdinaryExportEnvelope, pair.alias)
+            }
+
+            for control in [
+                (toolName: "discover_prompt", operation: "get"),
+                (toolName: "unknown_prompt_tool", operation: "export")
+            ] {
+                let resolved = await session.test_resolvedToolCallDeadline(
+                    toolName: control.toolName,
+                    arguments: ["op": .string(control.operation)],
+                    startedAtNanoseconds: startedAtNanoseconds,
+                    wallNowUnixMilliseconds: wallNowUnixMilliseconds
+                )
+                XCTAssertNil(resolved.wireEnvelope, control.toolName)
+                XCTAssertEqual(resolved.requestToolName, control.toolName)
+                XCTAssertFalse(resolved.isSharedOrdinaryExportEnvelope, control.toolName)
+            }
+
+            let malformedWrapper = await session.test_resolvedToolCallDeadline(
+                toolName: "discover_prompt",
+                arguments: ["discover_prompt": .string("{not-json")],
+                startedAtNanoseconds: startedAtNanoseconds,
+                wallNowUnixMilliseconds: wallNowUnixMilliseconds
+            )
+            XCTAssertEqual(malformedWrapper.requestToolName, "discover_prompt")
+            XCTAssertNil(malformedWrapper.wireEnvelope)
+            XCTAssertFalse(malformedWrapper.isSharedOrdinaryExportEnvelope)
+        }
+
         func testOrdinaryDefaultExportOverwritesAndTransmitsVersionedEnvelope() async throws {
             let transports = await InMemoryTransport.createConnectedPair()
             let recorder = ExportCLIToolArgumentsRecorder()
@@ -582,7 +652,7 @@ import XCTest
                 capabilities: .init(tools: .init())
             )
             await server.withMethodHandler(CallTool.self) { params in
-                await recorder.record(params.arguments ?? [:])
+                await recorder.record(name: params.name, arguments: params.arguments ?? [:])
                 return .init(
                     content: [.text(text: "ok", annotations: nil, _meta: nil)],
                     isError: false
@@ -608,15 +678,116 @@ import XCTest
                     name: "prompt",
                     arguments: [
                         "op": .string("export"),
+                        "operation_id": .string("canonical-prompt"),
                         MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .string("caller-value")
                     ]
                 )
                 _ = try await session.callTool(
-                    name: "prompt",
+                    name: "discover_prompt",
+                    arguments: [
+                        "op": .string("export"),
+                        "operation_id": .string("alias-prompt")
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "workspace_context",
+                    arguments: [
+                        "op": .string("export"),
+                        "operation_id": .string("canonical-workspace-context")
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_workspace_context",
+                    arguments: [
+                        "op": .string("export"),
+                        "operation_id": .string("alias-workspace-context")
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_prompt",
+                    arguments: [
+                        "discover_prompt": .object([
+                            "op": .string("export"),
+                            "operation_id": .string("alias-prompt-object-wrapper")
+                        ])
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_workspace_context",
+                    arguments: [
+                        "discover_workspace_context": .object([
+                            "op": .string("export"),
+                            "operation_id": .string("alias-workspace-context-object-wrapper")
+                        ])
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_prompt",
+                    arguments: [
+                        "discover_prompt": .string(
+                            #"{"op":"export","operation_id":"alias-prompt-json-wrapper","_tabID":"55555555-5555-5555-5555-555555555555","_windowID":43,"context_id":"66666666-6666-6666-6666-666666666666","_rawJSON":false,"working_dirs":["/tmp/prompt-json-wrapper"]}"#
+                        )
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_workspace_context",
+                    arguments: [
+                        "discover_workspace_context": .string(
+                            #"{"op":"export","operation_id":"alias-workspace-context-json-wrapper","_tabID":"77777777-7777-7777-7777-777777777777","_windowID":44,"context_id":"88888888-8888-8888-8888-888888888888","_rawJSON":false,"working_dirs":["/tmp/workspace-json-wrapper"]}"#
+                        )
+                    ]
+                )
+                await session.setSelectedWindowID(900)
+                await session.setSelectedContextID("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
+                await session.setRawJSONEnabled(true)
+                _ = try await session.callTool(
+                    name: "discover_prompt",
+                    arguments: [
+                        "op": .string("export"),
+                        "operation_id": .string("alias-prompt-direct-controls"),
+                        "_tabID": .string("11111111-1111-1111-1111-111111111111"),
+                        "_windowID": .int(41),
+                        "context_id": .string("22222222-2222-2222-2222-222222222222"),
+                        "_rawJSON": .bool(false),
+                        "working_dirs": .array([.string("/tmp/prompt-direct")])
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_workspace_context",
+                    arguments: [
+                        "discover_workspace_context": .object([
+                            "op": .string("export"),
+                            "operation_id": .string("alias-workspace-wrapped-controls"),
+                            "_tabID": .string("33333333-3333-3333-3333-333333333333"),
+                            "_windowID": .int(42),
+                            "context_id": .string("44444444-4444-4444-4444-444444444444"),
+                            "_rawJSON": .bool(false),
+                            "working_dirs": .array([.string("/tmp/workspace-wrapped")])
+                        ])
+                    ]
+                )
+                _ = try await session.callTool(
+                    name: "discover_prompt",
+                    arguments: [
+                        "args": .object([
+                            "op": .string("export"),
+                            "operation_id": .string("alias-prompt-args-session-default-controls")
+                        ])
+                    ]
+                )
+                await session.setSelectedWindowID(nil)
+                await session.setSelectedContextID(nil)
+                await session.setRawJSONEnabled(false)
+                _ = try await session.callTool(
+                    name: "discover_prompt",
                     arguments: [
                         "op": .string("get"),
                         MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey: .string("caller-value")
                     ]
+                )
+                _ = try await session.callTool(
+                    name: "unknown_prompt_tool",
+                    arguments: ["op": .string("export")]
                 )
                 _ = try await session.callTool(
                     name: "workspace_context",
@@ -642,23 +813,129 @@ import XCTest
                 )
 
                 let calls = await recorder.snapshot()
-                XCTAssertEqual(calls.count, 5)
-                let envelope = calls[0][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                XCTAssertEqual(calls.count, 16)
                 XCTAssertEqual(
-                    envelope?["kind"]?.stringValue,
-                    MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue
+                    calls.map(\.name),
+                    [
+                        "prompt",
+                        "prompt",
+                        "workspace_context",
+                        "workspace_context",
+                        "prompt",
+                        "workspace_context",
+                        "prompt",
+                        "workspace_context",
+                        "prompt",
+                        "workspace_context",
+                        "prompt",
+                        "discover_prompt",
+                        "unknown_prompt_tool",
+                        "workspace_context",
+                        "prompt",
+                        "prompt"
+                    ]
                 )
-                XCTAssertEqual(envelope?["timeout_mode"]?.stringValue, "default")
-                XCTAssertEqual(envelope?["expires_at_unix_milliseconds"]?.intValue, 301_000)
-                XCTAssertNil(calls[1][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
-                let finiteMarker = calls[2][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                for index in 0 ... 10 {
+                    let envelope = calls[index].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
+                        .objectValue
+                    XCTAssertEqual(
+                        envelope?["kind"]?.stringValue,
+                        MCPToolCallDeadlineEnvelope.Kind.ordinaryPromptExportV1.rawValue
+                    )
+                    XCTAssertEqual(envelope?["timeout_mode"]?.stringValue, "default")
+                    XCTAssertEqual(envelope?["expires_at_unix_milliseconds"]?.intValue, 301_000)
+                }
+                XCTAssertEqual(calls[0].arguments["operation_id"]?.stringValue, "canonical-prompt")
+                XCTAssertEqual(calls[1].arguments["operation_id"]?.stringValue, "alias-prompt")
+                XCTAssertEqual(calls[2].arguments["operation_id"]?.stringValue, "canonical-workspace-context")
+                XCTAssertEqual(calls[3].arguments["operation_id"]?.stringValue, "alias-workspace-context")
+                XCTAssertEqual(calls[4].arguments["operation_id"]?.stringValue, "alias-prompt-object-wrapper")
+                XCTAssertNil(calls[4].arguments["discover_prompt"])
+                XCTAssertEqual(
+                    calls[5].arguments["operation_id"]?.stringValue,
+                    "alias-workspace-context-object-wrapper"
+                )
+                XCTAssertNil(calls[5].arguments["discover_workspace_context"])
+                XCTAssertEqual(calls[6].arguments["operation_id"]?.stringValue, "alias-prompt-json-wrapper")
+                XCTAssertNil(calls[6].arguments["discover_prompt"])
+                XCTAssertEqual(calls[6].arguments["_tabID"]?.stringValue, "55555555-5555-5555-5555-555555555555")
+                XCTAssertEqual(calls[6].arguments["_windowID"]?.intValue, 43)
+                XCTAssertEqual(
+                    calls[6].arguments["context_id"]?.stringValue,
+                    "66666666-6666-6666-6666-666666666666"
+                )
+                XCTAssertEqual(calls[6].arguments["_rawJSON"]?.boolValue, false)
+                XCTAssertEqual(
+                    calls[6].arguments["working_dirs"]?.arrayValue?.first?.stringValue,
+                    "/tmp/prompt-json-wrapper"
+                )
+                XCTAssertEqual(
+                    calls[7].arguments["operation_id"]?.stringValue,
+                    "alias-workspace-context-json-wrapper"
+                )
+                XCTAssertNil(calls[7].arguments["discover_workspace_context"])
+                XCTAssertEqual(calls[7].arguments["_tabID"]?.stringValue, "77777777-7777-7777-7777-777777777777")
+                XCTAssertEqual(calls[7].arguments["_windowID"]?.intValue, 44)
+                XCTAssertEqual(
+                    calls[7].arguments["context_id"]?.stringValue,
+                    "88888888-8888-8888-8888-888888888888"
+                )
+                XCTAssertEqual(calls[7].arguments["_rawJSON"]?.boolValue, false)
+                XCTAssertEqual(
+                    calls[7].arguments["working_dirs"]?.arrayValue?.first?.stringValue,
+                    "/tmp/workspace-json-wrapper"
+                )
+                for index in 4 ... 7 {
+                    XCTAssertEqual(calls[index].arguments["op"]?.stringValue, "export")
+                }
+                XCTAssertEqual(calls[8].arguments["operation_id"]?.stringValue, "alias-prompt-direct-controls")
+                XCTAssertEqual(calls[8].arguments["_tabID"]?.stringValue, "11111111-1111-1111-1111-111111111111")
+                XCTAssertEqual(calls[8].arguments["_windowID"]?.intValue, 900)
+                XCTAssertEqual(
+                    calls[8].arguments["context_id"]?.stringValue,
+                    "22222222-2222-2222-2222-222222222222"
+                )
+                XCTAssertEqual(calls[8].arguments["_rawJSON"]?.boolValue, false)
+                XCTAssertEqual(calls[8].arguments["working_dirs"]?.arrayValue?.first?.stringValue, "/tmp/prompt-direct")
+                XCTAssertEqual(
+                    calls[9].arguments["operation_id"]?.stringValue,
+                    "alias-workspace-wrapped-controls"
+                )
+                XCTAssertEqual(calls[9].arguments["_tabID"]?.stringValue, "33333333-3333-3333-3333-333333333333")
+                XCTAssertEqual(calls[9].arguments["_windowID"]?.intValue, 900)
+                XCTAssertEqual(
+                    calls[9].arguments["context_id"]?.stringValue,
+                    "44444444-4444-4444-4444-444444444444"
+                )
+                XCTAssertEqual(calls[9].arguments["_rawJSON"]?.boolValue, false)
+                XCTAssertEqual(
+                    calls[9].arguments["working_dirs"]?.arrayValue?.first?.stringValue,
+                    "/tmp/workspace-wrapped"
+                )
+                XCTAssertEqual(
+                    calls[10].arguments["operation_id"]?.stringValue,
+                    "alias-prompt-args-session-default-controls"
+                )
+                XCTAssertNil(calls[10].arguments["args"])
+                XCTAssertEqual(calls[10].arguments["op"]?.stringValue, "export")
+                XCTAssertEqual(calls[10].arguments["_windowID"]?.intValue, 900)
+                XCTAssertEqual(
+                    calls[10].arguments["context_id"]?.stringValue,
+                    "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+                )
+                XCTAssertEqual(calls[10].arguments["_rawJSON"]?.boolValue, true)
+                XCTAssertNil(calls[11].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+                XCTAssertNil(calls[12].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey])
+                let finiteMarker = calls[13].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
+                    .objectValue
                 XCTAssertEqual(finiteMarker?["timeout_mode"]?.stringValue, "explicit_finite")
                 XCTAssertNil(finiteMarker?["expires_at_unix_milliseconds"])
-                let unboundedMarker = calls[3][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?.objectValue
+                let unboundedMarker = calls[14].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
+                    .objectValue
                 XCTAssertEqual(unboundedMarker?["timeout_mode"]?.stringValue, "explicit_unbounded")
                 XCTAssertNil(unboundedMarker?["expires_at_unix_milliseconds"])
                 XCTAssertEqual(
-                    calls[4][MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
+                    calls[15].arguments[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey]?
                         .objectValue?["expires_at_unix_milliseconds"]?.intValue,
                     301_000
                 )
@@ -1328,13 +1605,18 @@ import XCTest
     }
 
     private actor ExportCLIToolArgumentsRecorder {
-        private var calls: [[String: Value]] = []
-
-        func record(_ arguments: [String: Value]) {
-            calls.append(arguments)
+        struct Call {
+            let name: String
+            let arguments: [String: Value]
         }
 
-        func snapshot() -> [[String: Value]] {
+        private var calls: [Call] = []
+
+        func record(name: String, arguments: [String: Value]) {
+            calls.append(Call(name: name, arguments: arguments))
+        }
+
+        func snapshot() -> [Call] {
             calls
         }
     }

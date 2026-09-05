@@ -254,6 +254,8 @@ private struct ResolvedToolCallDeadline {
     let startedAtNanoseconds: UInt64
     let expiresAtNanoseconds: UInt64?
     let wireEnvelope: MCPToolCallDeadlineEnvelope?
+    let requestToolName: String
+    let rewrittenRequestArguments: [String: Value]?
     let isSharedOrdinaryExportEnvelope: Bool
 
     func remainingNanoseconds(now: UInt64) -> UInt64? {
@@ -941,6 +943,9 @@ actor InteractiveMCPClientSession {
             startedAtNanoseconds: deadlineStartedAtNanoseconds,
             wallNowUnixMilliseconds: wallNowUnixMilliseconds()
         )
+        if let rewrittenRequestArguments = resolvedDeadline.rewrittenRequestArguments {
+            args = rewrittenRequestArguments
+        }
         if let wireEnvelope = resolvedDeadline.wireEnvelope {
             args[MCPTimeoutPolicy.promptExportReservedEnvelopeArgumentKey] =
                 MCPToolCallDeadlineEnvelopeValueCodec.encode(wireEnvelope)
@@ -966,7 +971,7 @@ actor InteractiveMCPClientSession {
             ? Metadata(progressToken: .unique())
             : nil
         let request = CallTool.request(.init(
-            name: name,
+            name: resolvedDeadline.requestToolName,
             arguments: args.isEmpty ? nil : args,
             meta: requestMetadata
         ))
@@ -1306,6 +1311,61 @@ actor InteractiveMCPClientSession {
         return UInt64((clampedSeconds * 1_000_000_000).rounded(.up))
     }
 
+    private static func canonicalPromptContextDeadlineToolName(for toolName: String) -> String? {
+        switch toolName {
+        case "prompt", "discover_prompt":
+            MCPWindowToolName.prompt
+        case "workspace_context", "discover_workspace_context":
+            MCPWindowToolName.workspaceContext
+        default:
+            nil
+        }
+    }
+
+    private static func rewrittenPromptContextArguments(
+        _ normalized: NormalizedArgs,
+        originalArguments: [String: Value],
+        originalToolName: String,
+        canonicalToolName: String
+    ) -> [String: Value] {
+        var arguments = normalized.payload
+        if let tabID = normalized.tabID { arguments["_tabID"] = .string(tabID.uuidString) }
+        if let windowID = normalized.windowID { arguments["_windowID"] = .int(windowID) }
+        if let contextID = normalized.contextID { arguments["context_id"] = .string(contextID.uuidString) }
+
+        if normalized.rawJSON {
+            arguments["_rawJSON"] = .bool(true)
+        } else {
+            // Marking only existing keys lets the normalizer itself decide which decoded wrapper
+            // location is authoritative, while keeping absence distinct from explicit false.
+            let presenceProbe = MCPToolArgsNormalizer.normalize(
+                params: argumentsByMarkingPresentRawJSON(in: originalArguments),
+                originalToolName: originalToolName,
+                canonicalToolName: canonicalToolName
+            )
+            if presenceProbe.rawJSON { arguments["_rawJSON"] = .bool(false) }
+        }
+        return arguments
+    }
+
+    private static func argumentsByMarkingPresentRawJSON(
+        in arguments: [String: Value]
+    ) -> [String: Value] {
+        var marked: [String: Value] = arguments.mapValues { value -> Value in
+            if let object = value.objectValue {
+                return .object(argumentsByMarkingPresentRawJSON(in: object))
+            }
+            if let string = value.stringValue,
+               let object = Value.objectFromJSONString(string)
+            {
+                return .object(argumentsByMarkingPresentRawJSON(in: object))
+            }
+            return value
+        }
+        if marked["_rawJSON"] != nil { marked["_rawJSON"] = Value.bool(true) }
+        return marked
+    }
+
     private func resolvedToolCallDeadline(
         _ policy: ToolCallTimeoutPolicy,
         toolName: String,
@@ -1313,29 +1373,38 @@ actor InteractiveMCPClientSession {
         startedAtNanoseconds: UInt64,
         wallNowUnixMilliseconds: Int64
     ) -> ResolvedToolCallDeadline {
-        let timeoutSeconds = resolvedTimeout(policy, toolName: toolName, arguments: arguments)
+        let canonicalToolName = Self.canonicalPromptContextDeadlineToolName(for: toolName)
+        // Reuse domain normalization so every accepted wrapper shape enters the same
+        // pre-registration deadline lifecycle as its direct argument form.
+        let normalizedArguments: NormalizedArgs? = if let canonicalToolName {
+            MCPToolArgsNormalizer.normalize(
+                params: arguments,
+                originalToolName: toolName,
+                canonicalToolName: canonicalToolName
+            )
+        } else {
+            nil
+        }
+        let normalizedOperationArguments = normalizedArguments?.payload ?? arguments
+        let effectivePolicy = effectiveTimeoutPolicy(policy)
+        let isPromptExport = canonicalToolName.map {
+            MCPPromptContextOperation.parse(
+                toolName: $0,
+                arguments: normalizedOperationArguments
+            ) == .export
+        } ?? false
+        let requestToolName = isPromptExport ? canonicalToolName ?? toolName : toolName
+        let timeoutSeconds = resolvedTimeout(
+            policy,
+            toolName: requestToolName,
+            arguments: arguments
+        )
         let timeoutNanoseconds = timeoutSeconds.map(Self.nanoseconds(forTimeoutSeconds:))
         let expiresAtNanoseconds = timeoutNanoseconds.map {
             startedAtNanoseconds.addingReportingOverflow($0).overflow
                 ? UInt64.max
                 : startedAtNanoseconds + $0
         }
-        let isPromptContextTool = toolName == "prompt" || toolName == "workspace_context"
-        // Reuse domain normalization so every accepted wrapper shape enters the same
-        // pre-registration deadline lifecycle as its direct argument form.
-        let normalizedOperationArguments = isPromptContextTool
-            ? MCPToolArgsNormalizer.normalize(
-                params: arguments,
-                originalToolName: toolName,
-                canonicalToolName: toolName
-            ).payload
-            : arguments
-        let effectivePolicy = effectiveTimeoutPolicy(policy)
-        let isPromptExport = isPromptContextTool
-            && MCPPromptContextOperation.parse(
-                toolName: toolName,
-                arguments: normalizedOperationArguments
-            ) == .export
         let isOrdinaryDefaultExport = isPromptExport && effectivePolicy == .default
         let wireEnvelope: MCPToolCallDeadlineEnvelope?
         if isPromptExport {
@@ -1362,11 +1431,23 @@ actor InteractiveMCPClientSession {
         } else {
             wireEnvelope = nil
         }
+        let rewrittenRequestArguments: [String: Value]? = if requestToolName != toolName, let canonicalToolName, let normalizedArguments {
+            Self.rewrittenPromptContextArguments(
+                normalizedArguments,
+                originalArguments: arguments,
+                originalToolName: toolName,
+                canonicalToolName: canonicalToolName
+            )
+        } else {
+            nil
+        }
         return ResolvedToolCallDeadline(
             timeoutSeconds: timeoutSeconds,
             startedAtNanoseconds: startedAtNanoseconds,
             expiresAtNanoseconds: expiresAtNanoseconds,
             wireEnvelope: wireEnvelope,
+            requestToolName: requestToolName,
+            rewrittenRequestArguments: rewrittenRequestArguments,
             isSharedOrdinaryExportEnvelope: isOrdinaryDefaultExport
         )
     }
@@ -1455,6 +1536,35 @@ actor InteractiveMCPClientSession {
             arguments: [String: Value] = [:]
         ) -> TimeInterval? {
             resolvedTimeout(policy, toolName: toolName, arguments: arguments)
+        }
+
+        func test_resolvedToolCallDeadline(
+            _ policy: ToolCallTimeoutPolicy = .default,
+            toolName: String,
+            arguments: [String: Value] = [:],
+            startedAtNanoseconds: UInt64 = 0,
+            wallNowUnixMilliseconds: Int64 = 0
+        ) -> (
+            timeoutSeconds: TimeInterval?,
+            expiresAtNanoseconds: UInt64?,
+            wireEnvelope: MCPToolCallDeadlineEnvelope?,
+            requestToolName: String,
+            isSharedOrdinaryExportEnvelope: Bool
+        ) {
+            let resolved = resolvedToolCallDeadline(
+                policy,
+                toolName: toolName,
+                arguments: arguments,
+                startedAtNanoseconds: startedAtNanoseconds,
+                wallNowUnixMilliseconds: wallNowUnixMilliseconds
+            )
+            return (
+                resolved.timeoutSeconds,
+                resolved.expiresAtNanoseconds,
+                resolved.wireEnvelope,
+                resolved.requestToolName,
+                resolved.isSharedOrdinaryExportEnvelope
+            )
         }
 
         func test_pendingToolCallResponseTaskCount() -> Int {

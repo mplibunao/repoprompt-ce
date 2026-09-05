@@ -1057,7 +1057,7 @@ import XCTest
             }
         }
 
-        func testExportTraceCorrelatesProviderFormattingPublicationAndTransportWrite() async throws {
+        func testPromptExportPhaseAndDeliveryTracesShareCanonicalIdentity() async throws {
             #if DEBUG
                 try await MCPSharedServerTestLease.shared.withLease { lease in
                     let fixture = try await PersistentMCPTestFixture.make(
@@ -1066,97 +1066,158 @@ import XCTest
                     )
                     let manager = fixture.networkManager
                     let endpoint = try fixture.endpointA()
-                    let executionRecorder = MCPExecutionTraceRecorder()
                     let traceDefaults = UserDefaults.standard
                     let traceKey = "enableMCPResponseDeliveryTrace"
                     let priorTraceValue = traceDefaults.object(forKey: traceKey)
+                    let clock = MCPExportWatchdogManualClock()
+                    let cases = [
+                        (requestedName: "prompt", wireName: MCPWindowToolName.prompt),
+                        (requestedName: "workspace_context", wireName: MCPWindowToolName.workspaceContext)
+                    ]
+                    var formattingGate: MCPExecutionIgnoringCancellationGate?
+                    var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
                     try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
                     traceDefaults.set(true, forKey: traceKey)
-                    MCPResponseDeliveryTracer.resetDebugEvents()
-                    MCPToolExecutionTracer.setTestSink { executionRecorder.append($0) }
-                    await manager.debugSetResolvedToolOperationOverride(toolName: "workspace_context") {
-                        .object(["ok": .bool(true)])
-                    }
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
 
                     do {
-                        _ = try await endpoint.callTool(
-                            name: "workspace_context",
-                            arguments: [
-                                "op": "export",
-                                "path": fixture.contextA.rootURL
-                                    .appendingPathComponent("export-trace-content-sentinel")
-                                    .path,
-                                "operation_id": "export-trace-correlation-\(UUID().uuidString)",
-                                "_rawJSON": true
-                            ]
-                        )
-
-                        let executionEvents = executionRecorder.snapshot().filter {
-                            $0.toolName == "workspace_context"
-                        }
-                        let provider = try XCTUnwrap(executionEvents.first { $0.phase == .handlerCompleted })
-                        let requestIdentity = try XCTUnwrap(provider.requestIdentity)
-                        XCTAssertEqual(
-                            requestIdentity.appInvocationID.flatMap(UUID.init(uuidString:)),
-                            provider.invocationID
-                        )
-                        XCTAssertNotNil(requestIdentity.connectionID)
-
-                        let phaseEvents = executionEvents.filter { $0.phase == .handlerPhaseTransition }
-                        XCTAssertEqual(
-                            phaseEvents.map { $0.handlerPhase?.phase },
-                            [
-                                .promptExportFormatting,
-                                .promptExportFormatting,
-                                .promptExportPublication,
-                                .promptExportPublication
-                            ]
-                        )
-                        XCTAssertEqual(
-                            phaseEvents.map { $0.handlerPhase?.transition },
-                            [.started, .completed, .started, .completed]
-                        )
-                        XCTAssertTrue(phaseEvents.allSatisfy {
-                            $0.invocationID == provider.invocationID
-                                && $0.requestIdentity == requestIdentity
-                                && $0.toolName == "workspace_context"
-                        })
-                        XCTAssertFalse(phaseEvents.contains {
-                            $0.description.contains("export-trace-content-sentinel")
-                        })
-
-                        let deliveryEvents = MCPResponseDeliveryTracer.debugEventSnapshot()
-                        for phase in [
-                            "handler_result_ready",
-                            "sdk_encode_completed",
-                            "transport_write_started",
-                            "transport_write_completed"
-                        ] {
-                            let event = try XCTUnwrap(deliveryEvents.first {
-                                $0.phase == phase
-                                    && $0.requestIdentity?.jsonRPCRequestID == requestIdentity.jsonRPCRequestID
-                                    && $0.requestIdentity?.connectionID == requestIdentity.connectionID
-                                    && $0.requestIdentity?.requestOrdinal == requestIdentity.requestOrdinal
-                            })
-                            XCTAssertEqual(
-                                event.requestIdentity?.appInvocationID.flatMap(UUID.init(uuidString:)),
-                                provider.invocationID
-                            )
-                            if phase == "handler_result_ready" {
-                                XCTAssertEqual(event.tool, "workspace_context")
+                        for testCase in cases {
+                            let executionRecorder = MCPExecutionTraceRecorder()
+                            let pathSentinel = "export-trace-content-sentinel-\(testCase.requestedName)"
+                            let requestID = endpoint.client.nextRequestIDForTesting()
+                            let activeFormattingGate = MCPExecutionIgnoringCancellationGate()
+                            formattingGate = activeFormattingGate
+                            MCPResponseDeliveryTracer.resetDebugEvents()
+                            MCPToolExecutionTracer.setTestSink { executionRecorder.append($0) }
+                            await manager.debugSetResolvedToolOperationOverride(toolName: testCase.wireName) {
+                                .object(["ok": .bool(true)])
                             }
+                            await manager.debugSetBeforeToolResultFormattingForTesting { connectionID, toolName in
+                                guard connectionID == endpoint.connectionID,
+                                      toolName == testCase.wireName
+                                else { return }
+                                await activeFormattingGate.enterAndWait()
+                            }
+
+                            let activeResponseTask = Task {
+                                try await endpoint.callTool(
+                                    name: testCase.wireName,
+                                    arguments: [
+                                        "op": "export",
+                                        "path": fixture.contextA.rootURL.appendingPathComponent(pathSentinel).path,
+                                        "operation_id": "export-trace-correlation-\(UUID().uuidString)",
+                                        "_rawJSON": true
+                                    ]
+                                )
+                            }
+                            responseTask = activeResponseTask
+                            try await activeFormattingGate.waitUntilEntered(count: 1)
+                            let responseDeliveryDeadline = try XCTUnwrap(
+                                MCPExportResponseDeliveryDeadlineRegistry.shared.deadlineForTesting(
+                                    connectionID: endpoint.connectionID.uuidString,
+                                    connectionGeneration: 1,
+                                    requestID: .number(Int64(requestID))
+                                ),
+                                testCase.requestedName
+                            )
+                            XCTAssertEqual(
+                                responseDeliveryDeadline.instant,
+                                .seconds(MCPTimeoutPolicy.promptExportTotalEnvelopeSeconds),
+                                testCase.requestedName
+                            )
+                            XCTAssertFalse(responseDeliveryDeadline.hasExpired, testCase.requestedName)
+                            await activeFormattingGate.release()
+                            _ = try await activeResponseTask.value
+                            responseTask = nil
+                            formattingGate = nil
+                            await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                            XCTAssertNil(
+                                MCPExportResponseDeliveryDeadlineRegistry.shared.deadlineForTesting(
+                                    connectionID: endpoint.connectionID.uuidString,
+                                    connectionGeneration: 1,
+                                    requestID: .number(Int64(requestID))
+                                ),
+                                testCase.requestedName
+                            )
+
+                            let executionEvents = executionRecorder.snapshot().filter {
+                                $0.toolName == testCase.wireName
+                            }
+                            let provider = try XCTUnwrap(
+                                executionEvents.first { $0.phase == .handlerCompleted },
+                                testCase.requestedName
+                            )
+                            let requestIdentity = try XCTUnwrap(provider.requestIdentity, testCase.requestedName)
+                            XCTAssertEqual(
+                                requestIdentity.appInvocationID.flatMap(UUID.init(uuidString:)),
+                                provider.invocationID,
+                                testCase.requestedName
+                            )
+                            XCTAssertEqual(requestIdentity.jsonRPCRequestID, .number(Int64(requestID)))
+                            XCTAssertNotNil(requestIdentity.connectionID, testCase.requestedName)
+
+                            let phaseEvents = executionEvents.filter { $0.phase == .handlerPhaseTransition }
+                            XCTAssertEqual(
+                                phaseEvents.map { $0.handlerPhase?.phase },
+                                [
+                                    .promptExportFormatting,
+                                    .promptExportFormatting,
+                                    .promptExportPublication,
+                                    .promptExportPublication
+                                ],
+                                testCase.requestedName
+                            )
+                            XCTAssertEqual(
+                                phaseEvents.map { $0.handlerPhase?.transition },
+                                [.started, .completed, .started, .completed],
+                                testCase.requestedName
+                            )
+                            XCTAssertTrue(phaseEvents.allSatisfy {
+                                $0.invocationID == provider.invocationID
+                                    && $0.requestIdentity == requestIdentity
+                                    && $0.toolName == testCase.wireName
+                            }, testCase.requestedName)
+                            XCTAssertFalse(phaseEvents.contains {
+                                $0.description.contains(pathSentinel)
+                            }, testCase.requestedName)
+
+                            let deliveryEvents = MCPResponseDeliveryTracer.debugEventSnapshot()
+                            for phase in [
+                                "handler_result_ready",
+                                "sdk_encode_completed",
+                                "transport_write_started",
+                                "transport_write_completed"
+                            ] {
+                                let phaseEvents = deliveryEvents.filter { $0.phase == phase }
+                                let event = try XCTUnwrap(deliveryEvents.first {
+                                    $0.phase == phase
+                                        && $0.requestIdentity?.jsonRPCRequestID == requestIdentity.jsonRPCRequestID
+                                        && $0.requestIdentity?.connectionID == requestIdentity.connectionID
+                                        && $0.requestIdentity?.requestOrdinal == requestIdentity.requestOrdinal
+                                }, "\(testCase.requestedName): \(phase); candidates=\(phaseEvents)")
+                                XCTAssertEqual(
+                                    event.requestIdentity?.appInvocationID.flatMap(UUID.init(uuidString:)),
+                                    provider.invocationID,
+                                    testCase.requestedName
+                                )
+                                if phase == "handler_result_ready" {
+                                    XCTAssertEqual(event.tool, testCase.wireName, testCase.requestedName)
+                                }
+                            }
+
+                            MCPToolExecutionTracer.setTestSink(nil)
+                            MCPResponseDeliveryTracer.resetDebugEvents()
+                            await manager.debugSetResolvedToolOperationOverride(
+                                toolName: testCase.wireName,
+                                operation: nil
+                            )
                         }
 
-                        MCPToolExecutionTracer.setTestSink(nil)
-                        MCPResponseDeliveryTracer.resetDebugEvents()
-                        await manager.debugSetResolvedToolOperationOverride(
-                            toolName: "workspace_context",
-                            operation: nil
-                        )
                         await manager.debugSetDomainPeerIdentityForTesting(
                             connectionID: endpoint.connectionID,
                             identity: nil
                         )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
                         if let priorTraceValue {
                             traceDefaults.set(priorTraceValue, forKey: traceKey)
                         } else {
@@ -1165,16 +1226,23 @@ import XCTest
                         await fixture.cleanup()
                         try await fixture.assertCleanedUp()
                     } catch {
+                        await formattingGate?.release()
+                        responseTask?.cancel()
+                        if let responseTask { _ = try? await responseTask.value }
                         MCPToolExecutionTracer.setTestSink(nil)
                         MCPResponseDeliveryTracer.resetDebugEvents()
-                        await manager.debugSetResolvedToolOperationOverride(
-                            toolName: "workspace_context",
-                            operation: nil
-                        )
+                        await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                        for canonicalName in [MCPWindowToolName.prompt, MCPWindowToolName.workspaceContext] {
+                            await manager.debugSetResolvedToolOperationOverride(
+                                toolName: canonicalName,
+                                operation: nil
+                            )
+                        }
                         await manager.debugSetDomainPeerIdentityForTesting(
                             connectionID: endpoint.connectionID,
                             identity: nil
                         )
+                        await manager.debugResetToolExecutionWatchdogEnvironment()
                         if let priorTraceValue {
                             traceDefaults.set(priorTraceValue, forKey: traceKey)
                         } else {
