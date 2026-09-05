@@ -292,8 +292,11 @@ final class MCPSelectionConstructionWatchdogTests: XCTestCase {
         )
     }
 
-    /// Asserts a child interval is open, reading `started`, at its expected report ordinal.
-    private func assertChildPhase(
+    /// Asserts the snapshot names `expected`, reads `started`, and carries its expected report
+    /// ordinal. Covers child and aggregate intervals alike: construction leaves every interval it
+    /// owns in `started`, because the aggregate's `completed` is reported later by the provider's
+    /// per-operation branches.
+    private func assertRecordedPhase(
         _ snapshot: MCPToolExecutionHandlerPhaseSnapshot?,
         _ expected: MCPToolExecutionHandlerPhase,
         ordinal: Double,
@@ -532,24 +535,24 @@ final class MCPSelectionConstructionWatchdogTests: XCTestCase {
 
         // Each child phase is opened immediately before its await, and the ordinals pin the
         // intervening `completed` reports.
-        assertChildPhase(
+        assertRecordedPhase(
             calls.phase(at: "stabilize"),
             .manageSelectionConstructionVirtualSelectionStabilization,
             ordinal: Ordinal.stabilizationStarted
         )
-        assertChildPhase(
+        assertRecordedPhase(
             calls.phase(at: "freeze"),
             .manageSelectionConstructionGitReviewContextFreeze,
             ordinal: Ordinal.freezeStarted
         )
-        assertChildPhase(
+        assertRecordedPhase(
             calls.phase(at: "resolve"),
             .manageSelectionConstructionArtifactInputResolution,
             ordinal: Ordinal.artifactStarted
         )
 
         // The aggregate interval owns the remaining synchronous construction work.
-        assertChildPhase(
+        assertRecordedPhase(
             recorder.snapshot(),
             .manageSelectionConstruction,
             ordinal: Ordinal.aggregateAfterArtifact
@@ -585,7 +588,7 @@ final class MCPSelectionConstructionWatchdogTests: XCTestCase {
         XCTAssertEqual(outcome.artifactResolution.ordinaryPaths, [Self.inputPath])
         XCTAssertTrue(outcome.artifactResolution.artifacts.isEmpty)
 
-        assertChildPhase(
+        assertRecordedPhase(
             recorder.snapshot(),
             .manageSelectionConstruction,
             ordinal: Ordinal.aggregateAfterStabilizationOnly
