@@ -223,7 +223,14 @@ final class MCPExportResponseDeliveryDeadlineRegistry: @unchecked Sendable {
                       let toolName = params["name"] as? String,
                       toolName == "prompt" || toolName == "workspace_context"
                 else { return object }
-                var arguments = params["arguments"] as? [String: Any] ?? [:]
+                var arguments: [String: Any] = [:]
+                if let presentArguments = params["arguments"] {
+                    // Only absent arguments may be synthesized. Substituting an empty object for a
+                    // present-but-malformed value would hand the SDK a well-formed call and silently
+                    // run the default read, so leave such a request untouched for validation to reject.
+                    guard let objectArguments = presentArguments as? [String: Any] else { return object }
+                    arguments = objectArguments
+                }
                 arguments[Self.requestIdentityArgumentKey] = [
                     "connection_id": connectionID,
                     "connection_generation": String(connectionGeneration),

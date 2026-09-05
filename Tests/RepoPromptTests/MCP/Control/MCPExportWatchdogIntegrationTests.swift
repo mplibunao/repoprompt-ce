@@ -2049,6 +2049,78 @@ import XCTest
             await transport.disconnect()
         }
 
+        func testSocketTransportRejectsMalformedToolArgumentsAndAnnotatesOmittedArguments() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(
+                    lease: lease,
+                    domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                )
+                let endpoint = try fixture.endpointA()
+                let manager = fixture.networkManager
+                let recorder = MCPExecutionTraceRecorder()
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+
+                do {
+                    for toolName in ["prompt", "workspace_context"] {
+                        for malformedArguments: Any in ["get", ["op", "get"]] {
+                            let response = try await endpoint.client.request(
+                                method: "tools/call",
+                                params: [
+                                    "name": toolName,
+                                    "arguments": malformedArguments
+                                ]
+                            )
+                            let data = try XCTUnwrap(response.rawJSON.data(using: .utf8))
+                            let object = try XCTUnwrap(
+                                JSONSerialization.jsonObject(with: data) as? [String: Any]
+                            )
+                            let error = try XCTUnwrap(object["error"] as? [String: Any])
+                            XCTAssertEqual((error["code"] as? NSNumber)?.intValue, -32603, toolName)
+                            XCTAssertNil(object["result"], toolName)
+                        }
+                        XCTAssertFalse(recorder.snapshot().contains {
+                            $0.toolName == toolName && $0.phase == .started
+                        }, toolName)
+
+                        // Omitted arguments still need an injected transport identity so dispatch can
+                        // correlate the SDK-decoded request with its originating socket frame.
+                        let requestID = endpoint.client.nextRequestIDForTesting()
+                        let identityClaim = MCPExecutionOneShotSignal<JSONRPCBridgeID>()
+                        await manager.debugSetBeforeToolRequestIdentityClaimForTesting { connectionID, requestID in
+                            guard connectionID == endpoint.connectionID else { return }
+                            identityClaim.signal(requestID)
+                        }
+                        let response = try await endpoint.client.request(
+                            method: "tools/call",
+                            params: ["name": toolName]
+                        )
+                        let data = try XCTUnwrap(response.rawJSON.data(using: .utf8))
+                        let object = try XCTUnwrap(
+                            JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        )
+                        XCTAssertNotNil(object["result"], toolName)
+                        XCTAssertNil(object["error"], toolName)
+                        let claimedRequestID = await identityClaim.wait()
+                        XCTAssertEqual(
+                            claimedRequestID,
+                            .number(Int64(requestID)),
+                            toolName
+                        )
+                        await manager.debugSetBeforeToolRequestIdentityClaimForTesting(nil)
+                    }
+
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await manager.debugSetBeforeToolRequestIdentityClaimForTesting(nil)
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         private static let expectedExportPhaseTrace = [
             "prompt_export.selection_drain:started",
             "prompt_export.selection_drain:completed",
