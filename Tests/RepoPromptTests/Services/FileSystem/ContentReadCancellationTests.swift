@@ -964,6 +964,63 @@ final class ContentReadCancellationTests: XCTestCase {
         XCTAssertEqual(try materializationResult.get(), .noCandidate)
     }
 
+    func testExactCandidatesRejectUncataloguedEligibilityAfterRootTurnover() async throws {
+        let catalogRootURL = try makeTemporaryRoot()
+        let ignoredRootURL = try makeTemporaryRoot()
+        try "catalog match\n".write(
+            to: catalogRootURL.appendingPathComponent("Target.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "Target.swift\n".write(
+            to: ignoredRootURL.appendingPathComponent(".gitignore"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "ignored physical match\n".write(
+            to: ignoredRootURL.appendingPathComponent("Target.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: catalogRootURL.path)
+        let ignoredRoot = try await store.loadRoot(path: ignoredRootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let ignoredCatalogFile = await store.file(rootID: ignoredRoot.id, relativePath: "Target.swift")
+        XCTAssertNil(ignoredCatalogFile)
+        let physicalGate = SynchronousPhysicalReadGate()
+        try await store.setContentPhysicalReadHandlerForTesting(rootID: ignoredRoot.id) {
+            physicalGate.blockUntilReleased()
+        }
+        addTeardownBlock {
+            physicalGate.release()
+            try? await store.setContentPhysicalReadHandlerForTesting(rootID: ignoredRoot.id, nil)
+        }
+
+        let resolutionTask = Task {
+            try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse("Target.swift"),
+                namespace: WorkspaceExactFileNamespace.identity(roots: roots)
+            )
+        }
+        guard await waitUntil({ physicalGate.isBlockedSnapshot() }) else {
+            resolutionTask.cancel()
+            physicalGate.release()
+            return XCTFail("Uncatalogued eligibility did not reach the controlled physical boundary")
+        }
+
+        try await store.replaceRootLifetimeForTesting(rootID: ignoredRoot.id)
+        physicalGate.release()
+        guard let observedResolution = await waitForTaskResult(resolutionTask) else {
+            return XCTFail("Exact resolution did not settle after root turnover")
+        }
+        XCTAssertEqual(
+            try observedResolution.get(),
+            .issue(.unresolved(input: "Target.swift"))
+        )
+    }
+
     func testSuccessiveOuterProviderTimeoutsDoNotEnterUnrelatedGitArtifactPreflight() async throws {
         XCTAssertTrue(MCPServerViewModel.shouldAttemptSelectedGitArtifactReadForTesting(
             requestedPath: "_git_data/repos/repo/snapshot/MAP.txt",
@@ -2012,7 +2069,7 @@ final class ContentReadCancellationTests: XCTestCase {
         }
         let codeMapQueued = await waitUntil {
             let snapshot = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
-            return snapshot.foregroundActivityCountsByKind[.interactiveRead] == 1
+            return snapshot.foregroundActivityCountsByKind[.interactiveRead] == 2
                 && snapshot.activeCodemapPermitCount == 0
                 && snapshot.queuedCodemapWaiterCount == 1
         }
@@ -2048,6 +2105,78 @@ final class ContentReadCancellationTests: XCTestCase {
         try codeMapResult.get()
         let grantedAfterRelease = await codeMapGranted.isSignaledSnapshot()
         XCTAssertTrue(grantedAfterRelease)
+        let finalSnapshot = await waitForLimiterIdle()
+        XCTAssertTrue(finalSnapshot.isIdle)
+    }
+
+    func testWorkspaceInteractiveReadSuppressesCodeMapBetweenPhysicalStages() async throws {
+        let rootURL = try makeTemporaryRoot()
+        try "multi-stage foreground read\n".write(
+            to: rootURL.appendingPathComponent("Target.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(path: rootURL.path)
+        guard let record = await store.file(rootID: root.id, relativePath: "Target.swift") else {
+            return XCTFail("Expected loaded file record")
+        }
+        let fingerprintResolved = AsyncSignal()
+        let releaseStageGap = AsyncSignal()
+        await store.setInteractiveReadFingerprintDidResolveHandlerForTesting {
+            await fingerprintResolved.signal()
+            await releaseStageGap.wait()
+        }
+        let interactiveReadTask = Task { try await store.interactiveReadSnapshot(for: record) }
+        guard await waitUntil({ await fingerprintResolved.isSignaledSnapshot() }) else {
+            interactiveReadTask.cancel()
+            await releaseStageGap.signal()
+            return XCTFail("Interactive read did not reach the post-fingerprint stage gap")
+        }
+
+        let codeMapGranted = AsyncSignal()
+        let codeMapTask = Task {
+            try await FileSystemService.withCodeMapArtifactBuildPermit(
+                ownerID: UUID(),
+                priority: .utility
+            ) {
+                await codeMapGranted.signal()
+            }
+        }
+        addTeardownBlock {
+            await releaseStageGap.signal()
+            interactiveReadTask.cancel()
+            codeMapTask.cancel()
+            await store.setInteractiveReadFingerprintDidResolveHandlerForTesting(nil)
+            _ = await self.waitForTaskResult(interactiveReadTask)
+            _ = await self.waitForTaskResult(codeMapTask)
+            let teardownSnapshot = await self.waitForLimiterIdle()
+            XCTAssertTrue(teardownSnapshot.isIdle)
+        }
+        guard await waitUntil({
+            let snapshot = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
+            return snapshot.queuedCodemapWaiterCount == 1
+        }) else {
+            return XCTFail("CodeMap work was not queued behind the fingerprint stage")
+        }
+        let grantedBetweenStages = await codeMapGranted.isSignaledSnapshot()
+        XCTAssertFalse(grantedBetweenStages)
+        let stageGapSnapshot = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
+        XCTAssertEqual(stageGapSnapshot.activePermitCount, 0)
+        XCTAssertEqual(stageGapSnapshot.foregroundActivityCountsByKind[.interactiveRead], 1)
+        XCTAssertEqual(stageGapSnapshot.activeCodemapPermitCount, 0)
+        XCTAssertEqual(stageGapSnapshot.queuedCodemapWaiterCount, 1)
+
+        await releaseStageGap.signal()
+        guard let interactiveResult = await waitForTaskResult(interactiveReadTask),
+              let codeMapResult = await waitForTaskResult(codeMapTask)
+        else {
+            return XCTFail("Foreground and CodeMap work did not settle after physical release")
+        }
+        XCTAssertNotNil(try interactiveResult.get())
+        try codeMapResult.get()
+        let grantedAfterRead = await codeMapGranted.isSignaledSnapshot()
+        XCTAssertTrue(grantedAfterRead)
         let finalSnapshot = await waitForLimiterIdle()
         XCTAssertTrue(finalSnapshot.isIdle)
     }

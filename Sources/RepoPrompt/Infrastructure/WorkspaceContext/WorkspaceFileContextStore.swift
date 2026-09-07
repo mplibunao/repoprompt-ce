@@ -1239,6 +1239,7 @@ actor WorkspaceFileContextStore {
         private var ensureIndexedFilesEligibilityDidResolveHandler: (@Sendable (UUID, String) async -> Void)?
         private var contextBuilderSelectionCandidateEligibilityDidResolveHandler: (@Sendable (UUID) async -> Void)?
         private var publishedGitArtifactIngressDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
+        private var interactiveReadFingerprintDidResolveHandler: (@Sendable () async -> Void)?
         private var explicitMaterializationDidAcquireCodemapFenceHandler: (@Sendable (FileSystemService) async -> Void)?
         private var watcherSinkWillApplyHandler: (@Sendable (UUID) async -> Void)?
         private var storeEditDeferredPublicationDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
@@ -1954,6 +1955,12 @@ actor WorkspaceFileContextStore {
             _ handler: (@Sendable (UUID, String) async -> Void)?
         ) {
             publishedGitArtifactIngressDidRegisterHandler = handler
+        }
+
+        func setInteractiveReadFingerprintDidResolveHandlerForTesting(
+            _ handler: (@Sendable () async -> Void)?
+        ) {
+            interactiveReadFingerprintDidResolveHandler = handler
         }
 
         func setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting(
@@ -11394,6 +11401,16 @@ actor WorkspaceFileContextStore {
     func interactiveReadSnapshot(
         for expectedRecord: WorkspaceFileRecord
     ) async throws -> WorkspaceInteractiveReadSnapshot? {
+        // The outer token spans the gap between fingerprint and content producers. Each producer
+        // also owns a token so cancellation cannot expose its still-running physical work.
+        try await FileSystemService.withContentReadForegroundActivity(kind: .interactiveRead) {
+            try await self.interactiveReadSnapshotWithinForegroundActivity(for: expectedRecord)
+        }
+    }
+
+    private func interactiveReadSnapshotWithinForegroundActivity(
+        for expectedRecord: WorkspaceFileRecord
+    ) async throws -> WorkspaceInteractiveReadSnapshot? {
         try await requirePublishedSeededAuthorityFresh(rootID: expectedRecord.rootID)
         for attempt in 0 ..< 2 {
             try Task.checkCancellation()
@@ -11433,6 +11450,12 @@ actor WorkspaceFileContextStore {
             } catch {
                 return nil
             }
+
+            #if DEBUG
+                if let handler = interactiveReadFingerprintDidResolveHandler {
+                    await handler()
+                }
+            #endif
 
             guard searchContentRecordIsCurrent(current, invalidationEpoch: epoch) else {
                 if attempt == 0 { continue }
@@ -17368,9 +17391,18 @@ actor WorkspaceFileContextStore {
                 hasUnavailableBinding = true
                 continue
             }
-            switch try await state.service.cancellationResponsiveCatalogRegularFileEligibility(
+            let eligibility = try await state.service.cancellationResponsiveCatalogRegularFileEligibility(
                 relativePath: relativePath
-            ) {
+            )
+            try Task.checkCancellation()
+            guard let currentState = rootStatesByID[binding.lookupRoot.id],
+                  currentState.lifetimeID == state.lifetimeID,
+                  currentState.service === state.service
+            else {
+                hasUnavailableBinding = true
+                continue
+            }
+            switch eligibility {
             case .eligible, .ineligible(.ignored):
                 matches.append(ExactFileCandidate(binding: binding, file: nil))
             case .ineligible(.missingOrDirectory):
