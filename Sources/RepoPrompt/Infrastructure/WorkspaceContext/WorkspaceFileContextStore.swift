@@ -1239,6 +1239,7 @@ actor WorkspaceFileContextStore {
         private var ensureIndexedFilesEligibilityDidResolveHandler: (@Sendable (UUID, String) async -> Void)?
         private var contextBuilderSelectionCandidateEligibilityDidResolveHandler: (@Sendable (UUID) async -> Void)?
         private var publishedGitArtifactIngressDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
+        private var explicitMaterializationDidAcquireCodemapFenceHandler: (@Sendable (FileSystemService) async -> Void)?
         private var watcherSinkWillApplyHandler: (@Sendable (UUID) async -> Void)?
         private var storeEditDeferredPublicationDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
         private var publisherIngressWillWaitHandler: (@Sendable (Set<UUID>) async -> Void)?
@@ -1955,6 +1956,27 @@ actor WorkspaceFileContextStore {
             publishedGitArtifactIngressDidRegisterHandler = handler
         }
 
+        func setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting(
+            _ handler: (@Sendable (FileSystemService) async -> Void)?
+        ) {
+            explicitMaterializationDidAcquireCodemapFenceHandler = handler
+        }
+
+        func replaceRootLifetimeForTesting(rootID: UUID) throws {
+            guard let state = rootStatesByID[rootID] else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+            }
+            rootStatesByID[rootID] = RootState(
+                lifetimeID: UUID(),
+                root: state.root,
+                service: state.service,
+                folderIDsByRelativePath: state.folderIDsByRelativePath,
+                fileIDsByRelativePath: state.fileIDsByRelativePath,
+                childFolderIDsByFolderID: state.childFolderIDsByFolderID,
+                childFileIDsByFolderID: state.childFileIDsByFolderID
+            )
+        }
+
         func setWatcherSinkWillApplyHandler(_ handler: (@Sendable (UUID) async -> Void)?) {
             watcherSinkWillApplyHandler = handler
         }
@@ -2490,6 +2512,10 @@ actor WorkspaceFileContextStore {
 
         func interactiveReadCacheSnapshotForTesting() async -> WorkspaceInteractiveReadCache.Snapshot {
             await interactiveReadCache.snapshotForTesting()
+        }
+
+        func contentReadSchedulerOwnerIDsForTesting() -> (search: UUID, interactive: UUID) {
+            (searchContentSchedulerOwnerID, interactiveReadSchedulerOwnerID)
         }
 
         func searchLaneSnapshotForTesting() async -> StoreBackedWorkspaceSearchLane.Snapshot {
@@ -9435,6 +9461,15 @@ actor WorkspaceFileContextStore {
             guard let root = rootStatesByID[rootID]?.root else { return nil }
             return rootLoadConfigurationsByPath[root.standardizedFullPath]?.gitignorePolicyIdentity
         }
+
+        func setContentPhysicalReadHandlerForTesting(
+            rootID: UUID,
+            _ handler: (@Sendable () throws -> Void)?
+        ) async throws {
+            let state = try state(for: rootID)
+            await state.service.setContentPhysicalReadHandlerForTesting(handler)
+        }
+
     #endif
 
     func refreshFileSystemSettings(
@@ -11281,13 +11316,18 @@ actor WorkspaceFileContextStore {
                     isFresh: true
                 )
             }
+            let schedulerOwnerID = searchContentSchedulerOwnerID
             let fingerprint: FileContentFingerprint
             do {
                 fingerprint = try await service.contentFingerprint(
-                    ofRelativePath: current.standardizedRelativePath
+                    ofRelativePath: current.standardizedRelativePath,
+                    workloadClass: .contentSearch,
+                    schedulerOwnerID: schedulerOwnerID
                 )
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as ContentReadSchedulerError {
+                throw error
             } catch FileSystemError.fileNotFound {
                 await pruneCatalogFileIfStillCurrent(current)
                 return staleSearchContentSnapshot(for: current)
@@ -11300,7 +11340,6 @@ actor WorkspaceFileContextStore {
                 return staleSearchContentSnapshot(for: current)
             }
 
-            let schedulerOwnerID = searchContentSchedulerOwnerID
             do {
                 let cached = try await searchDecodedContentCache.snapshot(
                     for: cacheKey,
@@ -11355,14 +11394,6 @@ actor WorkspaceFileContextStore {
     func interactiveReadSnapshot(
         for expectedRecord: WorkspaceFileRecord
     ) async throws -> WorkspaceInteractiveReadSnapshot? {
-        try await FileSystemService.withContentReadForegroundActivity(kind: .interactiveRead) {
-            try await self.interactiveReadSnapshotWithinForegroundActivity(for: expectedRecord)
-        }
-    }
-
-    private func interactiveReadSnapshotWithinForegroundActivity(
-        for expectedRecord: WorkspaceFileRecord
-    ) async throws -> WorkspaceInteractiveReadSnapshot? {
         try await requirePublishedSeededAuthorityFresh(rootID: expectedRecord.rootID)
         for attempt in 0 ..< 2 {
             try Task.checkCancellation()
@@ -11384,13 +11415,18 @@ actor WorkspaceFileContextStore {
                 fileID: current.id,
                 standardizedRelativePath: current.standardizedRelativePath
             )
+            let schedulerOwnerID = interactiveReadSchedulerOwnerID
             let fingerprint: FileContentFingerprint
             do {
                 fingerprint = try await service.contentFingerprint(
-                    ofRelativePath: current.standardizedRelativePath
+                    ofRelativePath: current.standardizedRelativePath,
+                    workloadClass: .interactiveRead,
+                    schedulerOwnerID: schedulerOwnerID
                 )
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as ContentReadSchedulerError {
+                throw error
             } catch FileSystemError.fileNotFound {
                 await pruneCatalogFileIfStillCurrent(current)
                 return nil
@@ -11403,7 +11439,6 @@ actor WorkspaceFileContextStore {
                 return nil
             }
 
-            let schedulerOwnerID = interactiveReadSchedulerOwnerID
             do {
                 let cached = try await interactiveReadCache.snapshot(
                     for: cacheKey,
@@ -11546,11 +11581,24 @@ actor WorkspaceFileContextStore {
         try await requirePublishedSeededAuthorityFresh(rootID: rootID)
         let state = try state(for: rootID)
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
-        let fingerprint = try await state.service.contentFingerprint(ofRelativePath: standardizedRelativePath)
+        let schedulerOwnerID = switch workloadClass {
+        case .interactiveRead:
+            interactiveReadSchedulerOwnerID
+        case .contentSearch:
+            searchContentSchedulerOwnerID
+        default:
+            state.service.diagnosticRootToken
+        }
+        let fingerprint = try await state.service.contentFingerprint(
+            ofRelativePath: standardizedRelativePath,
+            workloadClass: workloadClass,
+            schedulerOwnerID: schedulerOwnerID
+        )
         let result = try await state.service.loadValidatedContent(
             ofRelativePath: standardizedRelativePath,
             expectedFingerprint: fingerprint,
-            workloadClass: workloadClass
+            workloadClass: workloadClass,
+            schedulerOwnerID: schedulerOwnerID
         )
         try await requirePublishedSeededAuthorityFresh(rootID: rootID)
         return result
@@ -14272,6 +14320,10 @@ actor WorkspaceFileContextStore {
             }
         }
 
+        func isManagedOnlyFileForTesting(_ fileID: UUID) -> Bool {
+            managedOnlyFileIDs.contains(fileID)
+        }
+
         func discardedCodemapPathFenceReleaseCountForTesting() -> Int {
             discardedCodemapPathFenceReleaseCounterForTesting
         }
@@ -16834,7 +16886,40 @@ actor WorkspaceFileContextStore {
             outcome = "current"
             return current
         }
-        _ = await fenceAndPruneCatalogFileMissingOnDisk(
+        _ = try? await fenceAndPruneCatalogFileMissingOnDisk(
+            rootID: file.rootID,
+            relativePath: current.standardizedRelativePath,
+            publishDelta: true
+        )
+        return nil
+    }
+
+    private func validateCatalogFileStillPresentForExactRead(
+        _ file: WorkspaceFileRecord
+    ) async throws -> WorkspaceFileRecord? {
+        guard let state = rootStatesByID[file.rootID],
+              let current = self.file(rootID: file.rootID, relativePath: file.standardizedRelativePath),
+              current.id == file.id,
+              current.standardizedFullPath == file.standardizedFullPath
+        else { return nil }
+
+        let expectedLifetimeID = state.lifetimeID
+        let exists = try await state.service.cancellationResponsiveRegularFileExistsOnDisk(
+            relativePath: current.standardizedRelativePath
+        )
+        try Task.checkCancellation()
+        guard let currentState = rootStatesByID[file.rootID],
+              currentState.lifetimeID == expectedLifetimeID,
+              currentState.service === state.service,
+              let currentRecord = self.file(
+                  rootID: file.rootID,
+                  relativePath: current.standardizedRelativePath
+              ),
+              currentRecord.id == current.id,
+              currentRecord.standardizedFullPath == current.standardizedFullPath
+        else { return nil }
+        if exists { return currentRecord }
+        _ = try await fenceAndPruneCatalogFileMissingOnDisk(
             rootID: file.rootID,
             relativePath: current.standardizedRelativePath,
             publishDelta: true
@@ -17031,7 +17116,7 @@ actor WorkspaceFileContextStore {
                     namespace: namespace
                 ))
             }
-            let candidates = await exactFileCandidates(
+            let candidates = try await exactFileCandidates(
                 relativePath: target.relativePath,
                 bindings: [target.binding]
             )
@@ -17061,7 +17146,7 @@ actor WorkspaceFileContextStore {
         case let .explicitRoot(alias, relativePath):
             switch exactAliasBinding(alias: alias, namespace: namespace) {
             case let .success(binding):
-                let candidates = await exactFileCandidates(
+                let candidates = try await exactFileCandidates(
                     relativePath: relativePath,
                     bindings: [binding]
                 )
@@ -17089,7 +17174,7 @@ actor WorkspaceFileContextStore {
             }
 
         case let .relative(relativePath):
-            let literalCandidates = await exactFileCandidates(
+            let literalCandidates = try await exactFileCandidates(
                 relativePath: relativePath,
                 bindings: namespace.rootBindings
             )
@@ -17145,7 +17230,7 @@ actor WorkspaceFileContextStore {
                 guard let binding = namespace.rootBindings.first(where: {
                     $0.clientRoots.contains(where: { $0.id == clientRoot.id })
                 }) else { return .noCandidate }
-                let aliasCandidates = await exactFileCandidates(
+                let aliasCandidates = try await exactFileCandidates(
                     relativePath: remainder,
                     bindings: [binding]
                 )
@@ -17267,14 +17352,14 @@ actor WorkspaceFileContextStore {
     private func exactFileCandidates(
         relativePath: String,
         bindings: [WorkspaceExactFileNamespace.RootBinding]
-    ) async -> ExactFileCandidates {
+    ) async throws -> ExactFileCandidates {
         var matches: [ExactFileCandidate] = []
         var blocked = false
         var hasUnavailableBinding = false
         var directoryBindings: [WorkspaceExactFileNamespace.RootBinding] = []
         for binding in bindings {
             if let candidate = file(rootID: binding.lookupRoot.id, relativePath: relativePath),
-               let current = await validateCatalogFileStillPresent(candidate)
+               let current = try await validateCatalogFileStillPresentForExactRead(candidate)
             {
                 matches.append(ExactFileCandidate(binding: binding, file: current))
                 continue
@@ -17283,14 +17368,28 @@ actor WorkspaceFileContextStore {
                 hasUnavailableBinding = true
                 continue
             }
-            switch await state.service.catalogRegularFileEligibility(relativePath: relativePath) {
+            switch try await state.service.cancellationResponsiveCatalogRegularFileEligibility(
+                relativePath: relativePath
+            ) {
             case .eligible, .ineligible(.ignored):
                 matches.append(ExactFileCandidate(binding: binding, file: nil))
             case .ineligible(.missingOrDirectory):
-                if directoryAppearsPresentOnDisk(root: state.root, relativePath: relativePath) {
+                let pathState = try await state.service.cancellationResponsiveCatalogPathState(
+                    relativePath: relativePath
+                )
+                try Task.checkCancellation()
+                guard let currentState = rootStatesByID[binding.lookupRoot.id],
+                      currentState.lifetimeID == state.lifetimeID,
+                      currentState.service === state.service,
+                      file(rootID: binding.lookupRoot.id, relativePath: relativePath) == nil
+                else {
+                    hasUnavailableBinding = true
+                    continue
+                }
+                if pathState == .directory {
                     directoryBindings.append(binding)
                 }
-                _ = await fenceAndPruneCatalogFileMissingOnDisk(
+                _ = try await fenceAndPruneCatalogFileMissingOnDisk(
                     rootID: binding.lookupRoot.id,
                     relativePath: relativePath,
                     publishDelta: true
@@ -17330,7 +17429,7 @@ actor WorkspaceFileContextStore {
         _ file: WorkspaceFileRecord,
         namespace: WorkspaceExactFileNamespace
     ) async throws -> WorkspaceExactExistingFileMatch {
-        let candidates = await exactFileCandidates(
+        let candidates = try await exactFileCandidates(
             relativePath: file.standardizedRelativePath,
             bindings: namespace.rootBindings
         )
@@ -17396,17 +17495,34 @@ actor WorkspaceFileContextStore {
         case .ambiguousAlias:
             return .ambiguous
         }
-        var materializable: [(rootID: UUID, relativePath: String, managedOnly: Bool)] = []
+        var materializable: [(
+            rootID: UUID,
+            relativePath: String,
+            eligibility: CatalogRegularFileEligibility,
+            policyIdentity: WorkspaceRootCatalogPolicyIdentity,
+            ignoreRulesRevision: UInt64,
+            lifetimeID: UUID,
+            service: FileSystemService
+        )] = []
         var foundBlockedCandidate = false
         for candidate in candidates {
             guard let state = rootStatesByID[candidate.rootID] else { continue }
-            switch await state.service.catalogRegularFileEligibility(relativePath: candidate.relativePath) {
-            case .eligible:
-                materializable.append((candidate.rootID, candidate.relativePath, false))
-            case .ineligible(.ignored):
-                materializable.append((candidate.rootID, candidate.relativePath, true))
+            let evidence = try await state.service.cancellationResponsiveCatalogRegularFileEligibilityWithPolicy(
+                relativePath: candidate.relativePath
+            )
+            switch evidence.eligibility {
+            case .eligible, .ineligible(.ignored):
+                materializable.append((
+                    candidate.rootID,
+                    candidate.relativePath,
+                    evidence.eligibility,
+                    evidence.policyIdentity,
+                    evidence.ignoreRulesRevision,
+                    state.lifetimeID,
+                    state.service
+                ))
             case .ineligible(.missingOrDirectory):
-                _ = await fenceAndPruneCatalogFileMissingOnDisk(
+                _ = try await fenceAndPruneCatalogFileMissingOnDisk(
                     rootID: candidate.rootID,
                     relativePath: candidate.relativePath,
                     publishDelta: true
@@ -17418,30 +17534,50 @@ actor WorkspaceFileContextStore {
         }
         guard materializable.count <= 1 else { return .ambiguous }
         guard let candidate = materializable.first,
-              let state = rootStatesByID[candidate.rootID]
+              let state = rootStatesByID[candidate.rootID],
+              state.lifetimeID == candidate.lifetimeID,
+              state.service === candidate.service
         else { return foundBlockedCandidate ? .blocked : .noCandidate }
-        let registeredEligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: candidate.relativePath)
-        let managedOnly: Bool
-        switch registeredEligibility {
-        case .eligible:
-            managedOnly = false
-        case .ineligible(.ignored):
-            managedOnly = true
-        case .ineligible(.missingOrDirectory):
-            _ = await fenceAndPruneCatalogFileMissingOnDisk(
-                rootID: candidate.rootID,
-                relativePath: candidate.relativePath,
-                publishDelta: true
-            )
-            return .noCandidate
-        case .ineligible:
-            return .blocked
-        }
         guard let codemapFence = await beginCodemapRootMutationFence(
             rootID: candidate.rootID,
             command: .catalogAdvanced
         ) else { return .noCandidate }
         do {
+            #if DEBUG
+                if let handler = explicitMaterializationDidAcquireCodemapFenceHandler {
+                    await handler(state.service)
+                }
+            #endif
+            guard let currentState = rootStatesByID[candidate.rootID],
+                  currentState.lifetimeID == state.lifetimeID,
+                  currentState.service === state.service
+            else {
+                finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+                return .noCandidate
+            }
+            let registeredEligibility = try await currentState.service.registerExplicitlyManagedRegularFile(
+                relativePath: candidate.relativePath,
+                validatedEligibility: candidate.eligibility,
+                policyIdentity: candidate.policyIdentity,
+                ignoreRulesRevision: candidate.ignoreRulesRevision
+            )
+            guard let registeredState = rootStatesByID[candidate.rootID],
+                  registeredState.lifetimeID == state.lifetimeID,
+                  registeredState.service === state.service
+            else {
+                finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+                return .noCandidate
+            }
+            let managedOnly: Bool
+            switch registeredEligibility {
+            case .eligible:
+                managedOnly = false
+            case .ineligible(.ignored):
+                managedOnly = true
+            case .ineligible:
+                finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+                return .blocked
+            }
             let materialized = try materializeCatalogRegularFile(
                 rootID: candidate.rootID,
                 relativePath: candidate.relativePath,
@@ -17799,20 +17935,34 @@ actor WorkspaceFileContextStore {
         rootID: UUID,
         relativePath: String,
         publishDelta: Bool
-    ) async -> Bool {
+    ) async throws -> Bool {
         let path = StandardizedPath.relative(relativePath)
+        guard let initialState = rootStatesByID[rootID] else { return false }
         let token = await fenceCodemapPaths(
             rootID: rootID,
             commands: [.deleted([path])]
         )
-        let didPrune = withCodemapPathLocalCatalogMutation(rootID: rootID) {
+        var didPrune = false
+        defer {
+            releaseCodemapPathFence(token, didCommitMutation: didPrune)
+        }
+        let fileExists = try await initialState.service.cancellationResponsiveRegularFileExistsOnDisk(
+            relativePath: path
+        )
+        try Task.checkCancellation()
+        guard
+            !fileExists,
+            let currentState = rootStatesByID[rootID],
+            currentState.lifetimeID == initialState.lifetimeID,
+            currentState.service === initialState.service
+        else { return false }
+        didPrune = withCodemapPathLocalCatalogMutation(rootID: rootID) {
             pruneCatalogFileMissingOnDisk(
                 rootID: rootID,
                 relativePath: path,
                 publishDelta: publishDelta
             )
         }
-        releaseCodemapPathFence(token, didCommitMutation: didPrune)
         return didPrune
     }
 
@@ -19596,7 +19746,7 @@ actor WorkspaceFileContextStore {
         guard let current = file(rootID: record.rootID, relativePath: record.standardizedRelativePath),
               current.id == record.id
         else { return }
-        _ = await fenceAndPruneCatalogFileMissingOnDisk(
+        _ = try? await fenceAndPruneCatalogFileMissingOnDisk(
             rootID: current.rootID,
             relativePath: current.standardizedRelativePath,
             publishDelta: true

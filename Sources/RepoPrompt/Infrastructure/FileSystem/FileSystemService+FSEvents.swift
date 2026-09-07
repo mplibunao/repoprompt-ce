@@ -118,6 +118,9 @@ extension FileSystemService {
         guard !relativePath.isEmpty, !relativePath.hasPrefix("../"), relativePath != ".." else {
             return .ineligible(.invalidRelativePath)
         }
+        #if DEBUG
+            try? contentPhysicalReadHandler?()
+        #endif
         let absolutePath = fullPath(forRelativePath: relativePath)
         let standardizedAbsolutePath = (absolutePath as NSString).standardizingPath
         let rootPrefix = standardizedRootPath.hasSuffix("/") ? standardizedRootPath : standardizedRootPath + "/"
@@ -193,6 +196,16 @@ extension FileSystemService {
 
     func registerExplicitlyManagedRegularFile(relativePath rawRelativePath: String) async -> CatalogRegularFileEligibility {
         let eligibility = await catalogRegularFileEligibility(relativePath: rawRelativePath)
+        return registerExplicitlyManagedRegularFile(
+            relativePath: rawRelativePath,
+            validatedEligibility: eligibility
+        )
+    }
+
+    func registerExplicitlyManagedRegularFile(
+        relativePath rawRelativePath: String,
+        validatedEligibility eligibility: CatalogRegularFileEligibility
+    ) -> CatalogRegularFileEligibility {
         switch eligibility {
         case .eligible, .ineligible(.ignored):
             let relativePath = (rawRelativePath as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -206,6 +219,57 @@ extension FileSystemService {
             break
         }
         return eligibility
+    }
+
+    func registerExplicitlyManagedRegularFile(
+        relativePath rawRelativePath: String,
+        validatedEligibility eligibility: CatalogRegularFileEligibility,
+        policyIdentity validatedPolicyIdentity: WorkspaceRootCatalogPolicyIdentity,
+        ignoreRulesRevision validatedIgnoreRulesRevision: UInt64
+    ) async throws -> CatalogRegularFileEligibility {
+        if catalogPolicyIdentity == validatedPolicyIdentity,
+           ignoreRulesRevision == validatedIgnoreRulesRevision
+        {
+            return registerExplicitlyManagedRegularFile(
+                relativePath: rawRelativePath,
+                validatedEligibility: eligibility
+            )
+        }
+        if catalogPolicyIdentity != validatedPolicyIdentity {
+            let refreshed = try await cancellationResponsiveCatalogRegularFileEligibilityWithPolicy(
+                relativePath: rawRelativePath
+            )
+            return registerExplicitlyManagedRegularFile(
+                relativePath: rawRelativePath,
+                validatedEligibility: refreshed.eligibility
+            )
+        }
+        switch eligibility {
+        case .eligible, .ineligible(.ignored):
+            let relativePath = (rawRelativePath as NSString).standardizingPath
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            while true {
+                try Task.checkCancellation()
+                let startingPolicyIdentity = catalogPolicyIdentity
+                let startingIgnoreRulesRevision = ignoreRulesRevision
+                let isIgnored = if enableHierarchicalIgnores {
+                    await isIgnoredHierarchical(relativePath: relativePath, isDirectory: false)
+                        || isIgnoredPrefixCheck(relativePath: relativePath)
+                } else {
+                    isIgnoredPrefixCheck(relativePath: relativePath)
+                }
+                try Task.checkCancellation()
+                guard startingPolicyIdentity == catalogPolicyIdentity,
+                      startingIgnoreRulesRevision == ignoreRulesRevision
+                else { continue }
+                return registerExplicitlyManagedRegularFile(
+                    relativePath: relativePath,
+                    validatedEligibility: isIgnored ? .ineligible(.ignored) : .eligible
+                )
+            }
+        case .ineligible:
+            return eligibility
+        }
     }
 
     func pathContainsSymlinkComponent(relativePath: String) -> Bool {
@@ -1033,6 +1097,9 @@ extension FileSystemService {
             }
             return testMode ? [] : nil
         }
+        // Advance before event processing can suspend so a completed disk read cannot cache
+        // evidence that predates an invalidation already accepted by this actor.
+        contentReadCacheRevision &+= 1
 
         #if DEBUG
             if Self.enableDebugLogging {
