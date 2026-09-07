@@ -179,6 +179,8 @@ final class WorkspaceSelectionCoordinator {
         case cancelled
     }
 
+    typealias MCPSelectionMirrorDeadlineWait = @MainActor @Sendable (Duration) async throws -> Void
+
     private struct MCPSelectionMirrorDemand {
         let requestID: UInt64
         /// `nil` denotes a coalesced repair that resolves the latest active target when it runs.
@@ -206,6 +208,7 @@ final class WorkspaceSelectionCoordinator {
     private var mcpSelectionMirrorWaiters: [UInt64: CheckedContinuation<SelectionMirrorOutcome, Never>] = [:]
     private var mcpSelectionMirrorDeadlineTasks: [UInt64: Task<Void, Never>] = [:]
     private let mcpSelectionMirrorTimeout: Duration
+    private let waitForMCPSelectionMirrorDeadline: MCPSelectionMirrorDeadlineWait
 
     #if DEBUG
         struct SelectionMirrorDebugSnapshot: Equatable {
@@ -258,12 +261,16 @@ final class WorkspaceSelectionCoordinator {
         workspaceManager: (any WorkspaceSelectionHost)? = nil,
         store: WorkspaceFileContextStore,
         mutationService: WorkspaceSelectionMutationService? = nil,
-        mcpSelectionMirrorTimeout: Duration = WorkspaceSelectionCoordinator.defaultMCPSelectionMirrorTimeout
+        mcpSelectionMirrorTimeout: Duration = WorkspaceSelectionCoordinator.defaultMCPSelectionMirrorTimeout,
+        waitForMCPSelectionMirrorDeadline: @escaping MCPSelectionMirrorDeadlineWait = { timeout in
+            try await Task.sleep(for: timeout)
+        }
     ) {
         self.workspaceManager = workspaceManager
         self.store = store
         self.mutationService = mutationService ?? WorkspaceSelectionMutationService(store: store)
         self.mcpSelectionMirrorTimeout = mcpSelectionMirrorTimeout
+        self.waitForMCPSelectionMirrorDeadline = waitForMCPSelectionMirrorDeadline
     }
 
     func attachWorkspaceManager(_ workspaceManager: any WorkspaceSelectionHost) {
@@ -1042,10 +1049,11 @@ final class WorkspaceSelectionCoordinator {
                 #if DEBUG
                     selectionMirrorDeadlinesCreated &+= 1
                 #endif
+                let waitForDeadline = waitForMCPSelectionMirrorDeadline
                 mcpSelectionMirrorDeadlineTasks[requestID] = Task { @MainActor [weak self] in
                     defer { self?.selectionMirrorDeadlineExited() }
                     do {
-                        try await Task.sleep(for: timeout)
+                        try await waitForDeadline(timeout)
                     } catch {
                         return
                     }
