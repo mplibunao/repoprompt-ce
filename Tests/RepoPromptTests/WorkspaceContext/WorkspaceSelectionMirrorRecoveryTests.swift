@@ -18,7 +18,7 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
 
         let request = Task { @MainActor in
             let result = await coordinator.mirrorSelectionToActiveUI(initial, forTabID: host.activeTabID)
-            await requestFinished.signal()
+            requestFinished.signal()
             return result
         }
         guard await staleAttemptGate.waitUntilEntered() else {
@@ -66,7 +66,10 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
             await failWait("cancelled manual deadline wait to exit", gates: [repairGate], deadline: deadline)
             return
         }
-        await settleMainActorWork()
+        guard await waitUntilMirrorWorkIsReclaimed(coordinator) else {
+            await failWait("cancelled mirror repair cleanup", gates: [repairGate], deadline: deadline)
+            return
+        }
 
         XCTAssertEqual(host.completedSelections, [initial, latest])
         XCTAssertEqual(host.appliedSelection, latest)
@@ -88,7 +91,7 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
 
         let request = Task { @MainActor in
             let result = await coordinator.mirrorSelectionToActiveUI(initial, forTabID: host.activeTabID)
-            await requestFinished.signal()
+            requestFinished.signal()
             return result
         }
         guard await staleAttemptGate.waitUntilEntered() else {
@@ -137,7 +140,10 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
             await failWait("fired manual deadline wait to exit", gates: [repairGate], deadline: deadline)
             return
         }
-        await settleMainActorWork()
+        guard await waitUntilMirrorWorkIsReclaimed(coordinator) else {
+            await failWait("deadline mirror repair cleanup", gates: [repairGate], deadline: deadline)
+            return
+        }
 
         XCTAssertEqual(host.completedSelections, [initial, latest])
         XCTAssertEqual(host.appliedSelection, latest)
@@ -159,7 +165,7 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
 
         let request = Task { @MainActor in
             let result = await coordinator.mirrorSelectionToActiveUI(selectionA, forTabID: tabA)
-            await requestFinished.signal()
+            requestFinished.signal()
             return result
         }
         guard await gate.waitUntilEntered() else {
@@ -191,7 +197,10 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
             await failWait("ABA manual deadline wait to exit", gates: [gate], deadline: deadline)
             return
         }
-        await settleMainActorWork()
+        guard await waitUntilMirrorWorkIsReclaimed(coordinator) else {
+            await failWait("ABA mirror repair cleanup", gates: [gate], deadline: deadline)
+            return
+        }
 
         XCTAssertEqual(host.selectionMirrorContextRevision, 2)
         XCTAssertEqual(host.startedSelections, [selectionA, selectionA])
@@ -261,12 +270,15 @@ final class WorkspaceSelectionMirrorRecoveryTests: XCTestCase {
         await deadline.cancelAll()
     }
 
-    private func settleMainActorWork() async {
-        await withCheckedContinuation { continuation in
-            Task { @MainActor in
-                continuation.resume()
+    private func waitUntilMirrorWorkIsReclaimed(_ coordinator: WorkspaceSelectionCoordinator) async -> Bool {
+        for _ in 0 ..< selectionMirrorRecoveryHangGuardYieldLimit {
+            let snapshot = coordinator.selectionMirrorDebugSnapshot()
+            if snapshot.activePhysicalWorkerCount == 0, snapshot.pendingDemandCount == 0 {
+                return true
             }
+            await Task.yield()
         }
+        return false
     }
 }
 
@@ -480,7 +492,8 @@ private actor ManualSelectionMirrorDeadline {
     }
 }
 
-private actor SelectionMirrorRecoverySignal {
+@MainActor
+private final class SelectionMirrorRecoverySignal {
     private struct Waiter {
         let id: UUID
         let count: Int
@@ -511,16 +524,16 @@ private actor SelectionMirrorRecoverySignal {
                     return
                 }
                 waiters.append(Waiter(id: id, count: target, continuation: continuation))
-                waitGuards[id] = Task { [weak self] in
+                waitGuards[id] = Task { @MainActor [weak self] in
                     for _ in 0 ..< selectionMirrorRecoveryHangGuardYieldLimit {
                         guard !Task.isCancelled else { return }
                         await Task.yield()
                     }
-                    await self?.expireWaiter(id: id)
+                    self?.expireWaiter(id: id)
                 }
             }
         } onCancel: {
-            Task { await self.expireWaiter(id: id) }
+            Task { @MainActor [weak self] in self?.expireWaiter(id: id) }
         }
     }
 
@@ -604,7 +617,7 @@ private final class SelectionMirrorRecoveryHost: WorkspaceSelectionHost {
         defer { concurrentAttempts -= 1 }
         appliedSelection = selection
         completedSelections.append(selection)
-        await completed.signal()
+        completed.signal()
     }
 
     func setSelection(_ selection: StoredSelection, forTabID tabID: UUID) {

@@ -1087,7 +1087,11 @@ final class WorkspaceSelectionCoordinator {
             selectionMirrorWorkersCreated &+= 1
         #endif
         let task = Task { @MainActor [weak self, weak workspaceManager] in
-            guard let self, let workspaceManager else { return }
+            guard let self else { return }
+            guard let workspaceManager else {
+                selectionMirrorWorkerExited(demand.requestID, attemptedTarget: nil, outcome: .invalidated)
+                return
+            }
             var outcome: SelectionMirrorOutcome = .invalidated
             var attemptedTarget: WorkspaceSelectionMirrorTarget?
             if mcpSelectionMirrorWorker?.demand.requestID == demand.requestID,
