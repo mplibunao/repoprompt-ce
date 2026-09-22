@@ -18470,8 +18470,8 @@ actor WorkspaceFileContextStore {
                 relativePath: relativePath,
                 state: state
             ), current.catalogFileID == observation.catalogFileID,
-                  current.catalogFileFullPath == observation.catalogFileFullPath,
-                  current.diskPathState == observation.diskPathState
+            current.catalogFileFullPath == observation.catalogFileFullPath,
+            current.diskPathState == observation.diskPathState
             else { return false }
         }
         // Later physical probes may suspend; revalidate all actor-owned identities together.
@@ -18736,8 +18736,15 @@ actor WorkspaceFileContextStore {
             setTerminalOutcome("ambiguous")
             return .ambiguous
         }
-        var materializable: [(rootID: UUID, relativePath: String, lifetimeID: UUID, service: FileSystemService,
-            eligibility: CatalogRegularFileEligibility, policyIdentity: WorkspaceRootCatalogPolicyIdentity, ignoreRulesRevision: UInt64)] = []
+        var materializable: [(
+            rootID: UUID,
+            relativePath: String,
+            lifetimeID: UUID,
+            service: FileSystemService,
+            eligibility: CatalogRegularFileEligibility,
+            policyIdentity: WorkspaceRootCatalogPolicyIdentity,
+            ignoreRulesRevision: UInt64
+        )] = []
         var foundBlockedCandidate = false
         var foundUnavailableCandidate = false
         for (serialPosition, candidate) in candidates.enumerated() {
