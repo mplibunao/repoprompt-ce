@@ -341,7 +341,7 @@ final class WindowRoutingService: Service {
     // ---------------------------------------------------------------------
     private let windowStates: WindowStatesManager
     private let networkMgr: ServerNetworkManager
-    private let setActiveWindowForCurrentConnection: @Sendable (Int) async throws -> Void
+    private let setActiveWindowForCurrentConnection: (@Sendable (Int) async throws -> Void)?
 
     /// Thread-safe tools storage. Routing definitions are static in M1; disabled-tool
     /// filtering and window selection are applied from live state outside this cache.
@@ -359,9 +359,7 @@ final class WindowRoutingService: Service {
     ) {
         self.windowStates = windowStates
         self.networkMgr = networkMgr
-        self.setActiveWindowForCurrentConnection = setActiveWindowForCurrentConnection ?? { windowID in
-            try await networkMgr.setActiveWindowForCurrentConnection(windowID)
-        }
+        self.setActiveWindowForCurrentConnection = setActiveWindowForCurrentConnection
     }
 
     /// Materializes the static M1 routing definitions without publishing them.
@@ -1900,39 +1898,68 @@ final class WindowRoutingService: Service {
         guard let targetWindow = windowStates.allWindows.first(where: { $0.windowID == target.windowID }) else {
             throw MCPError.invalidParams("Window \(target.windowID) not found")
         }
-        try await setActiveWindowForCurrentConnection(target.windowID)
-        var bindingChanged = false
-        if let expectedFileAuthority {
-            guard bindTargetIsCurrent(target, currentness: currentness) else {
-                throw staleBindTargetError()
-            }
-            let didBind = try await targetWindow.mcpServer.performIfFileToolAuthorityIsCurrent(
-                expectedFileAuthority,
-                tabID: target.tabID,
-                workspaceID: target.workspaceID
-            ) {
+        // Failure injection runs before either owner changes. Production affinity is published
+        // by the network owner only after the serialized, validated tab replacement succeeds.
+        try await setActiveWindowForCurrentConnection?(target.windowID)
+        return try await networkMgr.withValidatedWindowBinding(
+            windowID: target.windowID,
+            connectionID: connectionID
+        ) { [self] in
+            var bindingChanged = false
+            if let expectedFileAuthority {
                 guard bindTargetIsCurrent(target, currentness: currentness) else {
                     throw staleBindTargetError()
                 }
+                let didBind = try await targetWindow.mcpServer.performIfFileToolAuthorityIsCurrent(
+                    expectedFileAuthority,
+                    tabID: target.tabID,
+                    workspaceID: target.workspaceID
+                ) {
+                    guard bindTargetIsCurrent(target, currentness: currentness) else {
+                        throw staleBindTargetError()
+                    }
+                    let existingBinding = targetWindow.mcpServer.connectionBindingSnapshot(
+                        forConnection: connectionID
+                    )
+                    guard !connectionBindingMatchesTarget(existingBinding, target: target) else {
+                        targetWindow.mcpServer.updateBoundFileToolAuthority(
+                            connectionID: connectionID,
+                            tabID: target.tabID,
+                            workspaceID: target.workspaceID,
+                            authority: expectedFileAuthority
+                        )
+                        return
+                    }
+                    try targetWindow.mcpServer.bindTabForConnection(
+                        connectionID: connectionID,
+                        clientName: clientName,
+                        tabID: target.tabID,
+                        workspaceID: target.workspaceID,
+                        windowID: target.windowID,
+                        frozenFileToolAuthority: expectedFileAuthority
+                    )
+                    clearNonRunScopedBindingsAcrossWindows(
+                        for: connectionID,
+                        excludingWindowID: target.windowID
+                    )
+                    bindingChanged = true
+                }
+                guard didBind else {
+                    throw staleBindTargetError()
+                }
+            } else {
                 let existingBinding = targetWindow.mcpServer.connectionBindingSnapshot(
                     forConnection: connectionID
                 )
                 guard !connectionBindingMatchesTarget(existingBinding, target: target) else {
-                    targetWindow.mcpServer.updateBoundFileToolAuthority(
-                        connectionID: connectionID,
-                        tabID: target.tabID,
-                        workspaceID: target.workspaceID,
-                        authority: expectedFileAuthority
-                    )
-                    return
+                    return false
                 }
                 try targetWindow.mcpServer.bindTabForConnection(
                     connectionID: connectionID,
                     clientName: clientName,
                     tabID: target.tabID,
                     workspaceID: target.workspaceID,
-                    windowID: target.windowID,
-                    frozenFileToolAuthority: expectedFileAuthority
+                    windowID: target.windowID
                 )
                 clearNonRunScopedBindingsAcrossWindows(
                     for: connectionID,
@@ -1940,30 +1967,8 @@ final class WindowRoutingService: Service {
                 )
                 bindingChanged = true
             }
-            guard didBind else {
-                throw staleBindTargetError()
-            }
-        } else {
-            let existingBinding = targetWindow.mcpServer.connectionBindingSnapshot(
-                forConnection: connectionID
-            )
-            guard !connectionBindingMatchesTarget(existingBinding, target: target) else {
-                return false
-            }
-            try targetWindow.mcpServer.bindTabForConnection(
-                connectionID: connectionID,
-                clientName: clientName,
-                tabID: target.tabID,
-                workspaceID: target.workspaceID,
-                windowID: target.windowID
-            )
-            clearNonRunScopedBindingsAcrossWindows(
-                for: connectionID,
-                excludingWindowID: target.windowID
-            )
-            bindingChanged = true
+            return bindingChanged
         }
-        return bindingChanged
     }
 
     private func bindAuthorityFailureResponse(

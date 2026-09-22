@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import MCP
 @testable import RepoPromptApp
+import RepoPromptDomainRuntime
 import XCTest
 
 #if DEBUG
@@ -212,6 +213,338 @@ import XCTest
             let consumed = try await prior.window.mcpServer.requiredFileToolLookupContext(from: metadata(for: prior))
             XCTAssertTrue(priorAuthority.hasSameRoutingAuthority(as: consumed))
             XCTAssertNil(replacement.window.mcpServer.boundTabID(forConnection: prior.connectionID))
+        }
+
+        @MainActor
+        func testSupersededBindPreservesPriorNetworkAffinityAndBinding() async throws {
+            let prior = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let replacement = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let priorAuthority = try await prior.window.mcpServer.resolveFileToolAuthority(
+                tabID: prior.contextID, workspaceID: prior.workspace.id
+            )
+            try prior.window.mcpServer.bindTabForConnection(
+                connectionID: prior.connectionID, clientName: nil, tabID: prior.contextID,
+                workspaceID: prior.workspace.id, windowID: prior.window.windowID,
+                frozenFileToolAuthority: priorAuthority
+            )
+            let replacementAuthority = try await replacement.window.mcpServer.resolveFileToolAuthority(
+                tabID: replacement.contextID, workspaceID: replacement.workspace.id
+            )
+            let previousWindows = WindowStatesManager.shared.allWindows
+            WindowStatesManager.shared.allWindows = [prior.window, replacement.window]
+            let gate = RootHydrationSuspensionGate()
+            replacement.window.mcpServer.setAfterFileToolLookupContextRootValidationForTesting {
+                await gate.hold()
+            }
+            let network = ServerNetworkManager.shared
+            addTeardownBlock { @MainActor in
+                await gate.release()
+                replacement.window.mcpServer.setAfterFileToolLookupContextRootValidationForTesting(nil)
+                WindowStatesManager.shared.allWindows = previousWindows
+                await network.debugRemoveConnection(prior.connectionID)
+            }
+            try await ServerNetworkManager.$currentConnectionID.withValue(prior.connectionID) {
+                try await network.setActiveWindowForCurrentConnection(prior.window.windowID)
+            }
+            let service = WindowRoutingService(windowStates: WindowStatesManager.shared, networkMgr: network)
+            let bind = Task { @MainActor in
+                try await ServerNetworkManager.$currentConnectionID.withValue(prior.connectionID) {
+                    try await service.test_bindTarget(
+                        windowID: replacement.window.windowID, workspaceID: replacement.workspace.id,
+                        tabID: replacement.contextID, repoPaths: replacement.workspace.repoPaths,
+                        connectionID: prior.connectionID, authority: replacementAuthority
+                    )
+                }
+            }
+            await gate.waitUntilHeld()
+            let whilePending = await network.selectedWindow(for: prior.connectionID)
+            XCTAssertEqual(whilePending, prior.window.windowID, "Unvalidated affinity must not be published")
+            replacement.window.workspaceManager.republishReadyRootCatalogWithNextGenerationForTesting()
+            await gate.release()
+            do {
+                _ = try await bind.value
+                XCTFail("Superseded authority must reject replacement")
+            } catch {}
+            let retainedWindow = await network.selectedWindow(for: prior.connectionID)
+            XCTAssertEqual(retainedWindow, prior.window.windowID)
+            XCTAssertEqual(prior.window.mcpServer.boundTabID(forConnection: prior.connectionID), prior.contextID)
+            XCTAssertNil(replacement.window.mcpServer.boundTabID(forConnection: prior.connectionID))
+            let consumed = try await prior.window.mcpServer.requiredFileToolLookupContext(from: metadata(for: prior))
+            XCTAssertTrue(priorAuthority.hasSameRoutingAuthority(as: consumed))
+
+            // A failed transaction must settle and permit a subsequent valid replacement.
+            replacement.window.mcpServer.setAfterFileToolLookupContextRootValidationForTesting(nil)
+            let refreshed = try await replacement.window.mcpServer.resolveFileToolAuthority(
+                tabID: replacement.contextID, workspaceID: replacement.workspace.id
+            )
+            let changed = try await ServerNetworkManager.$currentConnectionID.withValue(prior.connectionID) {
+                try await service.test_bindTarget(
+                    windowID: replacement.window.windowID, workspaceID: replacement.workspace.id,
+                    tabID: replacement.contextID, repoPaths: replacement.workspace.repoPaths,
+                    connectionID: prior.connectionID, authority: refreshed
+                )
+            }
+            XCTAssertTrue(changed)
+            let finalWindow = await network.selectedWindow(for: prior.connectionID)
+            XCTAssertEqual(finalWindow, replacement.window.windowID)
+            XCTAssertNil(prior.window.mcpServer.boundTabID(forConnection: prior.connectionID))
+            XCTAssertEqual(replacement.window.mcpServer.boundTabID(forConnection: prior.connectionID), replacement.contextID)
+        }
+
+        @MainActor
+        func testCancelledAffinityTransactionDoesNotStrandQueuedSelectionOrClear() async throws {
+            let network = ServerNetworkManager.shared
+            let connectionID = UUID()
+            let gate = RootHydrationSuspensionGate()
+            addTeardownBlock {
+                await gate.release()
+                await network.debugRemoveConnection(connectionID)
+            }
+            let first = Task { @MainActor in
+                try await ServerNetworkManager.$currentConnectionID.withValue(connectionID) {
+                    try await network.withValidatedWindowBinding(windowID: 101, connectionID: connectionID) {
+                        await gate.hold()
+                        try Task.checkCancellation()
+                        return true
+                    }
+                }
+            }
+            await gate.waitUntilHeld()
+            let mutexValue = await network.debugWindowBindingMutexForTesting(connectionID: connectionID)
+            let mutex = try XCTUnwrap(mutexValue)
+            let enqueued = expectation(description: "second affinity transaction queued")
+            await mutex.setDidEnqueueWaiterForTesting { enqueued.fulfill() }
+            let cancelledSettled = expectation(description: "queued cancellation settled before predecessor release")
+            var didCancel = false
+            let cancelled = Task { @MainActor in
+                defer { cancelledSettled.fulfill() }
+                do {
+                    try await ServerNetworkManager.$currentConnectionID.withValue(connectionID) {
+                        try await network.setActiveWindowForCurrentConnection(202)
+                    }
+                    XCTFail("Canceled queued transaction must not publish")
+                } catch is CancellationError {
+                    didCancel = true
+                }
+            }
+            await fulfillment(of: [enqueued], timeout: 5)
+            cancelled.cancel()
+            await fulfillment(of: [cancelledSettled], timeout: 5)
+            XCTAssertTrue(didCancel, "Cancellation must settle while the predecessor remains held")
+            let beforeRelease = await network.selectedWindow(for: connectionID)
+            XCTAssertNil(beforeRelease)
+            await mutex.setDidEnqueueWaiterForTesting(nil)
+            await gate.release()
+            let firstChanged = try await first.value
+            XCTAssertTrue(firstChanged)
+            try await cancelled.value
+            let predecessorSelection = await network.selectedWindow(for: connectionID)
+            XCTAssertEqual(predecessorSelection, 101)
+            try await ServerNetworkManager.$currentConnectionID.withValue(connectionID) {
+                try await network.setActiveWindowForCurrentConnection(303)
+            }
+            let selected = await network.selectedWindow(for: connectionID)
+            XCTAssertEqual(selected, 303)
+            try await ServerNetworkManager.$currentConnectionID.withValue(connectionID) {
+                try await network.clearActiveWindowForCurrentConnection()
+            }
+            let cleared = await network.selectedWindow(for: connectionID)
+            XCTAssertNil(cleared)
+        }
+
+        @MainActor
+        func testQueuedAutoSelectionRejectsSupersededAuthorityWithoutChangingCodemapPolicy() async throws {
+            try await assertSupersededAutoSelectionPreservesStoredSelection(atCommitBoundary: false)
+        }
+
+        @MainActor
+        func testAutoSelectionFinalCommitRejectsSupersededAuthority() async throws {
+            try await assertSupersededAutoSelectionPreservesStoredSelection(atCommitBoundary: true)
+        }
+
+        @MainActor
+        private func assertSupersededAutoSelectionPreservesStoredSelection(atCommitBoundary: Bool) async throws {
+            let root = try makeTemporaryRoot()
+            let path = root.appendingPathComponent("Sentinel.swift")
+            try "struct Sentinel {}\n".write(to: path, atomically: true, encoding: .utf8)
+            let fixture = try await makeFixture(rootPaths: [root.path])
+            let server = fixture.window.mcpServer
+            let authority = try await server.resolveFileToolAuthority(
+                tabID: fixture.contextID, workspaceID: fixture.workspace.id
+            )
+            try server.bindTabForConnection(
+                connectionID: fixture.connectionID, clientName: nil, tabID: fixture.contextID,
+                workspaceID: fixture.workspace.id, windowID: fixture.window.windowID,
+                frozenFileToolAuthority: authority
+            )
+            let context = try XCTUnwrap(server.tabContextByConnectionID[fixture.connectionID])
+            let key = MCPReadFileAutoSelectionCoordinator.ContextKey(
+                windowID: fixture.window.windowID, workspaceID: fixture.workspace.id,
+                tabID: fixture.contextID, route: .bound(connectionID: fixture.connectionID, runID: nil),
+                bindingGeneration: context.readFileAutoSelectionGeneration
+            )
+            let identity = WorkspaceSelectionIdentity(workspaceID: fixture.workspace.id, tabID: fixture.contextID)
+            let manager = fixture.window.workspaceManager
+            var tab = try XCTUnwrap(manager.composeTab(for: identity))
+            tab.selection = StoredSelection(selectedPaths: [], codemapAutoEnabled: true)
+            XCTAssertTrue(manager.updateComposeTabStoredOnly(tab, inWorkspaceID: fixture.workspace.id))
+            let prior = tab.selection
+            let coordinator = server.readFileAutoSelectionCoordinator
+            let gate = RootHydrationSuspensionGate()
+            if atCommitBoundary {
+                let selectionCoordinator = try XCTUnwrap(server.selectionCoordinator)
+                selectionCoordinator.beforeAuthorizedCommitForTesting = { await gate.hold() }
+            } else {
+                server.setReadFileAutoSelectionCanonicalApplyGateForTesting { await gate.hold() }
+            }
+            addTeardownBlock { @MainActor in
+                await gate.release()
+                server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
+                server.selectionCoordinator?.beforeAuthorizedCommitForTesting = nil
+            }
+            XCTAssertTrue(coordinator.enqueue(
+                intent: .full(paths: [path.path], automaticCodemapDisposition: .disableAutomaticPreservingManual),
+                authority: authority, for: key
+            ))
+            await gate.waitUntilHeld()
+            manager.republishReadyRootCatalogWithNextGenerationForTesting()
+            XCTAssertTrue(server.isReadFileAutoSelectionContextCurrent(key), "Tab identity deliberately stays unchanged")
+            await gate.release()
+            let result = await coordinator.drain(.canonicalSelection, for: key)
+            XCTAssertEqual(result, .completed)
+            XCTAssertEqual(manager.composeTab(for: identity)?.selection, prior)
+            let settled = try XCTUnwrap(coordinator.debugContextSnapshot(for: key))
+            XCTAssertEqual(settled.acceptedHighWaterSequence, settled.completedHighWaterSequence)
+            XCTAssertFalse(settled.pendingWork)
+            XCTAssertEqual(settled.waiterCount, 0)
+            XCTAssertEqual(settled.changedApplyCount, 0)
+        }
+
+        @MainActor
+        func testAutoSelectionFinalCommitRejectsRetiredPhysicalRootLifetime() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let server = fixture.window.mcpServer
+            let canonical = try await server.resolveFileToolAuthority(
+                tabID: fixture.contextID, workspaceID: fixture.workspace.id
+            )
+            let store = fixture.window.workspaceFileContextStore
+            let physicalURL = try makeTemporaryRoot()
+            let physicalRecord = try await store.loadRoot(path: physicalURL.path, kind: .sessionWorktree)
+            let physicalValue = await store.exactRootRef(path: physicalURL.path, kind: .sessionWorktree)
+            let physical = try XCTUnwrap(physicalValue)
+            let logical = try XCTUnwrap(canonical.canonicalRoots.first)
+            let projection = WorkspaceRootBindingProjection(
+                sessionID: UUID(),
+                boundRoots: [.init(
+                    logicalRoot: logical, physicalRoot: physical,
+                    binding: AgentSessionWorktreeBinding(
+                        id: "lifetime", repositoryID: "repo", repoKey: "repo", logicalRootPath: logical.fullPath,
+                        worktreeID: "worktree", worktreeRootPath: physical.fullPath, source: "test"
+                    )
+                )]
+            )
+            let context = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+            let authority = try await MCPServerViewModel.FrozenFileToolAuthority.capture(
+                lookupContext: context, rootCatalogSnapshot: canonical.rootCatalogSnapshot,
+                store: store, sourceIdentity: canonical.sourceIdentity
+            )
+            try server.bindTabForConnection(
+                connectionID: fixture.connectionID, clientName: nil, tabID: fixture.contextID,
+                workspaceID: fixture.workspace.id, windowID: fixture.window.windowID,
+                frozenFileToolAuthority: authority
+            )
+            let bound = try XCTUnwrap(server.tabContextByConnectionID[fixture.connectionID])
+            let key = MCPReadFileAutoSelectionCoordinator.ContextKey(
+                windowID: fixture.window.windowID, workspaceID: fixture.workspace.id, tabID: fixture.contextID,
+                route: .bound(connectionID: fixture.connectionID, runID: nil),
+                bindingGeneration: bound.readFileAutoSelectionGeneration
+            )
+            let identity = WorkspaceSelectionIdentity(workspaceID: fixture.workspace.id, tabID: fixture.contextID)
+            let prior = try XCTUnwrap(fixture.window.workspaceManager.composeTab(for: identity)).selection
+            let gate = RootHydrationSuspensionGate()
+            let coordinator = try XCTUnwrap(server.selectionCoordinator)
+            coordinator.beforeAuthorizedCommitForTesting = { await gate.hold() }
+            addTeardownBlock { @MainActor in
+                await gate.release()
+                coordinator.beforeAuthorizedCommitForTesting = nil
+                await store.unloadRoot(id: physicalRecord.id)
+            }
+            let apply = Task { @MainActor in
+                await server.acceptReadFileAutoSelection(
+                    selection: StoredSelection(
+                        selectedPaths: prior.selectedPaths + [physicalURL.appendingPathComponent("Sentinel.swift").path],
+                        manualCodemapPaths: prior.manualCodemapPaths,
+                        slices: prior.slices,
+                        codemapAutoEnabled: false
+                    ),
+                    lookupContext: context, contextKey: key, expectedBaseSelection: prior,
+                    automaticCodemapDisposition: .disableAutomaticPreservingManual, authority: authority
+                )
+            }
+            await gate.waitUntilHeld()
+            await store.unloadRoot(id: physicalRecord.id)
+            XCTAssertTrue(server.isReadFileAutoSelectionContextCurrent(key))
+            await gate.release()
+            let result = await apply.value
+            XCTAssertNil(result)
+            XCTAssertEqual(fixture.window.workspaceManager.composeTab(for: identity)?.selection, prior)
+        }
+
+        @MainActor
+        func testDiscoveryKeepsFrozenPrimaryRootsAndAuthorizedGitArtifactsOnly() async throws {
+            let root = try makeTemporaryRoot()
+            let artifactRoot = try makeTemporaryRoot()
+            let extraRoot = try makeTemporaryRoot()
+            let primaryPath = root.appendingPathComponent("PrimarySentinel.swift")
+            let artifactPath = artifactRoot.appendingPathComponent("ArtifactSentinel.swift")
+            let extraPath = extraRoot.appendingPathComponent("UnauthorizedSentinel.swift")
+            for path in [primaryPath, artifactPath, extraPath] {
+                try "sentinel\n".write(to: path, atomically: true, encoding: .utf8)
+            }
+            let store = WorkspaceFileContextStore()
+            let primary = try await store.loadRoot(path: root.path, kind: .primaryWorkspace)
+            let artifact = try await store.loadRoot(path: artifactRoot.path, kind: .workspaceGitData)
+            let captured = try await AgentWorkspaceLookupContextResolver.requiredLookupContext(
+                source: AgentWorkspaceLookupContextSource(activeAgentSessionID: nil, worktreeBindingState: .notApplicable),
+                store: store
+            )
+            let emptyBindingContext = try await AgentWorkspaceLookupContextResolver.requiredLookupContext(
+                source: AgentWorkspaceLookupContextSource(activeAgentSessionID: UUID(), worktreeBindingState: .hydrated([])),
+                store: store
+            )
+            XCTAssertEqual(emptyBindingContext, captured)
+            let discovery = MCPServerViewModel.fileToolLookupContext(captured, applying: .visibleWorkspacePlusGitData)
+            let ordinary = MCPServerViewModel.fileToolLookupContext(captured, applying: .visibleWorkspace)
+            let extra = try await store.loadRoot(path: extraRoot.path, kind: .primaryWorkspace)
+            addTeardownBlock {
+                for id in [primary.id, artifact.id, extra.id] {
+                    await store.unloadRoot(id: id)
+                }
+            }
+            for (context, expectedPaths) in [(discovery, [primaryPath.path, artifactPath.path]), (ordinary, [primaryPath.path])] {
+                let search = try await StoreBackedWorkspaceSearch.search(
+                    pattern: "*Sentinel.swift", mode: .path, isRegex: false, caseInsensitive: true,
+                    maxPaths: 100, paths: [], rootScope: context.rootScope, store: store, workspaceManager: nil
+                )
+                XCTAssertEqual(Set(search.paths ?? []), Set(expectedPaths))
+                let tree = await store.makeCurrentSnapshotFileTreePresentation(
+                    selection: StoredSelection(),
+                    request: WorkspaceFileTreePresentationRequest(
+                        mode: .full, filePathDisplay: .relative, onlyIncludeRootsWithSelectedFiles: false,
+                        includeLegend: false, showCodeMapMarkers: false, rootScope: context.rootScope
+                    ),
+                    lookupContext: context
+                )
+                XCTAssertTrue(tree.content.contains("PrimarySentinel.swift"))
+                XCTAssertEqual(tree.content.contains("ArtifactSentinel.swift"), context == discovery)
+                XCTAssertFalse(tree.content.contains("UnauthorizedSentinel.swift"))
+            }
+            let rootless = WorkspaceLookupContext(
+                rootScope: .validatedSessionBoundWorkspace(canonicalRoots: [], physicalRoots: []), bindingProjection: nil
+            )
+            let rootlessDiscovery = MCPServerViewModel.fileToolLookupContext(rootless, applying: .visibleWorkspacePlusGitData)
+            let rootlessRoots = await store.rootRefs(scope: rootlessDiscovery.rootScope)
+            XCTAssertEqual(rootlessRoots, [])
         }
 
         @MainActor

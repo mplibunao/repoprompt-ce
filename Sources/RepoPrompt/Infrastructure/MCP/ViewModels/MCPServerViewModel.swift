@@ -5382,15 +5382,8 @@ final class MCPServerViewModel: ObservableObject {
             )
         }
 
-        let metadata = RequestMetadata(
-            connectionID: {
-                if case let .bound(connectionID, _) = key.route { return connectionID }
-                return nil
-            }(),
-            clientName: nil,
-            windowID: key.windowID
-        )
-        let authoritativeLookupContext = await resolveFileToolLookupContext(from: metadata)
+        // Never re-resolve a queued intent against a newer workspace authority.
+        let authoritativeLookupContext = batch.authority.lookupContext
         let lookupRootScope = authoritativeLookupContext.rootScope
         let batchIdentity = batch.coverageIdentity
         let logicalAbsoluteSliceRebaseCandidates = batch.sliceEntries.compactMap { entry -> String? in
@@ -5456,7 +5449,8 @@ final class MCPServerViewModel: ObservableObject {
                 lookupContext: authoritativeLookupContext,
                 contextKey: key,
                 expectedBaseSelection: initialSelection,
-                automaticCodemapDisposition: batch.automaticCodemapDisposition
+                automaticCodemapDisposition: batch.automaticCodemapDisposition,
+                authority: batch.authority
             ) else { continue }
 
             verifiedCanonicalChange = verifiedCanonicalChange || !authoritativeResult.canonicalUnchanged

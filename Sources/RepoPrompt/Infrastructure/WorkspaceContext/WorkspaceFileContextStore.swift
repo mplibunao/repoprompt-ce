@@ -2487,7 +2487,7 @@ actor WorkspaceFileContextStore {
                 "all_loaded_excluding_git_data"
             case let .sessionBoundWorkspace(logicalRootPaths, physicalRootPaths):
                 "session_bound_workspace(logical=\(logicalRootPaths.sorted().joined(separator: ","));physical=\(physicalRootPaths.sorted().joined(separator: ",")))"
-            case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots):
+            case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, _):
                 "validated_session_bound_workspace(logical=\(canonicalRoots.map(\.standardizedFullPath).sorted().joined(separator: ","));physical=\(physicalRoots.map(\.standardizedFullPath).sorted().joined(separator: ",")))"
             }
         }
@@ -7397,7 +7397,7 @@ actor WorkspaceFileContextStore {
             requestedMatches = Set(requestedPhysicalRootPaths.map {
                 StandardizedPath.absolute(($0 as NSString).expandingTildeInPath)
             }) == expectedPaths
-        case let .validatedSessionBoundWorkspace(canonicalRoots, requestedPhysicalRoots):
+        case let .validatedSessionBoundWorkspace(canonicalRoots, requestedPhysicalRoots, _):
             let requestedValidation = WorkspaceLookupRootSelectorValidator.validate(
                 canonicalRoots: canonicalRoots,
                 physicalRoots: requestedPhysicalRoots
@@ -7481,7 +7481,7 @@ actor WorkspaceFileContextStore {
                 return !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) ||
                     !isDirectory.boolValue
             }.sorted()
-        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots):
+        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, _):
             guard !canonicalRoots.isEmpty || !physicalRoots.isEmpty else {
                 return .sessionWorktreeUnavailable(missingPhysicalRootPaths: [])
             }
@@ -21084,7 +21084,7 @@ actor WorkspaceFileContextStore {
                 physicalRootPaths: normalizedPhysicalRootPaths,
                 dependencies: dependencies
             )
-        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots):
+        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, _):
             let normalizedLogicalRootPaths = canonicalRoots.map(\.standardizedFullPath).sorted()
             let normalizedPhysicalRootPaths = physicalRoots.map(\.standardizedFullPath).sorted()
             let dependencies = rootsForPathLookup(scope: scope).compactMap { root -> SearchCatalogRootDependency? in
@@ -21157,8 +21157,9 @@ actor WorkspaceFileContextStore {
             hasher.combine(normalizedSessionSelectorPaths(canonicalRootPaths).sorted())
             hasher.combine(normalizedSessionSelectorPaths(physicalRootPaths).sorted())
             return UInt64(bitPattern: Int64(hasher.finalize()))
-        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots):
+        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, includesGitData):
             var hasher = Hasher()
+            hasher.combine(includesGitData)
             hasher.combine("validatedSessionBoundWorkspace")
             hasher.combine(canonicalRoots.sorted { $0.id.uuidString < $1.id.uuidString })
             hasher.combine(physicalRoots.sorted { $0.id.uuidString < $1.id.uuidString })
@@ -21234,8 +21235,11 @@ actor WorkspaceFileContextStore {
             true
         case .allLoadedExcludingGitData:
             kinds.contains { $0 != .workspaceGitData }
-        case .sessionBoundWorkspace, .validatedSessionBoundWorkspace:
+        case .sessionBoundWorkspace:
             kinds.contains(.primaryWorkspace) || kinds.contains(.sessionWorktree)
+        case let .validatedSessionBoundWorkspace(_, _, includesGitData):
+            kinds.contains(.primaryWorkspace) || kinds.contains(.sessionWorktree)
+                || (includesGitData && kinds.contains(.workspaceGitData))
         }
     }
 
@@ -21275,7 +21279,7 @@ actor WorkspaceFileContextStore {
                     false
                 }
             }
-        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots):
+        case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, includesGitData):
             guard case let .valid(selector) = WorkspaceLookupRootSelectorValidator.validate(
                 canonicalRoots: canonicalRoots,
                 physicalRoots: physicalRoots
@@ -21286,7 +21290,9 @@ actor WorkspaceFileContextStore {
                     selector.canonicalRootPathsByID[root.id] == root.standardizedFullPath
                 case .sessionWorktree:
                     selector.physicalRootPathsByID[root.id] == root.standardizedFullPath
-                case .workspaceGitData, .supplementalSystem:
+                case .workspaceGitData:
+                    includesGitData && !canonicalRoots.isEmpty && physicalRoots.isEmpty
+                case .supplementalSystem:
                     false
                 }
             }

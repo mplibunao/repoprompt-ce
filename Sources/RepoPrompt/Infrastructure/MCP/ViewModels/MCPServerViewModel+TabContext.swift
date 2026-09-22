@@ -1766,7 +1766,8 @@ extension MCPServerViewModel {
         workspaceID: UUID?,
         selectionCoordinator: WorkspaceSelectionCoordinator?,
         mirrorToUIIfActive: Bool = true,
-        expectedCurrentSelection: StoredSelection? = nil
+        expectedCurrentSelection: StoredSelection? = nil,
+        commitAuthorization: WorkspaceSelectionCoordinator.CommitAuthorization? = nil
     ) async -> MCPSelectionCoordinatorPersistenceResult {
         guard let workspaceID, let selectionCoordinator else { return .unavailable }
         let identity = WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: tabID)
@@ -1780,7 +1781,8 @@ extension MCPServerViewModel {
             for: identity,
             source: .mcpTabContext,
             mirrorToUIIfActive: mirrorToUIIfActive,
-            expectedCurrentSelection: expectedCurrentSelection
+            expectedCurrentSelection: expectedCurrentSelection,
+            commitAuthorization: commitAuthorization
         )
         return outcome
     }
@@ -1792,7 +1794,8 @@ extension MCPServerViewModel {
         workspaceID: UUID?,
         selectionCoordinator: WorkspaceSelectionCoordinator?,
         mirrorToUIIfActive: Bool = true,
-        expectedCurrentSelection: StoredSelection? = nil
+        expectedCurrentSelection: StoredSelection? = nil,
+        commitAuthorization: WorkspaceSelectionCoordinator.CommitAuthorization? = nil
     ) async -> MCPSelectionPersistenceVerification {
         let outcome = await persistMCPSelectionThroughCoordinator(
             selection,
@@ -1800,7 +1803,8 @@ extension MCPServerViewModel {
             workspaceID: workspaceID,
             selectionCoordinator: selectionCoordinator,
             mirrorToUIIfActive: mirrorToUIIfActive,
-            expectedCurrentSelection: expectedCurrentSelection
+            expectedCurrentSelection: expectedCurrentSelection,
+            commitAuthorization: commitAuthorization
         )
         let canonicalSelection = workspaceID.flatMap { workspaceID in
             selectionCoordinator?
@@ -1968,7 +1972,8 @@ extension MCPServerViewModel {
         lookupContext: WorkspaceLookupContext,
         contextKey: MCPReadFileAutoSelectionCoordinator.ContextKey,
         expectedBaseSelection: StoredSelection,
-        automaticCodemapDisposition: MCPReadFileAutoSelectionCoordinator.AutomaticCodemapDisposition
+        automaticCodemapDisposition: MCPReadFileAutoSelectionCoordinator.AutomaticCodemapDisposition,
+        authority: FrozenFileToolAuthority
     ) async -> ReadFileAutoSelectionAuthoritativeResult? {
         guard isReadFileAutoSelectionContextCurrent(contextKey) else { return nil }
 
@@ -1981,6 +1986,30 @@ extension MCPServerViewModel {
               let currentTarget = currentReadFileAutoSelectionTab(for: contextKey),
               currentTarget.tab.selection == expectedBaseSelection
         else { return nil }
+
+        guard let manager = workspaceManager else { return nil }
+        do {
+            try await authority.validate(workspaceManager: manager, store: promptVM.workspaceFileContextStore)
+        } catch { return nil }
+        let commitAuthorization: WorkspaceSelectionCoordinator.CommitAuthorization = { [weak self] commit in
+            guard let self, !Task.isCancelled,
+                  isReadFileAutoSelectionContextCurrent(contextKey),
+                  let context = readFileAutoSelectionContext(for: contextKey)
+            else { return false }
+            if context.runID == nil {
+                guard let workspaceID = contextKey.workspaceID,
+                      prospectiveFileToolLookupSourceIsCurrent(
+                          tabID: contextKey.tabID,
+                          workspaceID: workspaceID,
+                          expectedSourceIdentity: authority.sourceIdentity
+                      )
+                else { return false }
+            } else if context.fileToolAuthoritySourceIdentity != authority.sourceIdentity {
+                return false
+            }
+            return (try? authority.performIfCurrent(workspaceManager: manager, operation: commit)) == true
+        }
+        guard commitAuthorization({}) else { return nil }
 
         let logicalSelection = lookupContext.logicalizeSelection(selection)
         let logicalExpectedBaseSelection = lookupContext.logicalizeSelection(expectedBaseSelection)
@@ -2022,7 +2051,8 @@ extension MCPServerViewModel {
                     workspaceID: contextKey.workspaceID,
                     selectionCoordinator: selectionCoordinator,
                     mirrorToUIIfActive: false,
-                    expectedCurrentSelection: expectedBaseSelection
+                    expectedCurrentSelection: expectedBaseSelection,
+                    commitAuthorization: commitAuthorization
                 )
             }
             guard let refreshedTarget = currentReadFileAutoSelectionTab(for: contextKey) else { return nil }
@@ -2032,10 +2062,12 @@ extension MCPServerViewModel {
                 updatedTab.selection = persistedSelection
                 updatedTab.lastModified = Date()
                 await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalStoredCommit) {
-                    _ = refreshedTarget.manager.updateComposeTabStoredOnly(
-                        updatedTab,
-                        inWorkspaceID: refreshedTarget.identity.workspaceID
-                    )
+                    _ = commitAuthorization {
+                        _ = refreshedTarget.manager.updateComposeTabStoredOnly(
+                            updatedTab,
+                            inWorkspaceID: refreshedTarget.identity.workspaceID
+                        )
+                    }
                 }
                 verification = MCPSelectionPersistenceVerification(
                     outcome: .unavailable,
@@ -2046,7 +2078,7 @@ extension MCPServerViewModel {
             coordinatorVerified = verification.isVerified
         }
 
-        guard coordinatorVerified,
+        guard coordinatorVerified, commitAuthorization({}),
               let finalTarget = currentReadFileAutoSelectionTab(for: contextKey),
               finalTarget.tab.selection == persistedSelection
         else { return nil }
@@ -2175,6 +2207,12 @@ extension MCPServerViewModel {
         } catch is FileToolAuthorityFailure {
             return false
         }
+        try Task.checkCancellation()
+        guard prospectiveFileToolLookupSourceIsCurrent(
+            tabID: tabID,
+            workspaceID: workspaceID,
+            expectedSourceIdentity: authority.sourceIdentity
+        ) else { return false }
         return try authority.performIfCurrent(
             workspaceManager: workspaceManager,
             operation: operation
@@ -2941,10 +2979,24 @@ extension MCPServerViewModel {
         ).identity == source.identity
     }
 
-    private static func fileToolLookupContext(
+    static func fileToolLookupContext(
         _ lookupContext: WorkspaceLookupContext,
         applying baseScope: WorkspaceLookupRootScope
     ) -> WorkspaceLookupContext {
+        if baseScope == .visibleWorkspacePlusGitData,
+           lookupContext.bindingProjection == nil,
+           case let .validatedSessionBoundWorkspace(canonicalRoots, physicalRoots, _) = lookupContext.rootScope,
+           !canonicalRoots.isEmpty, physicalRoots.isEmpty
+        {
+            return WorkspaceLookupContext(
+                rootScope: .validatedSessionBoundWorkspace(
+                    canonicalRoots: canonicalRoots,
+                    physicalRoots: physicalRoots,
+                    includesGitData: true
+                ),
+                bindingProjection: nil
+            )
+        }
         if lookupContext == .visibleWorkspace, baseScope != .visibleWorkspace {
             return WorkspaceLookupContext(rootScope: baseScope, bindingProjection: nil)
         }
