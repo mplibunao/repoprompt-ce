@@ -8288,8 +8288,10 @@ class WorkspaceFilesViewModel: ObservableObject {
             return rootFolders.filter { root in
                 selector.canonicalRootPathsByID[root.id] == root.standardizedFullPath
                     || selector.physicalRootPathsByID[root.id] == root.standardizedFullPath
-                    || (includesGitData && !canonicalRoots.isEmpty && physicalRoots.isEmpty
-                        && gitDataRootFolders().contains { $0.id == root.id })
+                    || (
+                        includesGitData && !canonicalRoots.isEmpty && physicalRoots.isEmpty
+                            && gitDataRootFolders().contains { $0.id == root.id }
+                    )
             }
         }
     }
