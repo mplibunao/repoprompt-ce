@@ -460,9 +460,14 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
     }
 
     func testResolverRebuildsCachedProjectionWhenVisibleRootSetChanges() async throws {
-        let logicalRootURL = try makeTemporaryRoot(name: "ProjectionCacheLogical")
+        let git = try ReviewGitRepositoryFixture(name: "ProjectionCache")
+        defer { git.cleanup() }
+        let logicalRootURL = try git.makeRepository(named: "logical", files: ["README.md": "projection fixture\n"])
         let addedRootURL = try makeTemporaryRoot(name: "ProjectionCacheAdded")
-        let physicalRootURL = try makeTemporaryRoot(name: "ProjectionCachePhysical")
+        let physicalRootURL = git.sandbox.appendingPathComponent("linked-worktree", isDirectory: true)
+        try git.runGit(["worktree", "add", "--detach", physicalRootURL.path, "HEAD"], at: logicalRootURL)
+        let identity = try XCTUnwrap(GitWorktreeIdentityResolver.resolve(atWorkTreeRoot: physicalRootURL))
+        XCTAssertFalse(identity.isMain, "The resolver must validate a real linked worktree")
         let store = WorkspaceFileContextStore()
         let loadedLogicalRoot = try await store.loadRoot(path: logicalRootURL.path)
         let logicalRoot = WorkspaceRootRef(
@@ -470,18 +475,20 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
             name: loadedLogicalRoot.name,
             fullPath: loadedLogicalRoot.standardizedFullPath
         )
-        let physicalRoot = WorkspaceRootRef(
-            id: UUID(),
-            name: logicalRoot.name,
-            fullPath: physicalRootURL.path
-        )
         let sessionID = UUID()
         let source = AgentWorkspaceLookupContextSource(
             activeAgentSessionID: sessionID,
-            worktreeBindings: [Self.binding(
-                logicalRoot: logicalRoot,
-                physicalRoot: physicalRoot,
-                worktreeID: "cache-visible-roots"
+            worktreeBindings: [AgentSessionWorktreeBinding(
+                id: "binding-cache-visible-roots",
+                repositoryID: identity.repository.repositoryID,
+                repoKey: identity.repository.repoKey,
+                logicalRootPath: logicalRoot.fullPath,
+                logicalRootName: logicalRoot.name,
+                worktreeID: identity.worktreeID,
+                worktreeRootPath: physicalRootURL.path,
+                commonGitDir: identity.repository.commonGitDir,
+                isMainWorktree: identity.isMain,
+                source: "test"
             )]
         )
 
