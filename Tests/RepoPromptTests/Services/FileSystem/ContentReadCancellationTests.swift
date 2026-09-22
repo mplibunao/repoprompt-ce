@@ -980,8 +980,8 @@ final class ContentReadCancellationTests: XCTestCase {
         guard case let .materialized(file) = result else {
             return XCTFail("Expected file to materialize after ignore policy changed")
         }
-        let isManagedOnly = await store.isManagedOnlyFileForTesting(file.id)
-        XCTAssertFalse(isManagedOnly)
+        let discoverableFile = await store.file(id: file.id)
+        XCTAssertEqual(discoverableFile?.id, file.id)
         XCTAssertEqual(probeCount.snapshot(), 2)
     }
 
