@@ -1013,6 +1013,20 @@ extension FileSystemService {
         relativePath: String,
         schedulerOwnerID: UUID? = nil
     ) async throws -> Bool {
+        let lifecycleCorrelation = EditFlowPerf.currentLifecycleCorrelation
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.Search.contentFreshnessRootEntered,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(rootToken: diagnosticRootToken.uuidString)
+        )
+        var outcome = "missing"
+        defer {
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.Search.contentFreshnessRootReturned,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(outcome: outcome, rootToken: diagnosticRootToken.uuidString)
+            )
+        }
         let request = try makeContentReadRequest(
             cacheKey: relativePath,
             chunkSize: 1,
@@ -1031,10 +1045,13 @@ extension FileSystemService {
                 #endif
                 return try Self.validateContentFileForReading(request)
             }
+            outcome = "current"
             return true
         } catch is CancellationError {
+            outcome = "cancelled"
             throw CancellationError()
         } catch let error as ContentReadSchedulerError {
+            outcome = "overloaded"
             throw error
         } catch {
             return false

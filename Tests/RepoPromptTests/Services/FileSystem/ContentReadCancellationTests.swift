@@ -746,7 +746,7 @@ final class ContentReadCancellationTests: XCTestCase {
         XCTAssertTrue(limiterSnapshot.isIdle)
     }
 
-    func testExplicitMaterializationReusesItsValidatedPhysicalEligibility() async throws {
+    func testExplicitMaterializationValidatesPhysicalEligibilityBeforeCommit() async throws {
         let rootURL = try makeTemporaryRoot()
         try "Ignored.swift\n".write(
             to: rootURL.appendingPathComponent(".repo_ignore"),
@@ -775,7 +775,98 @@ final class ContentReadCancellationTests: XCTestCase {
             return XCTFail("Expected ignored file to materialize")
         }
         XCTAssertEqual(file.standardizedFullPath, StandardizedPath.absolute(targetURL.path))
-        XCTAssertEqual(probeCount.snapshot(), 1)
+        XCTAssertEqual(probeCount.snapshot(), 2)
+    }
+
+    func testFailedFinalMaterializationRollsBackIgnoredRegistration() async throws {
+        let rootURL = try makeTemporaryRoot()
+        try "Ignored.swift\n".write(to: rootURL.appendingPathComponent(".repo_ignore"), atomically: true, encoding: .utf8)
+        let targetURL = rootURL.appendingPathComponent("Ignored.swift")
+        try "ignored content\n".write(to: targetURL, atomically: true, encoding: .utf8)
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(path: rootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+        let service = try XCTUnwrap(loadedService)
+        let before = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        let reachedFence = AsyncSignal()
+        let releaseFence = AsyncSignal()
+        await store.setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting { _ in
+            await reachedFence.signal()
+            await releaseFence.wait()
+        }
+        let task = Task { try await store.materializeExplicitlyRequestedFile(targetURL.path, rootRefs: roots) }
+        addTeardownBlock {
+            await releaseFence.signal()
+            task.cancel()
+            await store.setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting(nil)
+        }
+        guard await waitUntil({ await reachedFence.isSignaledSnapshot() }) else {
+            return XCTFail("Materialization did not reach its post-registration fence")
+        }
+        let pending = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        XCTAssertEqual(pending.pendingOwnerCount, 1)
+        try FileManager.default.removeItem(at: targetURL)
+        await releaseFence.signal()
+        guard let result = await waitForTaskResult(task) else { return XCTFail("Missing-file ingress did not settle") }
+        if case .success = result {
+            XCTFail("Missing final physical evidence must reject materialization")
+        }
+        let after = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        XCTAssertEqual(after, before)
+        let file = await store.file(rootID: root.id, relativePath: "Ignored.swift")
+        XCTAssertNil(file)
+        try "recreated ignored content\n".write(to: targetURL, atomically: true, encoding: .utf8)
+        let recreated = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        XCTAssertFalse(recreated.watcherExemptsPath)
+        XCTAssertFalse(recreated.isRegistered)
+    }
+
+    func testCancelledFinalMaterializationSettlesBeforePhysicalReturnAndRollsBack() async throws {
+        let rootURL = try makeTemporaryRoot()
+        try "Ignored.swift\n".write(to: rootURL.appendingPathComponent(".repo_ignore"), atomically: true, encoding: .utf8)
+        let targetURL = rootURL.appendingPathComponent("Ignored.swift")
+        try "ignored content\n".write(to: targetURL, atomically: true, encoding: .utf8)
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(path: rootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+        let service = try XCTUnwrap(loadedService)
+        let before = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        let physicalGate = SynchronousPhysicalReadGate()
+        await store.setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting { service in
+            await service.setContentPhysicalReadHandlerForTesting { physicalGate.blockUntilReleased() }
+        }
+        let task = Task { try await store.materializeExplicitlyRequestedFile(targetURL.path, rootRefs: roots) }
+        addTeardownBlock {
+            physicalGate.release()
+            task.cancel()
+            await service.setContentPhysicalReadHandlerForTesting(nil)
+            await store.setExplicitMaterializationDidAcquireCodemapFenceHandlerForTesting(nil)
+        }
+        guard await waitUntil({ physicalGate.isBlockedSnapshot() }) else {
+            return XCTFail("Final physical validation did not enter the controlled boundary")
+        }
+        task.cancel()
+        guard let result = await waitForTaskResult(task) else { return XCTFail("Cancelled ingress waited for physical completion") }
+        guard case let .failure(error) = result, error is CancellationError else {
+            return XCTFail("Expected cancellation before releasing final physical validation")
+        }
+        let storeProbe = Task { () throws -> [WorkspaceRootRef] in await store.rootRefs(scope: .visibleWorkspace) }
+        guard let storeResult = await waitForTaskResult(storeProbe) else {
+            return XCTFail("Final physical validation blocked unrelated store operations")
+        }
+        XCTAssertEqual(try storeResult.get(), roots)
+        let after = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(relativePath: "Ignored.swift")
+        XCTAssertEqual(after, before)
+        let file = await store.file(rootID: root.id, relativePath: "Ignored.swift")
+        XCTAssertNil(file)
+        let blocked = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
+        XCTAssertEqual(blocked.activePermitCount, 1)
+        XCTAssertEqual(blocked.foregroundActivityCount, 1)
+        physicalGate.release()
+        let settled = await waitForLimiterIdle()
+        XCTAssertTrue(settled.isIdle)
     }
 
     func testExplicitRegistrationRechecksIgnoreRuleRevisionAfterEligibilityValidation() async throws {
@@ -806,14 +897,17 @@ final class ContentReadCancellationTests: XCTestCase {
         try await service.refreshIgnoreRules()
         let refreshedPolicyIdentity = await service.currentWorkspaceRootCatalogPolicyIdentity()
         XCTAssertEqual(refreshedPolicyIdentity, evidence.policyIdentity)
-        let registeredEligibility = try await service.registerExplicitlyManagedRegularFile(
+        let registeredEligibility = try await service.beginExplicitlyManagedRegularFileRegistration(
             relativePath: "Ignored.swift",
             validatedEligibility: evidence.eligibility,
             policyIdentity: evidence.policyIdentity,
             ignoreRulesRevision: evidence.ignoreRulesRevision
         )
 
-        XCTAssertEqual(registeredEligibility, .ineligible(.ignored))
+        if let token = registeredEligibility.token {
+            _ = await service.rollbackExplicitlyManagedRegularFileRegistration(token)
+        }
+        XCTAssertEqual(registeredEligibility.eligibility, .ineligible(.ignored))
         XCTAssertEqual(probeCount.snapshot(), 1)
     }
 
@@ -845,14 +939,14 @@ final class ContentReadCancellationTests: XCTestCase {
         XCTAssertEqual(evidence.eligibility, .eligible)
 
         await service.updateSkipSymlinks(true)
-        let registeredEligibility = try await service.registerExplicitlyManagedRegularFile(
+        let registeredEligibility = try await service.beginExplicitlyManagedRegularFileRegistration(
             relativePath: "Alias/Target.swift",
             validatedEligibility: evidence.eligibility,
             policyIdentity: evidence.policyIdentity,
             ignoreRulesRevision: evidence.ignoreRulesRevision
         )
 
-        XCTAssertEqual(registeredEligibility, .ineligible(.symlinkComponent))
+        XCTAssertEqual(registeredEligibility.eligibility, .ineligible(.symlinkComponent))
         XCTAssertEqual(probeCount.snapshot(), 2)
     }
 
@@ -925,7 +1019,7 @@ final class ContentReadCancellationTests: XCTestCase {
         guard let materializationResult = await waitForTaskResult(materializationTask) else {
             return XCTFail("Materialization did not settle after root turnover")
         }
-        XCTAssertEqual(try materializationResult.get(), .noCandidate)
+        XCTAssertEqual(try materializationResult.get(), .unavailable)
         let materializedFile = await store.file(rootID: root.id, relativePath: "Target.swift")
         XCTAssertNil(materializedFile)
     }
@@ -961,7 +1055,7 @@ final class ContentReadCancellationTests: XCTestCase {
         guard let materializationResult = await waitForTaskResult(materializationTask) else {
             return XCTFail("Materialization did not settle after initial-eligibility root turnover")
         }
-        XCTAssertEqual(try materializationResult.get(), .noCandidate)
+        XCTAssertEqual(try materializationResult.get(), .unavailable)
     }
 
     func testExactCandidatesRejectUncataloguedEligibilityAfterRootTurnover() async throws {
@@ -2476,7 +2570,9 @@ final class ContentReadCancellationTests: XCTestCase {
     private func waitForLimiterIdle() async -> ContentReadAsyncLimiter.Snapshot {
         for _ in 0 ..< 10000 {
             let snapshot = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
-            if snapshot.isIdle { return snapshot }
+            if snapshot.isIdle {
+                return snapshot
+            }
             await Task.yield()
         }
         return await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
@@ -2488,7 +2584,9 @@ final class ContentReadCancellationTests: XCTestCase {
     ) async -> ContentReadAsyncLimiter.Snapshot {
         for _ in 0 ..< 10000 {
             let snapshot = await limiter.snapshotForTesting()
-            if predicate(snapshot) { return snapshot }
+            if predicate(snapshot) {
+                return snapshot
+            }
             await Task.yield()
         }
         return await limiter.snapshotForTesting()
@@ -2500,7 +2598,9 @@ final class ContentReadCancellationTests: XCTestCase {
     ) async -> WorkspaceInteractiveReadCache.Snapshot {
         for _ in 0 ..< 10000 {
             let snapshot = await cache.snapshotForTesting()
-            if predicate(snapshot) { return snapshot }
+            if predicate(snapshot) {
+                return snapshot
+            }
             await Task.yield()
         }
         return await cache.snapshotForTesting()
@@ -2511,7 +2611,9 @@ final class ContentReadCancellationTests: XCTestCase {
         _ predicate: () async -> Bool
     ) async -> Bool {
         for _ in 0 ..< iterations {
-            if await predicate() { return true }
+            if await predicate() {
+                return true
+            }
             await Task.yield()
         }
         return await predicate()
@@ -2698,7 +2800,9 @@ private actor AsyncSignal {
     }
 
     func wait() async {
-        if isSignaled { return }
+        if isSignaled {
+            return
+        }
         await withCheckedContinuation { continuation in
             waiters.append(continuation)
         }

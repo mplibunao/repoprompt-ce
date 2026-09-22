@@ -26,6 +26,9 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case claudeCompatibleKimiAPIKey
     case claudeCompatibleCustomAPIKey
 
+    /// Model-router backend accounts.
+    case jevRouterAPIKey
+
     // Agent permission document accounts.
     case agentPermissionSubagentDocument
     case agentPermissionCodexDocument
@@ -33,6 +36,8 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case agentPermissionOpenCodeDocument
     case agentPermissionCursorDocument
     case agentPermissionGrokBuildDocument
+    case agentPermissionAntigravityDocument
+    case agentPermissionDevinDocument
 
     var identifier: String {
         switch self {
@@ -72,6 +77,8 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
             "ClaudeCompatibleBackend.kimi.apiKey"
         case .claudeCompatibleCustomAPIKey:
             "ClaudeCompatibleBackend.custom.apiKey"
+        case .jevRouterAPIKey:
+            "JevRouterAPIKey"
         case .agentPermissionSubagentDocument:
             Self.decode([
                 40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
@@ -102,6 +109,17 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
                 40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
                 51, 53, 52, 41, 116, 61, 40, 53, 49, 24, 47, 51, 54, 62, 116, 44, 107
             ])
+        case .agentPermissionAntigravityDocument:
+            Self.decode([
+                40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
+                51, 53, 52, 41, 116, 59, 52, 46, 51, 61, 40, 59, 44, 51, 46, 35,
+                116, 44, 107
+            ])
+        case .agentPermissionDevinDocument:
+            Self.decode([
+                40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
+                51, 53, 52, 41, 116, 62, 63, 44, 51, 52, 116, 44, 107
+            ])
         }
     }
 
@@ -129,12 +147,15 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
         case .zAIAPI: "Z.AI API key"
         case .claudeCompatibleKimiAPIKey: "Kimi compatible API key"
         case .claudeCompatibleCustomAPIKey: "Custom Claude-compatible API key"
+        case .jevRouterAPIKey: "Jev model router API key"
         case .agentPermissionSubagentDocument: "Subagent permissions"
         case .agentPermissionCodexDocument: "Codex permissions"
         case .agentPermissionClaudeDocument: "Claude permissions"
         case .agentPermissionOpenCodeDocument: "OpenCode permissions"
         case .agentPermissionCursorDocument: "Cursor permissions"
         case .agentPermissionGrokBuildDocument: "Grok Build permissions"
+        case .agentPermissionAntigravityDocument: "Google Antigravity permissions"
+        case .agentPermissionDevinDocument: "Devin permissions"
         }
     }
 
@@ -206,7 +227,9 @@ enum SecureStorageAccountCatalog {
         .agentPermissionClaudeDocument,
         .agentPermissionOpenCodeDocument,
         .agentPermissionCursorDocument,
-        .agentPermissionGrokBuildDocument
+        .agentPermissionGrokBuildDocument,
+        .agentPermissionAntigravityDocument,
+        .agentPermissionDevinDocument
     ]
 
     static let allAccounts = SecureStorageAccount.allCases

@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptDomainRuntime
+import RepoPromptShared
 
 // MARK: - Canonical Settings Keys
 
@@ -278,6 +280,12 @@ struct GlobalDefaults: Codable, Equatable {
     /// Global MCP Agent Mode role-default overrides (shared across all workspaces).
     /// Keys are TaskLabelKind rawValues, values are AgentModelSelectionID rawValues.
     var mcpAgentRoleOverrides: [String: String]?
+    /// OpenCode-style ACP parameter pins for the global role defaults. Keys are
+    /// TaskLabelKind rawValues; values are model-scoped selections.
+    var mcpAgentRoleModelParameters: [String: [ACPModelParameterSelection]]?
+    /// OpenCode-style ACP parameter pins for the global Context Builder agents.
+    /// Keys are AgentProviderKind rawValues, mirroring `discoverModelsByAgent`.
+    var contextBuilderModelParametersByAgent: [String: [ACPModelParameterSelection]]?
     /// One-time migration version for legacy workspace-scoped MCP role overrides.
     var mcpAgentRoleOverridesMigrationVersion: Int?
     /// Global provider filter used by recommendation generation. nil means all providers.
@@ -330,6 +338,12 @@ protocol CodexHookApprovalSettingsProviding {
 @MainActor
 class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding {
     static let shared = GlobalSettingsStore()
+    private static let defaultUserDefaults: UserDefaults = {
+        if AppLaunchConfiguration.isUnitTestProcess {
+            return UserDefaults(suiteName: "RepoPromptCE.unit-settings.\(UUID().uuidString)")!
+        }
+        return .standard
+    }()
 
     private let defaults: UserDefaults
     private let fileStore: GlobalSettingsFileStoring
@@ -339,10 +353,17 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     @Published private(set) var chatSettings: [UUID: ChatGlobalSettings] = [:]
     @Published private(set) var agentModelsSettingsByWorkspaceID: [UUID: WorkspaceAgentModelsSettings] = [:]
     @Published private(set) var codeMapsGloballyDisabled: Bool = false
+    @Published private(set) var modelRouterSettingsRevision: UInt64 = 0
     /// Non-nil when the on-disk settings file is blocked (unreadable or a newer schema).
-    /// UI surfaces this so the user can recover; RepoPrompt never auto-recovers.
+    /// UI surfaces this when the store cannot safely repair the document automatically.
     @Published private(set) var persistenceBlockReason: GlobalSettingsPersistenceBlockReason? {
         didSet { reconcilePersistenceBlockDismissal() }
+    }
+
+    /// True when a failed startup migration must be retried through the raw-preserving
+    /// transaction instead of the ordinary typed save path.
+    var isPendingPreservingMigrationRetry: Bool {
+        fileStore.hasPendingStartupMigration
     }
 
     @Published private(set) var sessionDismissedPersistenceBlockReason: GlobalSettingsPersistenceBlockReason?
@@ -361,11 +382,11 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     private var settingsWriteDiagnostics: [GlobalSettingsWriteDiagnostic] = []
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults? = nil,
         fileStore: GlobalSettingsFileStoring = GlobalSettingsFileStore(),
         invalidAgentModelsProfileAssertion: @escaping (String) -> Void = { assertionFailure($0) }
     ) {
-        self.defaults = defaults
+        self.defaults = defaults ?? Self.defaultUserDefaults
         self.fileStore = fileStore
         self.invalidAgentModelsProfileAssertion = invalidAgentModelsProfileAssertion
         load()
@@ -488,12 +509,15 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     func globalAgentModelsProfile() -> AgentModelsSettingsProfile {
         AgentModelsSettingsProfile(
             planningModelRaw: scalarPreferences.modelSelection?.planningModel,
+            additionalOracleModelRaws: scalarPreferences.modelSelection?.additionalOracleModels ?? [],
             preferredComposeModelRaw: scalarPreferences.modelSelection?.preferredComposeModel,
             syncChatModelWithOracle: resolvedSyncChatModelWithOracleFromCurrentPreferences(),
             contextBuilderAgentRaw: globalDefaults.discoverAgentRaw,
             contextBuilderModelsByAgent: globalDefaults.discoverModelsByAgent,
             mcpAgentRoleOverrides: globalDefaults.mcpAgentRoleOverrides,
-            restrictMCPAgentDiscoveryToRoleLabels: restrictMCPAgentDiscoveryToRoleLabels()
+            restrictMCPAgentDiscoveryToRoleLabels: restrictMCPAgentDiscoveryToRoleLabels(),
+            mcpAgentRoleModelParameters: globalDefaults.mcpAgentRoleModelParameters,
+            contextBuilderModelParametersByAgent: globalDefaults.contextBuilderModelParametersByAgent
         )
     }
 
@@ -505,6 +529,9 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         let normalized = normalizedAgentModelsProfile(profile)
         var modelSelection = scalarPreferences.modelSelection ?? GlobalScalarPreferences.ModelSelectionSettings()
         modelSelection.planningModel = normalized.planningModelRaw
+        modelSelection.additionalOracleModels = normalized.additionalOracleModelRaws.isEmpty
+            ? nil
+            : normalized.additionalOracleModelRaws
         modelSelection.preferredComposeModel = normalized.preferredComposeModelRaw
         modelSelection.syncChatModelWithOracle = normalized.syncChatModelWithOracle
         scalarPreferences.modelSelection = modelSelection
@@ -516,6 +543,8 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         globalDefaults.discoverAgentRaw = normalized.contextBuilderAgentRaw
         globalDefaults.discoverModelsByAgent = normalized.contextBuilderModelsByAgent
         globalDefaults.mcpAgentRoleOverrides = normalized.mcpAgentRoleOverrides
+        globalDefaults.mcpAgentRoleModelParameters = normalized.mcpAgentRoleModelParameters
+        globalDefaults.contextBuilderModelParametersByAgent = normalized.contextBuilderModelParametersByAgent
         switch contextBuilderWriteIntent {
         case .preserveExistingOwnership:
             break
@@ -630,9 +659,14 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         var globalChanged = false
         var modelSelection = scalarPreferences.modelSelection ?? GlobalScalarPreferences.ModelSelectionSettings()
         let planning = normalized(modelSelection.planningModel)
+        let additional = modelSelection.additionalOracleModels?.compactMap(normalized)
         let compose = normalized(modelSelection.preferredComposeModel)
-        if planning != modelSelection.planningModel || compose != modelSelection.preferredComposeModel {
+        if planning != modelSelection.planningModel
+            || additional != modelSelection.additionalOracleModels
+            || compose != modelSelection.preferredComposeModel
+        {
             modelSelection.planningModel = planning
+            modelSelection.additionalOracleModels = additional?.isEmpty == false ? additional : nil
             modelSelection.preferredComposeModel = compose
             scalarPreferences.modelSelection = modelSelection
             globalChanged = true
@@ -655,6 +689,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             guard var settings = agentModelsSettingsByWorkspaceID[workspaceID], var profile = settings.profile else { continue }
             let old = profile
             profile.planningModelRaw = normalized(profile.planningModelRaw)
+            profile.additionalOracleModelRaws = profile.additionalOracleModelRaws.compactMap(normalized)
             profile.preferredComposeModelRaw = normalized(profile.preferredComposeModelRaw)
             if let models = profile.contextBuilderModelsByAgent {
                 profile.contextBuilderModelsByAgent = models.mapValues { AIModel.rawValueWithoutOpenAIServiceTier($0) }
@@ -691,6 +726,57 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     ) {
         updateAgentModelsProfile(scope: scope) { profile in
             profile.mcpAgentRoleOverrides = overrides
+        }
+    }
+
+    /// Atomic Context Builder pin write: persist the displayed agent+model choice and
+    /// set/clear that agent's parameter bucket in one profile mutation.
+    func setAgentModelsContextBuilderModelParameter(
+        _ selections: [ACPModelParameterSelection]?,
+        agentRaw: String?,
+        modelRaw: String,
+        scope: AgentModelsEditingScope
+    ) {
+        // The write durably commits the displayed Context Builder agent+model alongside the pin,
+        // so it must claim user ownership exactly as the existing Context Builder model setters
+        // do. With `.preserveExistingOwnership` the global ownership flag stays false, automatic
+        // recommendation application stays eligible, it moves the Context Builder model, and
+        // profile coherence then drops the bucket — silently erasing the pin the user just set.
+        // Skip a no-op. `.userInitiated` claims user ownership of the Context Builder defaults,
+        // so writing it for a click that changes nothing would silently revoke automatic
+        // recommendation eligibility.
+        let current = agentModelsProfile(for: scope)
+        let next = current.replacingContextBuilderModelParameter(
+            selections,
+            for: agentRaw,
+            modelRaw: modelRaw
+        )
+        guard next != current else { return }
+        updateAgentModelsProfile(scope: scope, contextBuilderWriteIntent: .userInitiated) { profile in
+            profile = next
+        }
+    }
+
+    /// Atomic role-pin write: persist the displayed model choice as the role override and
+    /// set/clear the role's parameter bucket in one profile mutation, so the two never diverge.
+    func setAgentModelsRoleModelParameter(
+        _ selections: [ACPModelParameterSelection]?,
+        roleRawValue: String,
+        displayedSelectionID: AgentModelSelectionID,
+        scope: AgentModelsEditingScope
+    ) {
+        // Skip a no-op, matching the Context Builder setter. Now that clearing is scoped to the
+        // displayed model, re-picking an already-checked "Default" on a recommendation-tracking
+        // role produces an identical profile — writing and broadcasting it would be pure churn.
+        let current = agentModelsProfile(for: scope)
+        let next = current.replacingRoleModelParameter(
+            selections,
+            for: roleRawValue,
+            displayedSelectionID: displayedSelectionID
+        )
+        guard next != current else { return }
+        updateAgentModelsProfile(scope: scope) { profile in
+            profile = next
         }
     }
 
@@ -867,7 +953,9 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         let settings = scalarPreferences.contextBuilder
         return ContextBuilderBehaviorSettings(
             contextTokenBudget: settings?.contextTokenBudget ?? ContextBuilderDefaults.contextTokenBudget,
-            analysisTokenBudget: settings?.analysisTokenBudget ?? ContextBuilderDefaults.analysisTokenBudget,
+            analysisTokenBudget: ContextBuilderDefaults.normalizedAnalysisTokenBudget(
+                settings?.analysisTokenBudget ?? ContextBuilderDefaults.analysisTokenBudget
+            ),
             enhancementMode: settings?.enhancementMode.flatMap(PromptEnhancementMode.init(rawValue:))
                 ?? ContextBuilderDefaults.enhancementMode,
             questionTimeoutSeconds: settings?.questionTimeoutSeconds ?? ContextBuilderDefaults.questionTimeoutSeconds,
@@ -886,7 +974,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     ) {
         let persisted = GlobalScalarPreferences.ContextBuilderSettings(
             contextTokenBudget: settings.contextTokenBudget,
-            analysisTokenBudget: settings.analysisTokenBudget,
+            analysisTokenBudget: ContextBuilderDefaults.normalizedAnalysisTokenBudget(settings.analysisTokenBudget),
             enhancementMode: settings.enhancementMode.rawValue,
             questionTimeoutSeconds: settings.questionTimeoutSeconds,
             allowUIClarifyingQuestions: settings.allowUIClarifyingQuestions,
@@ -1117,6 +1205,19 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         if globalAgentModelsProfile() != oldAgentModelsProfile {
             postAgentModelsSettingsDidChange(scope: .global)
         }
+    }
+
+    func additionalOracleModelRaws() -> [String] {
+        scalarPreferences.modelSelection?.additionalOracleModels ?? []
+    }
+
+    func setAdditionalOracleModelRaws(_ raws: [String], commit: Bool = true) throws {
+        let normalized = try OracleRosterContract.normalizedAdditionalModelIDs(raws)
+        guard normalized != additionalOracleModelRaws() else { return }
+        updateModelSelectionScalar(commit: commit) { settings in
+            settings.additionalOracleModels = normalized.isEmpty ? nil : normalized
+        }
+        postAgentModelsSettingsDidChange(scope: .global)
     }
 
     func syncChatModelWithOracle() -> Bool {
@@ -1434,8 +1535,166 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         }
     }
 
+    func subagentDefaultWaitSeconds() -> Int {
+        MCPTimeoutPolicy.resolvedSubagentDefaultWaitSeconds(
+            scalarPreferences.agentMode?.subagentDefaultWaitSeconds
+        )
+    }
+
+    @discardableResult
+    func setSubagentDefaultWaitSeconds(_ seconds: Int, commit: Bool = true) -> Bool {
+        guard MCPTimeoutPolicy.isSupportedSubagentDefaultWaitSeconds(seconds) else {
+            return false
+        }
+
+        let proposedValue = seconds == Int(MCPTimeoutPolicy.agentLifecycleDefaultWaitSeconds) ? nil : seconds
+        guard scalarPreferences.agentMode?.subagentDefaultWaitSeconds != proposedValue else {
+            return true
+        }
+
+        updateAgentModeScalar(commit: commit) { settings in
+            settings.subagentDefaultWaitSeconds = proposedValue
+        }
+        return true
+    }
+
     func agentSessionHandoffInstructions() -> String {
         scalarPreferences.agentMode?.agentSessionHandoffInstructions ?? ""
+    }
+
+    // MARK: - Model Router
+
+    func modelRouterConfiguration() -> AgentTaskRouterConfiguration {
+        let stored = scalarPreferences.modelRouter
+        let backendRaw = stored?.selectedBackendRawValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let backendID = backendRaw.flatMap { $0.isEmpty ? nil : AgentTaskRouterBackendID(rawValue: $0) }
+
+        let rolesMaterialized = stored?.candidateRoleRawValues != nil
+        let rawRoles = stored?.candidateRoleRawValues ?? []
+        let knownRoles = AgentModelCatalog.TaskLabelKind.allCases.filter { rawRoles.contains($0.rawValue) }
+        let unknownRoles = rawRoles.filter { raw in
+            !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && AgentModelCatalog.TaskLabelKind(rawValue: raw) == nil
+        }
+
+        let providersMaterialized = stored?.allowedProviderRawValues != nil
+        let rawProviders = stored?.allowedProviderRawValues ?? []
+        let knownProviders = Set(rawProviders.compactMap(AgentProviderKind.init(rawValue:)))
+        let unknownProviders = rawProviders.filter { raw in
+            !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && AgentProviderKind(rawValue: raw) == nil
+        }
+
+        let enabled = stored?.enabled ?? false
+        let primaryProvider = stored?.primaryProviderRawValue.flatMap(AgentProviderKind.init(rawValue:))
+        let subagentProvider = stored?.subagentProviderRawValue.flatMap(AgentProviderKind.init(rawValue:))
+        let storedCustomInstructions = stored?.customInstructions?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let customInstructions = storedCustomInstructions.count <= 1000
+            && storedCustomInstructions.utf8.count <= 4096
+            ? storedCustomInstructions
+            : ""
+        let validity: AgentTaskRouterConfiguration.Validity = if !enabled {
+            .disabled
+        } else if backendID == nil {
+            .backendMissing
+        } else {
+            .valid
+        }
+        return AgentTaskRouterConfiguration(
+            enabled: enabled,
+            selectedBackendID: backendID,
+            selectedBackendRawValue: backendRaw,
+            candidateRoles: knownRoles,
+            allowedProviders: knownProviders,
+            candidateRolesMaterialized: rolesMaterialized,
+            allowedProvidersMaterialized: providersMaterialized,
+            unknownRoleRawValues: unknownRoles,
+            unknownProviderRawValues: unknownProviders,
+            primaryProvider: primaryProvider,
+            subagentProvider: subagentProvider,
+            customInstructions: customInstructions,
+            validity: validity,
+            revision: modelRouterSettingsRevision
+        )
+    }
+
+    func setModelRouterEnabled(_ enabled: Bool, commit: Bool = true) {
+        updateModelRouterScalar(commit: commit) { $0.enabled = enabled }
+    }
+
+    func setModelRouterBackend(_ backendID: AgentTaskRouterBackendID, commit: Bool = true) {
+        updateModelRouterScalar(commit: commit) { $0.selectedBackendRawValue = backendID.rawValue }
+    }
+
+    func setModelRouterCandidateRoles(_ roles: Set<AgentModelCatalog.TaskLabelKind>, commit: Bool = true) {
+        updateModelRouterScalar(commit: commit) { settings in
+            let unknown = (settings.candidateRoleRawValues ?? []).filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && AgentModelCatalog.TaskLabelKind(rawValue: $0) == nil
+            }
+            settings.candidateRoleRawValues = AgentModelCatalog.TaskLabelKind.allCases
+                .filter(roles.contains)
+                .map(\.rawValue) + unknown
+        }
+    }
+
+    func setModelRouterAllowedProviders(_ providers: Set<AgentProviderKind>, commit: Bool = true) {
+        updateModelRouterScalar(commit: commit) { settings in
+            let unknown = (settings.allowedProviderRawValues ?? []).filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && AgentProviderKind(rawValue: $0) == nil
+            }
+            settings.allowedProviderRawValues = AgentProviderKind.allCases
+                .filter(providers.contains)
+                .map(\.rawValue) + unknown
+        }
+    }
+
+    func setModelRouterProvider(_ provider: AgentProviderKind?, scope: AgentTaskRoutingScope, commit: Bool = true) {
+        updateModelRouterScalar(commit: commit) { settings in
+            switch scope {
+            case .primarySession: settings.primaryProviderRawValue = provider?.rawValue
+            case .subagent: settings.subagentProviderRawValue = provider?.rawValue
+            }
+        }
+    }
+
+    @discardableResult
+    func setModelRouterCustomInstructions(_ instructions: String, commit: Bool = true) -> Bool {
+        let normalized = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count <= 1000, normalized.utf8.count <= 4096 else { return false }
+        updateModelRouterScalar(commit: commit) { settings in
+            settings.customInstructions = normalized.isEmpty ? nil : normalized
+        }
+        return true
+    }
+
+    /// Materializes the currently visible policy on first enable; subsequent provider additions
+    /// remain opt-in because these arrays are thereafter explicit.
+    func enableModelRouterWithCurrentPolicy(
+        backendID: AgentTaskRouterBackendID,
+        roles: Set<AgentModelCatalog.TaskLabelKind>,
+        providers: Set<AgentProviderKind>,
+        commit: Bool = true
+    ) {
+        updateModelRouterScalar(commit: commit) { settings in
+            let unknownRoles = (settings.candidateRoleRawValues ?? []).filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && AgentModelCatalog.TaskLabelKind(rawValue: $0) == nil
+            }
+            let unknownProviders = (settings.allowedProviderRawValues ?? []).filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && AgentProviderKind(rawValue: $0) == nil
+            }
+            settings.selectedBackendRawValue = backendID.rawValue
+            settings.candidateRoleRawValues = AgentModelCatalog.TaskLabelKind.allCases
+                .filter(roles.contains)
+                .map(\.rawValue) + unknownRoles
+            settings.allowedProviderRawValues = AgentProviderKind.allCases
+                .filter(providers.contains)
+                .map(\.rawValue) + unknownProviders
+            settings.enabled = true
+        }
     }
 
     @discardableResult
@@ -1669,6 +1928,22 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         }
     }
 
+    private func updateModelRouterScalar(
+        commit: Bool,
+        _ mutation: (inout GlobalScalarPreferences.ModelRouterSettings) -> Void
+    ) {
+        let before = scalarPreferences.modelRouter
+        updateScalarPreferences(commit: false) { preferences in
+            var settings = preferences.modelRouter ?? GlobalScalarPreferences.ModelRouterSettings()
+            mutation(&settings)
+            preferences.modelRouter = settings
+        }
+        if before != scalarPreferences.modelRouter {
+            modelRouterSettingsRevision &+= 1
+        }
+        if commit { save() }
+    }
+
     private func updateTelemetryScalar(
         commit: Bool,
         _ mutation: (inout GlobalScalarPreferences.TelemetrySettings) -> Void
@@ -1833,12 +2108,19 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     ) {
         var repositories = globalDefaults.worktreeVisualIdentitiesByRepositoryID ?? [:]
         var bucket = repositories[repositoryID] ?? WorktreeVisualIdentityRepositoryBucket()
+        let previousLabel = normalizedWorktreeVisualLabel(bucket.identitiesByWorktreeID[worktreeID]?.label)
         bucket.identitiesByWorktreeID[worktreeID] = identity
         repositories[repositoryID] = bucket
         globalDefaults.worktreeVisualIdentitiesByRepositoryID = repositories
         objectWillChange.send()
         if commit {
             save()
+        }
+        // Label only. Color, icon, marker style, and `updatedAt` cannot change any oversight row's
+        // location text, so they must not schedule a repaint. Fired from the live assignment rather
+        // than from `save()`: presentation follows memory, and a revert emits its own refresh.
+        if previousLabel != normalizedWorktreeVisualLabel(identity.label) {
+            AgentSessionLinkLocationInvalidationSink.locationLabelsChanged(inWorkspace: nil)
         }
     }
 
@@ -1911,6 +2193,15 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     /// Builder agent, MCP role overrides, recommendation provider filter) so any change
     /// propagates to every observing window; route all `globalDefaults` mutations through here.
     private func persistGlobalDefaultsChange(before: GlobalDefaults, commit: Bool) {
+        // Direct `globalDefaults` writers (the legacy Context Builder selection setters, reached
+        // from `app_settings` and window settings) bypass profile normalization. Normalization
+        // only *masks* a pin whose model no longer matches, so the stale bucket would survive in
+        // backing state and resurrect if the user later switched back to that model. Re-derive
+        // the buckets through the profile, which is the single owner of the coherence rule —
+        // rather than restating that rule here.
+        let coherent = globalAgentModelsProfile()
+        globalDefaults.mcpAgentRoleModelParameters = coherent.mcpAgentRoleModelParameters
+        globalDefaults.contextBuilderModelParametersByAgent = coherent.contextBuilderModelParametersByAgent
         if before != globalDefaults {
             objectWillChange.send()
         }
@@ -2101,16 +2392,6 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
 
     /// Updates global MCP Agent Mode role-default overrides.
     /// Empty dictionaries are normalized to nil.
-    func updateGlobalMCPAgentRoleOverrides(_ overrides: [String: String]?, commit: Bool = true) {
-        let globalDefaultsBeforeMutation = globalDefaults
-        globalDefaults.mcpAgentRoleOverrides = Self.normalizedMCPAgentRoleOverrides(overrides)
-        let globalDefaultsChanged = globalDefaultsBeforeMutation != globalDefaults
-        persistGlobalDefaultsChange(before: globalDefaultsBeforeMutation, commit: commit)
-        if globalDefaultsChanged {
-            postAgentModelsSettingsDidChange(scope: .global)
-        }
-    }
-
     // MARK: - Recommendation Provider Filter (Global)
 
     /// Returns the global provider filter for recommendation generation. Absence means all providers.
@@ -2203,13 +2484,14 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
 
     private func updateAgentModelsProfile(
         scope: AgentModelsEditingScope,
+        contextBuilderWriteIntent: ContextBuilderSettingsWriteIntent = .preserveExistingOwnership,
         _ mutation: (inout AgentModelsSettingsProfile) -> Void
     ) {
         switch scope {
         case .global:
             var profile = globalAgentModelsProfile()
             mutation(&profile)
-            setGlobalAgentModelsProfile(profile, contextBuilderWriteIntent: .preserveExistingOwnership)
+            setGlobalAgentModelsProfile(profile, contextBuilderWriteIntent: contextBuilderWriteIntent)
         case let .workspace(workspaceID):
             var settings = agentModelsSettingsByWorkspaceID[workspaceID] ?? WorkspaceAgentModelsSettings(
                 inheritanceMode: .useWorkspaceOverrides,
@@ -2237,12 +2519,15 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     private func normalizedAgentModelsProfile(_ profile: AgentModelsSettingsProfile) -> AgentModelsSettingsProfile {
         var normalized = AgentModelsSettingsProfile(
             planningModelRaw: profile.planningModelRaw,
+            additionalOracleModelRaws: profile.additionalOracleModelRaws,
             preferredComposeModelRaw: profile.preferredComposeModelRaw,
             syncChatModelWithOracle: profile.syncChatModelWithOracle,
             contextBuilderAgentRaw: profile.contextBuilderAgentRaw,
             contextBuilderModelsByAgent: profile.contextBuilderModelsByAgent,
             mcpAgentRoleOverrides: profile.mcpAgentRoleOverrides,
-            restrictMCPAgentDiscoveryToRoleLabels: profile.restrictMCPAgentDiscoveryToRoleLabels
+            restrictMCPAgentDiscoveryToRoleLabels: profile.restrictMCPAgentDiscoveryToRoleLabels,
+            mcpAgentRoleModelParameters: profile.mcpAgentRoleModelParameters,
+            contextBuilderModelParametersByAgent: profile.contextBuilderModelParametersByAgent
         )
         if let invalidReason = invalidSynchronizedProfileReason(normalized) {
             invalidAgentModelsProfileAssertion(
@@ -2298,6 +2583,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         let contextBuilderModelRaw = profile.contextBuilderAgentRaw.flatMap { profile.contextBuilderModelsByAgent?[$0] }
         return [
             "planning=\(profile.planningModelRaw ?? "nil")",
+            "additionalOracles=\(profile.additionalOracleModelRaws.joined(separator: ","))",
             "compose=\(profile.preferredComposeModelRaw ?? "nil")",
             "sync=\(profile.syncChatModelWithOracle)",
             "contextBuilder=\(profile.contextBuilderAgentRaw ?? "nil"):\(contextBuilderModelRaw ?? "nil")",
@@ -2342,6 +2628,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             }
         }
         let document = loadedExistingDocument ?? fileStore.loadOrCreateDefault()
+        let needsSchemaVersionUpgrade = document.requiredSchemaVersion > document.schemaVersion
         copySettings = document.copySettings
         let migratedContextBuilderState = Self.migratingLegacyContextBuilderState(
             chatSettings: document.chatSettings,
@@ -2360,7 +2647,10 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
         codeMapsGloballyDisabled = globalDefaults.codeMapsGloballyDisabled ?? false
         persistenceBlockReason = fileStore.blockReason
         if persistenceBlockReason == nil,
-           migratedContextBuilderState.didChange || seededFileSystemDefaults || disabledInvalidSync
+           migratedContextBuilderState.didChange
+           || seededFileSystemDefaults
+           || disabledInvalidSync
+           || needsSchemaVersionUpgrade
         {
             saveStartupMigration(includeModelSelectionRepair: disabledInvalidSync)
         }
@@ -2379,15 +2669,23 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
 
     /// User-initiated recovery when `persistenceBlockReason` is non-nil. The file store backs
     /// up the offending on-disk file, writes the current in-memory settings as a fresh
-    /// current-schema document, and clears the block; this method then re-reads state so the
-    /// store and observers refresh.
+    /// current-schema document, and clears the block on success. A failed replacement keeps
+    /// the current in-memory document and the file store's blocked state intact.
     /// Returns true only when recovery completed successfully.
     @discardableResult
     func recoverBlockedPersistenceAfterBackup() -> Bool {
-        let backedUp = fileStore.performUserInitiatedRecovery(replacementDocument: makeDocument())
+        let recovered = fileStore.performUserInitiatedRecovery(replacementDocument: makeDocument())
         objectWillChange.send()
-        load(notifyAgentModelsChanges: true)
-        return backedUp
+        if recovered {
+            load(notifyAgentModelsChanges: true)
+        } else {
+            // Recovery may have moved the original file before its replacement write failed.
+            // Do not reload a missing primary file: that would install and persist defaults.
+            // Keep the live document intact and surface the store's actionable blocked state so
+            // the user can retry the intended settings after fixing the underlying failure.
+            persistenceBlockReason = fileStore.blockReason
+        }
+        return recovered
     }
 
     /// User-initiated compatible import from a blocked newer/different-schema settings file.
@@ -2409,7 +2707,20 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
     /// backing up or resetting the user's settings. Returns true when persistence is unblocked.
     @discardableResult
     func retryBlockedPersistenceSave() -> Bool {
-        save()
+        // Reload is an explicit, separate action: never overwrite another writer or
+        // persist provisional defaults through the generic save retry.
+        guard persistenceBlockReason != .changedOnDisk,
+              persistenceBlockReason != .missingOnDisk,
+              persistenceBlockReason != .loadFailed
+        else {
+            return false
+        }
+        if fileStore.hasPendingStartupMigration {
+            return persist {
+                try fileStore.retryStartupMigrationPreservingUnknownFields(makeDocument())
+            }
+        }
+        return save()
     }
 
     @discardableResult
@@ -2418,6 +2729,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             let oldGlobalProfile = globalAgentModelsProfile()
             let oldWorkspaceSettings = agentModelsSettingsByWorkspaceID
             let document = try fileStore.load()
+            let needsSchemaVersionUpgrade = document.requiredSchemaVersion > document.schemaVersion
             objectWillChange.send()
             copySettings = document.copySettings
             let migratedContextBuilderState = Self.migratingLegacyContextBuilderState(
@@ -2435,7 +2747,10 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             codeMapsGloballyDisabled = globalDefaults.codeMapsGloballyDisabled ?? false
             persistenceBlockReason = fileStore.blockReason
             if persistenceBlockReason == nil,
-               migratedContextBuilderState.didChange || seededFileSystemDefaults || disabledInvalidSync
+               migratedContextBuilderState.didChange
+               || seededFileSystemDefaults
+               || disabledInvalidSync
+               || needsSchemaVersionUpgrade
             {
                 saveStartupMigration(includeModelSelectionRepair: disabledInvalidSync)
             }
@@ -2551,13 +2866,17 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             let behavior = legacyContextBuilderBehaviorSettings(chatSettings: chatSettings)
             migratedScalarPreferences.contextBuilder = GlobalScalarPreferences.ContextBuilderSettings(
                 contextTokenBudget: behavior.contextTokenBudget,
-                analysisTokenBudget: behavior.analysisTokenBudget,
+                analysisTokenBudget: ContextBuilderDefaults.normalizedAnalysisTokenBudget(behavior.analysisTokenBudget),
                 enhancementMode: behavior.enhancementMode.rawValue,
                 questionTimeoutSeconds: behavior.questionTimeoutSeconds,
                 allowUIClarifyingQuestions: behavior.allowUIClarifyingQuestions,
                 allowMCPClarifyingQuestions: behavior.allowMCPClarifyingQuestions,
                 followUpAnalysisEnabled: behavior.followUpAnalysisEnabled
             )
+        }
+        if let analysisTokenBudget = migratedScalarPreferences.contextBuilder?.analysisTokenBudget {
+            migratedScalarPreferences.contextBuilder?.analysisTokenBudget =
+                ContextBuilderDefaults.normalizedAnalysisTokenBudget(analysisTokenBudget)
         }
 
         let migratedChatSettings = removingLegacyWorkspaceContextBuilderState(from: chatSettings)

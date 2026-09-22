@@ -10,6 +10,8 @@ enum AgentPermissionSecureDomain: String, CaseIterable, Hashable {
     case openCode
     case cursor
     case grokBuild
+    case antigravity
+    case devin
 
     var secureStorageAccount: SecureStorageAccount {
         switch self {
@@ -25,6 +27,10 @@ enum AgentPermissionSecureDomain: String, CaseIterable, Hashable {
             .agentPermissionCursorDocument
         case .grokBuild:
             .agentPermissionGrokBuildDocument
+        case .antigravity:
+            .agentPermissionAntigravityDocument
+        case .devin:
+            .agentPermissionDevinDocument
         }
     }
 
@@ -309,6 +315,61 @@ struct SecureGrokBuildPermissionDocument: Codable, Equatable {
     }
 }
 
+struct SecureDevinPermissionDocument: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var updatedAt: Date
+    var permissionLevelRaw: String?
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        updatedAt: Date = Date(),
+        permissionLevelRaw: String? = DevinAgentToolPreferences.PermissionLevel.providerDefault.rawValue
+    ) {
+        self.schemaVersion = schemaVersion
+        self.updatedAt = updatedAt
+        self.permissionLevelRaw = permissionLevelRaw
+    }
+
+    static func failClosedDocument(now: Date = Date()) -> SecureDevinPermissionDocument {
+        SecureDevinPermissionDocument(
+            updatedAt: now,
+            permissionLevelRaw: DevinAgentToolPreferences.PermissionLevel.normal.rawValue
+        )
+    }
+
+    func permissionLevel() -> DevinAgentToolPreferences.PermissionLevel {
+        DevinAgentToolPreferences.PermissionLevel.from(rawValue: permissionLevelRaw)
+    }
+}
+
+struct SecureAntigravityPermissionDocument: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var updatedAt: Date
+    var permissionLevelRaw: String?
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        updatedAt: Date = Date(),
+        permissionLevelRaw: String? = AntigravityAgentToolPreferences.PermissionLevel.autoEdit.rawValue
+    ) {
+        self.schemaVersion = schemaVersion
+        self.updatedAt = updatedAt
+        self.permissionLevelRaw = permissionLevelRaw
+    }
+
+    static func failClosedDocument(now: Date = Date()) -> SecureAntigravityPermissionDocument {
+        SecureAntigravityPermissionDocument(updatedAt: now)
+    }
+
+    func permissionLevel() -> AntigravityAgentToolPreferences.PermissionLevel {
+        AntigravityAgentToolPreferences.PermissionLevel.from(rawValue: permissionLevelRaw)
+    }
+}
+
 final class AgentPermissionSecureStore {
     static let shared = AgentPermissionSecureStore(secureStrings: SecureKeysService())
 
@@ -325,6 +386,8 @@ final class AgentPermissionSecureStore {
     private var openCodeCache: SecureOpenCodePermissionDocument?
     private var cursorCache: SecureCursorPermissionDocument?
     private var grokBuildCache: SecureGrokBuildPermissionDocument?
+    private var antigravityCache: SecureAntigravityPermissionDocument?
+    private var devinCache: SecureDevinPermissionDocument?
     private var diagnosticsByDomain: [AgentPermissionSecureDomain: AgentPermissionStorageDiagnostic] = [:]
     private let permissionDecisionAccessMode: KeychainAccessMode = .nonInteractive(reason: .permissionDecision)
 
@@ -373,6 +436,8 @@ final class AgentPermissionSecureStore {
             openCodeCache = nil
             cursorCache = nil
             grokBuildCache = nil
+            antigravityCache = nil
+            devinCache = nil
         }
     }
 
@@ -414,6 +479,14 @@ final class AgentPermissionSecureStore {
             var grokBuild = SecureGrokBuildPermissionDocument.failClosedDocument(now: resetDate)
             _ = normalizeGrokBuild(&grokBuild)
             record(.grokBuild, resetLocked(grokBuild, domain: .grokBuild, cache: &grokBuildCache, deferred: &effects))
+
+            var antigravity = SecureAntigravityPermissionDocument.failClosedDocument(now: resetDate)
+            _ = normalizeAntigravity(&antigravity)
+            record(.antigravity, resetLocked(antigravity, domain: .antigravity, cache: &antigravityCache, deferred: &effects))
+
+            var devin = SecureDevinPermissionDocument.failClosedDocument(now: resetDate)
+            _ = normalizeDevin(&devin)
+            record(.devin, resetLocked(devin, domain: .devin, cache: &devinCache, deferred: &effects))
 
             return AgentPermissionStorageResetResult(
                 succeededDomains: succeededDomains,
@@ -465,6 +538,18 @@ final class AgentPermissionSecureStore {
     func grokBuildPermissions() -> SecureGrokBuildPermissionDocument {
         withLockAndDeferredSideEffects { effects in
             loadGrokBuildPermissionsLocked(deferred: &effects)
+        }
+    }
+
+    func antigravityPermissions() -> SecureAntigravityPermissionDocument {
+        withLockAndDeferredSideEffects { effects in
+            loadAntigravityPermissionsLocked(deferred: &effects)
+        }
+    }
+
+    func devinPermissions() -> SecureDevinPermissionDocument {
+        withLockAndDeferredSideEffects { effects in
+            loadDevinPermissionsLocked(deferred: &effects)
         }
     }
 
@@ -537,6 +622,17 @@ final class AgentPermissionSecureStore {
     }
 
     @discardableResult
+    func updateAntigravityPermissions(_ mutation: (inout SecureAntigravityPermissionDocument) -> Void) -> Bool {
+        withLockAndDeferredSideEffects { effects in
+            var document = loadAntigravityPermissionsLocked(deferred: &effects)
+            mutation(&document)
+            normalizeAntigravity(&document)
+            document.updatedAt = now()
+            return saveLocked(document, domain: .antigravity, cache: &antigravityCache, deferred: &effects)
+        }
+    }
+
+    @discardableResult
     func setCodexPermissionLevel(_ level: CodexAgentToolPreferences.PermissionLevel) -> Bool {
         updateCodexPermissions { document in
             document.approvalPolicyRaw = level.approvalPolicy.persistedValue
@@ -569,6 +665,31 @@ final class AgentPermissionSecureStore {
     @discardableResult
     func setGrokBuildPermissionLevel(_ level: GrokBuildAgentToolPreferences.PermissionLevel) -> Bool {
         updateGrokBuildPermissions { document in
+            document.permissionLevelRaw = level.rawValue
+        }
+    }
+
+    @discardableResult
+    func setAntigravityPermissionLevel(_ level: AntigravityAgentToolPreferences.PermissionLevel) -> Bool {
+        updateAntigravityPermissions { document in
+            document.permissionLevelRaw = level.rawValue
+        }
+    }
+
+    @discardableResult
+    func updateDevinPermissions(_ mutation: (inout SecureDevinPermissionDocument) -> Void) -> Bool {
+        withLockAndDeferredSideEffects { effects in
+            var document = loadDevinPermissionsLocked(deferred: &effects)
+            mutation(&document)
+            normalizeDevin(&document)
+            document.updatedAt = now()
+            return saveLocked(document, domain: .devin, cache: &devinCache, deferred: &effects)
+        }
+    }
+
+    @discardableResult
+    func setDevinPermissionLevel(_ level: DevinAgentToolPreferences.PermissionLevel) -> Bool {
+        updateDevinPermissions { document in
             document.permissionLevelRaw = level.rawValue
         }
     }
@@ -632,6 +753,27 @@ final class AgentPermissionSecureStore {
             cache: &grokBuildCache,
             failClosedDocument: SecureGrokBuildPermissionDocument.failClosedDocument(now: now()),
             normalize: normalizeGrokBuild,
+            deferred: &effects
+        )
+    }
+
+    private func loadAntigravityPermissionsLocked(deferred effects: inout DeferredSideEffects) -> SecureAntigravityPermissionDocument {
+        loadLocked(
+            domain: .antigravity,
+            cache: &antigravityCache,
+            failClosedDocument: SecureAntigravityPermissionDocument.failClosedDocument(now: now()),
+            normalize: normalizeAntigravity,
+            deferred: &effects
+        )
+    }
+
+    private func loadDevinPermissionsLocked(deferred effects: inout DeferredSideEffects) -> SecureDevinPermissionDocument {
+        loadLocked(
+            domain: .devin,
+            cache: &devinCache,
+            missingDocument: SecureDevinPermissionDocument(updatedAt: now()),
+            failClosedDocument: SecureDevinPermissionDocument.failClosedDocument(now: now()),
+            normalize: normalizeDevin,
             deferred: &effects
         )
     }
@@ -971,6 +1113,36 @@ final class AgentPermissionSecureStore {
         return changed
     }
 
+    @discardableResult
+    private func normalizeAntigravity(_ document: inout SecureAntigravityPermissionDocument) -> Bool {
+        var changed = false
+        if document.schemaVersion != SecureAntigravityPermissionDocument.currentSchemaVersion {
+            document.schemaVersion = SecureAntigravityPermissionDocument.currentSchemaVersion
+            changed = true
+        }
+        let level = AntigravityAgentToolPreferences.PermissionLevel.from(rawValue: document.permissionLevelRaw)
+        if document.permissionLevelRaw != level.rawValue {
+            document.permissionLevelRaw = level.rawValue
+            changed = true
+        }
+        return changed
+    }
+
+    @discardableResult
+    private func normalizeDevin(_ document: inout SecureDevinPermissionDocument) -> Bool {
+        var changed = false
+        if document.schemaVersion != SecureDevinPermissionDocument.currentSchemaVersion {
+            document.schemaVersion = SecureDevinPermissionDocument.currentSchemaVersion
+            changed = true
+        }
+        let level = DevinAgentToolPreferences.PermissionLevel.from(rawValue: document.permissionLevelRaw)
+        if document.permissionLevelRaw != level.rawValue {
+            document.permissionLevelRaw = level.rawValue
+            changed = true
+        }
+        return changed
+    }
+
     // MARK: - Helpers
 
     private func supportedSchemaVersion(of document: some Any) -> Int {
@@ -987,6 +1159,10 @@ final class AgentPermissionSecureStore {
             SecureCursorPermissionDocument.currentSchemaVersion
         case _ as SecureGrokBuildPermissionDocument:
             SecureGrokBuildPermissionDocument.currentSchemaVersion
+        case _ as SecureAntigravityPermissionDocument:
+            SecureAntigravityPermissionDocument.currentSchemaVersion
+        case _ as SecureDevinPermissionDocument:
+            SecureDevinPermissionDocument.currentSchemaVersion
         default:
             1
         }
@@ -1005,6 +1181,10 @@ final class AgentPermissionSecureStore {
         case let value as SecureCursorPermissionDocument:
             value.schemaVersion
         case let value as SecureGrokBuildPermissionDocument:
+            value.schemaVersion
+        case let value as SecureAntigravityPermissionDocument:
+            value.schemaVersion
+        case let value as SecureDevinPermissionDocument:
             value.schemaVersion
         default:
             1
@@ -1025,6 +1205,10 @@ final class AgentPermissionSecureStore {
             SecureCursorPermissionDocument.failClosedDocument(now: now())
         case .grokBuild:
             SecureGrokBuildPermissionDocument.failClosedDocument(now: now())
+        case .antigravity:
+            SecureAntigravityPermissionDocument.failClosedDocument(now: now())
+        case .devin:
+            SecureDevinPermissionDocument.failClosedDocument(now: now())
         }
     }
 

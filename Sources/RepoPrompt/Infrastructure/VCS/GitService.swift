@@ -864,7 +864,7 @@ actor GitService {
                         #endif
                         parentEvidence = (reusableEvidence.lease, reusableEvidence.snapshot, targetTree)
                         if let stableWatchRootURL = mutationRequest.appManagedContainer {
-                            witnessSession = creationReceiptCoordinator.start(
+                            witnessSession = await creationReceiptCoordinator.start(
                                 destinationURL: mutationRequest.path,
                                 stableWatchRootURL: stableWatchRootURL
                             )
@@ -953,7 +953,10 @@ actor GitService {
                             targetLayout = nil
                         }
                     #endif
-                    var witnessCoverage = witnessSession.map(creationReceiptCoordinator.finish)
+                    var witnessCoverage: GitWorktreeCreationWitnessCoverage?
+                    if let activeWitnessSession = witnessSession {
+                        witnessCoverage = await creationReceiptCoordinator.finish(activeWitnessSession)
+                    }
                     witnessSession = nil
                     #if DEBUG
                         if consumeReceiptCreationFailureForTesting(
@@ -1170,7 +1173,11 @@ actor GitService {
                         initializationFallbackReason: initializationFallbackReason
                     )
                 } catch is CancellationError {
-                    let witnessCoverage = witnessSession.map(creationReceiptCoordinator.finish)
+                    let witnessCoverage: GitWorktreeCreationWitnessCoverage? = if let activeWitnessSession = witnessSession {
+                        await creationReceiptCoordinator.finish(activeWitnessSession)
+                    } else {
+                        nil
+                    }
                     if let mutationToken {
                         await workspaceStateAuthority.finishMutation(mutationToken, outcome: .cancelled)
                     }
@@ -1190,7 +1197,11 @@ actor GitService {
                     #endif
                     throw CancellationError()
                 } catch {
-                    let witnessCoverage = witnessSession.map(creationReceiptCoordinator.finish)
+                    let witnessCoverage: GitWorktreeCreationWitnessCoverage? = if let activeWitnessSession = witnessSession {
+                        await creationReceiptCoordinator.finish(activeWitnessSession)
+                    } else {
+                        nil
+                    }
                     if let mutationToken {
                         await workspaceStateAuthority.finishMutation(mutationToken, outcome: .failed)
                     }
@@ -1591,6 +1602,16 @@ actor GitService {
         else { return nil }
         let includeURL = sourceRepoURL.appendingPathComponent(".worktreeinclude", isDirectory: false)
         guard FileManager.default.fileExists(atPath: includeURL.path) else { return nil }
+        let physicalMutationCapability = try await MCPDomainMutationCommitContext.physicalMutationCapability()
+        if MCPDomainMutationCommitContext.controller != nil, physicalMutationCapability == nil {
+            return GitWorktreeIncludeCopyResult(
+                copiedCount: 0,
+                matchedCount: 0,
+                errorSummaries: [
+                    "protected .worktreeinclude copying is unsupported without a descriptor-backed capability"
+                ]
+            )
+        }
         let physicalMutationGuard = try await MCPDomainMutationCommitContext.physicalMutationGuard()
 
         do {
@@ -8039,23 +8060,15 @@ actor GitService {
             )
         }
 
-        let worktreeRecords = aliasResolution.records.map(\.record)
-        let layoutsByPath: [String: GitRepositoryLayout] = Dictionary(
-            uniqueKeysWithValues: aliasResolution.records.compactMap { resolvedRecord in
-                resolvedRecord.layout.map { (resolvedRecord.pathURL.path, $0) }
-            }
-        )
-
         let commonGitDir = currentLayout?.commonDir
-            ?? layoutsByPath.values.first?.commonDir
+            ?? aliasResolution.records.lazy.compactMap(\.layout).first?.commonDir
         guard let commonGitDir else {
             throw GitError(message: "git worktree list succeeded but repository layout could not be resolved")
         }
 
-        let discoveredMainRoot = worktreeRecords.first { record in
-            let path = URL(fileURLWithPath: record.path).standardizedFileURL.path
-            return layoutsByPath[path].map { !$0.isLinkedWorktree } ?? false
-        }.map { URL(fileURLWithPath: $0.path).standardizedFileURL }
+        let discoveredMainRoot = aliasResolution.records.first { resolvedRecord in
+            resolvedRecord.layout.map { !$0.isLinkedWorktree } ?? false
+        }.map(\.pathURL)
         let mainURL = resolvedMainRoot ?? discoveredMainRoot
         let repository = GitWorktreeIdentity.repositoryIdentity(
             commonGitDir: commonGitDir,
@@ -8063,10 +8076,11 @@ actor GitService {
         )
         let currentPath = currentRepoURL.standardizedFileURL.path
 
-        return worktreeRecords.map { record in
-            let pathURL = URL(fileURLWithPath: record.path).standardizedFileURL
+        return aliasResolution.records.map { resolvedRecord in
+            let record = resolvedRecord.record
+            let pathURL = resolvedRecord.pathURL
             let path = pathURL.path
-            let layout = layoutsByPath[path]
+            let layout = resolvedRecord.layout
             let gitDir = layout?.gitDir.standardizedFileURL
             let isMain: Bool = if let layout {
                 !layout.isLinkedWorktree
