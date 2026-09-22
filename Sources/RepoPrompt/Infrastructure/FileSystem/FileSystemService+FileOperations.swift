@@ -215,6 +215,9 @@ extension FileSystemService {
 
     private func finishMutationAuthority(_ id: UUID) {
         guard inFlightMutations.removeValue(forKey: id) != nil else { return }
+        // A read may start after reservation but observe the pre-mutation bytes.
+        // Do not let that read replace encoding evidence installed by reconciliation.
+        contentReadCacheRevision &+= 1
         #if DEBUG
             completedMutationMonitorCountForTesting += 1
         #endif

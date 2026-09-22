@@ -18095,6 +18095,7 @@ actor WorkspaceFileContextStore {
             case missingFilePruneFence
             case explicitManagedRegistration
             case codemapCleanupWait
+            case canonicalCompactionRevalidation
         }
     #endif
 
@@ -18453,6 +18454,12 @@ actor WorkspaceFileContextStore {
     ) async throws -> Bool {
         guard observations.count == bindings.count else { return false }
         for (binding, observation) in zip(bindings, observations) {
+            #if DEBUG
+                await awaitExactFileSuspensionGateForTesting(
+                    point: .canonicalCompactionRevalidation,
+                    rootID: observation.rootID
+                )
+            #endif
             guard observation.rootID == binding.lookupRoot.id,
                   let state = rootStatesByID[observation.rootID],
                   state.lifetimeID == observation.rootLifetimeID,
@@ -18611,6 +18618,7 @@ actor WorkspaceFileContextStore {
               currentRecord.id == file.id,
               currentRecord.standardizedFullPath == file.standardizedFullPath
         else { return nil }
+        var canUseRelativeToken = false
         if candidates.matches.count == 1,
            candidates.matches[0].file?.id == file.id,
            !candidates.blocked,
@@ -18622,6 +18630,19 @@ actor WorkspaceFileContextStore {
            ),
            exactRelativeTokenIsStructurallySafe(file, namespace: namespace)
         {
+            canUseRelativeToken = true
+        }
+        // Observation revalidation suspends. Its failure may represent target turnover,
+        // not merely a peer collision that can safely fall back to an explicit token.
+        try Task.checkCancellation()
+        guard let finalState = rootStatesByID[file.rootID],
+              finalState.lifetimeID == expectedLifetimeID,
+              finalState.service === initialState.service,
+              let finalRecord = self.file(rootID: file.rootID, relativePath: file.standardizedRelativePath),
+              finalRecord.id == file.id,
+              finalRecord.standardizedFullPath == file.standardizedFullPath
+        else { return nil }
+        if canUseRelativeToken {
             return WorkspaceExactExistingFileMatch(file: file, canonicalPath: file.standardizedRelativePath)
         }
         guard let binding = namespace.binding(lookupRootID: file.rootID) else {

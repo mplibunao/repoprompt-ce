@@ -982,7 +982,7 @@ final class ContentReadCancellationTests: XCTestCase {
         }
         let isManagedOnly = await store.isManagedOnlyFileForTesting(file.id)
         XCTAssertFalse(isManagedOnly)
-        XCTAssertEqual(probeCount.snapshot(), 1)
+        XCTAssertEqual(probeCount.snapshot(), 2)
     }
 
     func testExplicitMaterializationRejectsRootTurnoverDuringPolicyRevalidation() async throws {
@@ -1056,6 +1056,49 @@ final class ContentReadCancellationTests: XCTestCase {
             return XCTFail("Materialization did not settle after initial-eligibility root turnover")
         }
         XCTAssertEqual(try materializationResult.get(), .unavailable)
+    }
+
+    func testCanonicalCompactionRejectsTargetTurnoverDuringRevalidation() async throws {
+        let rootURL = try makeTemporaryRoot()
+        try "cataloged target\n".write(
+            to: rootURL.appendingPathComponent("Target.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(path: rootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let revalidationEntered = AsyncSignal()
+        let releaseRevalidation = AsyncSignal()
+        await store.setExactFileSuspensionGateForTesting(
+            point: .canonicalCompactionRevalidation,
+            rootID: root.id
+        ) {
+            await revalidationEntered.signal()
+            await releaseRevalidation.wait()
+        }
+        let resolutionTask = Task {
+            try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse("Target.swift"),
+                namespace: WorkspaceExactFileNamespace.identity(roots: roots)
+            )
+        }
+        addTeardownBlock {
+            await releaseRevalidation.signal()
+            resolutionTask.cancel()
+            await store.clearExactFileCandidateProbeGateForTesting()
+            let result = await self.waitForTaskResult(resolutionTask)
+            XCTAssertNotNil(result)
+        }
+        guard await waitUntil({ await revalidationEntered.isSignaledSnapshot() }) else {
+            return XCTFail("Compaction did not reach observation revalidation")
+        }
+        try await store.replaceRootLifetimeForTesting(rootID: root.id)
+        await releaseRevalidation.signal()
+        guard let result = await waitForTaskResult(resolutionTask) else {
+            return XCTFail("Compaction did not settle after target turnover")
+        }
+        XCTAssertEqual(try result.get(), .issue(.unresolved(input: "Target.swift")))
     }
 
     func testExactCandidatesRejectUncataloguedEligibilityAfterRootTurnover() async throws {
@@ -1267,7 +1310,7 @@ final class ContentReadCancellationTests: XCTestCase {
             .map(\.id)
         XCTAssertEqual(missingRootIDs.count, 2)
 
-        let physicalReadGates = PeriodicPhysicalReadGates(interval: 2, count: 2)
+        let physicalReadGates = PeriodicPhysicalReadGates(interval: 3, count: 2)
         let physicalReadHandler: @Sendable () -> Void = {
             physicalReadGates.reachNextProbe()
         }
@@ -1464,7 +1507,7 @@ final class ContentReadCancellationTests: XCTestCase {
             .map(\.id)
         XCTAssertEqual(missingRootIDs.count, 2)
 
-        let physicalReadGates = PeriodicPhysicalReadGates(interval: 3, count: 2)
+        let physicalReadGates = PeriodicPhysicalReadGates(interval: 2, count: 2)
         let physicalReadHandler: @Sendable () -> Void = {
             physicalReadGates.reachNextProbe()
         }
@@ -2091,6 +2134,71 @@ final class ContentReadCancellationTests: XCTestCase {
         let cachedEncoding = await service.cachedEncodingForTesting(relativePath: "Target.swift")
         XCTAssertNotNil(cachedEncoding)
         XCTAssertTrue(afterReadSnapshot.isIdle)
+    }
+
+    func testReadStartedDuringMutationCannotReplaceReconciledEncoding() async throws {
+        let rootURL = try makeTemporaryRoot()
+        let targetURL = rootURL.appendingPathComponent("Target.swift")
+        let originalContents = "old UTF-16 content\n"
+        try originalContents.write(to: targetURL, atomically: true, encoding: .utf16)
+        let service = try await FileSystemService(path: rootURL.path)
+        let mutationEntered = AsyncSignal()
+        let releaseMutation = AsyncSignal()
+        let cacheCommitEntered = AsyncSignal()
+        let releaseCacheCommit = AsyncSignal()
+        await service.setMutationIOWillBeginHandlerForTesting { _ in
+            await mutationEntered.signal()
+            await releaseMutation.wait()
+        }
+        await service.setContentReadCacheCommitHandlerForTesting {
+            await cacheCommitEntered.signal()
+            await releaseCacheCommit.wait()
+        }
+        let mutationTask = Task {
+            try await service.createFile(
+                atRelativePath: "Target.swift",
+                content: "replacement UTF-8 content\n",
+                overwrite: true
+            )
+        }
+        addTeardownBlock {
+            await releaseMutation.signal()
+            await releaseCacheCommit.signal()
+            mutationTask.cancel()
+            await service.setMutationIOWillBeginHandlerForTesting(nil)
+            await service.setContentReadCacheCommitHandlerForTesting(nil)
+            let result = await self.waitForTaskResult(mutationTask)
+            XCTAssertNotNil(result)
+        }
+        guard await waitUntil({ await mutationEntered.isSignaledSnapshot() }) else {
+            return XCTFail("Overwrite did not reach its reserved pre-I/O boundary")
+        }
+        let readTask = Task {
+            try await service.loadContent(ofRelativePath: "Target.swift", workloadClass: .interactiveRead)
+        }
+        addTeardownBlock {
+            await releaseCacheCommit.signal()
+            readTask.cancel()
+            let result = await self.waitForTaskResult(readTask)
+            XCTAssertNotNil(result)
+        }
+        guard await waitUntil({ await cacheCommitEntered.isSignaledSnapshot() }) else {
+            return XCTFail("Read did not capture pre-overwrite encoding evidence")
+        }
+        await releaseMutation.signal()
+        guard let mutationResult = await waitForTaskResult(mutationTask) else {
+            return XCTFail("Overwrite did not reconcile while the read was paused")
+        }
+        try mutationResult.get()
+        let reconciledEncoding = await service.cachedEncodingForTesting(relativePath: "Target.swift")
+        XCTAssertEqual(reconciledEncoding, .utf8)
+        await releaseCacheCommit.signal()
+        guard let readResult = await waitForTaskResult(readTask) else {
+            return XCTFail("Read did not settle after cache commit was released")
+        }
+        XCTAssertEqual(try readResult.get(), originalContents)
+        let finalEncoding = await service.cachedEncodingForTesting(relativePath: "Target.swift")
+        XCTAssertEqual(finalEncoding, .utf8)
     }
 
     func testCacheCommitRejectsInvalidationAfterFinalFingerprint() async throws {
