@@ -32,7 +32,7 @@ make dev-run    # coordinated build, package, stop existing RepoPrompt, and laun
 
 `make dev-run` routes through the developer daemon (see "Developer daemon / coordinated validation") and remains the ordinary FIFO coordinated launch path. For a user-directed newest lifecycle action, use `./conductor app relaunch`; the Finder launcher uses that operation when `python3` is available. The uncoordinated equivalents are `make run` or `./Scripts/run.sh`.
 
-Debug packaging may auto-detect an Apple Development signing identity for a valid local app signature, but auto-detected debug signing still uses ephemeral in-memory secure storage to avoid macOS Keychain prompts. Set an explicit `SIGN_IDENTITY="Apple Development: ..."` to opt in to persistent debug Keychain storage; `DEBUG_SECURE_STORAGE_BACKEND=keychain` is also supported for explicit debug storage opt-in when the signed app has a TeamIdentifier. If no stable identity is available, set `ALLOW_ADHOC_SIGNING=1` to build an ad-hoc debug app; ad-hoc debug builds use ephemeral in-memory secure storage, so API keys and secure permission changes do not persist across launches. Release packaging requires `SIGN_IDENTITY` and continues to use real Keychain storage.
+Debug packaging may auto-detect an Apple Development signing identity for a valid local app signature and persistent, team-isolated Keychain storage. Set `DEBUG_SECURE_STORAGE_BACKEND=alternate-in-memory` to opt out of persistence for a signed debug build. If no stable identity is available, set `ALLOW_ADHOC_SIGNING=1` to build an ad-hoc debug app; ad-hoc debug builds use ephemeral in-memory secure storage, so API keys and secure permission changes do not persist across launches. Release packaging requires `SIGN_IDENTITY` and continues to use real Keychain storage.
 
 ## Debug
 
@@ -214,7 +214,7 @@ These do not claim daemon lanes or lifecycle supersession, so when multiple agen
 
 ## Source placement rules
 
-See `docs/architecture/source-layout.md` for the full ownership map and documented exceptions, and `docs/architecture/provider-plugins.md` for the Agent Mode provider plugin seam (Claude-compatible package, bridge/adapter layout, "add a new provider" recipe). In short:
+See `docs/architecture/source-layout.md` for the full ownership map and documented exceptions, and `docs/architecture/provider-plugins.md` for the Agent Mode provider plugin seam (Claude-compatible package, bridge/adapter layout, "add a new provider" recipe). Before changing Agent Mode cross-session oversight, read [`docs/architecture/agent-session-oversight-auto-wake.md`](docs/architecture/agent-session-oversight-auto-wake.md): it records the four disjoint owners, why a snooze suppresses admission but never delivery, and why the `.cancelledBeforeDispatch` tombstone is a transport fence whose dependency lives in a different file. In short:
 
 - The shipped `RepoPrompt` executable target lives under `Sources/RepoPromptExecutable` and must remain a one-file entry shell over the internal `RepoPromptApp` target; do not add implementation code there.
 - Product-flow code goes under `Sources/RepoPrompt/Features/<FeatureName>`.

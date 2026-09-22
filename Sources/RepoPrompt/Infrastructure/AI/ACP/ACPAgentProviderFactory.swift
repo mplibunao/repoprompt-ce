@@ -46,6 +46,16 @@ enum ACPAgentProviderFactory {
                     apiKey: grokAPIKeyProvider()
                 )
             )
+        case .antigravity:
+            AntigravityACPAgentProvider()
+        case .devin:
+            // No permission input here: the per-run `ACPRunRequest.launchPermissionMode`
+            // already reflects the effective profile and is authoritative.
+            DevinACPAgentProvider(
+                config: DevinAgentConfig(
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging
+                )
+            )
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .codexExec:
             nil
         }

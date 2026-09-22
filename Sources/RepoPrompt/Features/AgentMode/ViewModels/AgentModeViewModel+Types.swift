@@ -504,6 +504,8 @@ extension AgentModeViewModel {
         let sessionID: UUID?
         let origin: Origin
         let lifecycleIdentity: AgentSessionLifecycleAuthority.Identity?
+        let recoveryClaim: AgentProvisionalAdmissionClaim?
+        let discardAuthorityID: UUID?
         let discardRestoreIndexEntry: AgentSessionIndexEntry?
 
         init(
@@ -511,14 +513,35 @@ extension AgentModeViewModel {
             sessionID: UUID?,
             origin: Origin,
             lifecycleIdentity: AgentSessionLifecycleAuthority.Identity? = nil,
+            recoveryClaim: AgentProvisionalAdmissionClaim? = nil,
+            discardAuthorityID: UUID? = nil,
             discardRestoreIndexEntry: AgentSessionIndexEntry? = nil
         ) {
             self.tabID = tabID
             self.sessionID = sessionID
             self.origin = origin
             self.lifecycleIdentity = lifecycleIdentity
+            self.recoveryClaim = recoveryClaim
+            self.discardAuthorityID = discardAuthorityID
             self.discardRestoreIndexEntry = discardRestoreIndexEntry
         }
+
+        func withDiscardAuthorityID(_ discardAuthorityID: UUID) -> MCPSessionTarget {
+            MCPSessionTarget(
+                tabID: tabID,
+                sessionID: sessionID,
+                origin: origin,
+                lifecycleIdentity: lifecycleIdentity,
+                recoveryClaim: recoveryClaim,
+                discardAuthorityID: discardAuthorityID,
+                discardRestoreIndexEntry: discardRestoreIndexEntry
+            )
+        }
+    }
+
+    enum MCPSessionTargetDiscardResult: Equatable {
+        case complete
+        case retainedForRetry
     }
 
     struct AutoEditPermissionGuidance: Equatable {
@@ -850,7 +873,12 @@ extension AgentModeViewModel {
         /// completing or needing approval still gets a visible signal.
         let hiddenThreadDescendantAttentionCount: Int
         let threadActivityDate: Date?
-        let searchFields: AgentSessionSearchFields
+        /// Deferred search-field inputs. Rows intentionally store the raw source
+        /// rather than normalized `AgentSessionSearchFields` so ordinary sidebar
+        /// rebuilds never pay ICU folding cost for a search box that is empty.
+        /// Use `makeSearchFields()` (or the view model's memoized accessor) to
+        /// materialize fields when a query is actually active.
+        let searchFieldSource: AgentSessionSearchFieldSource
 
         init(
             id: UUID,
@@ -872,7 +900,7 @@ extension AgentModeViewModel {
             hiddenThreadDescendantCount: Int = 0,
             hiddenThreadDescendantAttentionCount: Int = 0,
             threadActivityDate: Date? = nil,
-            searchFields: AgentSessionSearchFields = .empty
+            searchFieldSource: AgentSessionSearchFieldSource = .empty
         ) {
             self.id = id
             self.tabID = tabID
@@ -893,7 +921,16 @@ extension AgentModeViewModel {
             self.hiddenThreadDescendantCount = hiddenThreadDescendantCount
             self.hiddenThreadDescendantAttentionCount = hiddenThreadDescendantAttentionCount
             self.threadActivityDate = threadActivityDate
-            self.searchFields = searchFields
+            self.searchFieldSource = searchFieldSource
+        }
+
+        /// Materializes normalized search fields for this row.
+        ///
+        /// Callers on a repeated path should prefer
+        /// `AgentModeViewModel.sidebarSearchFields(for:)`, which memoizes the
+        /// result on the main actor.
+        func makeSearchFields() -> AgentSessionSearchFields {
+            AgentModeSidebarSessionBuilder.searchFields(source: searchFieldSource)
         }
     }
 

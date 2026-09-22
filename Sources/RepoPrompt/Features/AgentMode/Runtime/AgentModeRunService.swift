@@ -107,13 +107,11 @@ final class AgentModeRunService {
         initialUserMessage: String,
         initialMessageForRun: String,
         attachments: [AgentImageAttachment],
-        codexFallbackContext: AgentTabSession.CodexFallbackSubmissionContext? = nil
+        codexFallbackContext: AgentTabSession.CodexFallbackSubmissionContext? = nil,
+        startOutcome: AgentRunStartOutcomeRecorder? = nil
     ) async -> CodexAgentModeCoordinator.NativeSendOutcome? {
         assert(session.tabID == tabID, "AgentModeRunService.startRun requires the originating tab ID to match the AgentTabSession tab ID")
         let selectedAgent = session.selectedAgent
-        let selectedModelString = session.selectedModelRaw == AgentModel.defaultModel.rawValue
-            ? nil
-            : session.selectedModelRaw
         let runtimePermission = dependencies.providerRuntimePermissionResolver(selectedAgent, session.permissionProfile)
         let workspacePath: String?
         do {
@@ -121,33 +119,30 @@ final class AgentModeRunService {
         } catch {
             let message = Self.providerStartupFailureMessage(for: error)
             await failBeforeProviderStartup(session: session, message: message)
+            // The non-Codex return is `nil`, which is indistinguishable from success. The recorder is
+            // the only channel that tells a caller this run never reached a provider.
+            startOutcome?.recordStartFailure(message: message)
             return selectedAgent == .codexExec ? .failed(message: message) : nil
         }
 
         if selectedAgent == .codexExec {
-            return await codexRunner.startRun(
+            let outcome = await codexRunner.startRun(
                 tabID: tabID,
                 session: session,
                 initialMessageForRun: initialMessageForRun,
                 attachments: attachments,
                 fallbackContext: codexFallbackContext
             )
+            startOutcome?.record(codexOutcome: outcome)
+            return outcome
         }
 
-        let acpRunRequest: ACPRunRequest? = if selectedAgent.acpProviderID != nil {
-            ACPRunRequest(
-                agentKind: selectedAgent,
-                modelString: selectedModelString,
-                workspacePath: workspacePath,
-                resumeSessionID: session.providerSessionID,
-                attachments: attachments,
-                taskLabelKind: session.mcpControlContext?.taskLabelKind,
-                sessionModeID: runtimePermission.acpSessionModeID,
-                autoApproveAllToolPermissions: runtimePermission.autoApproveAllACPToolPermissions
-            )
-        } else {
-            nil
-        }
+        let acpRunRequest = Self.makeACPRunRequest(
+            session: session,
+            workspacePath: workspacePath,
+            attachments: attachments,
+            runtimePermission: runtimePermission
+        )
 
         let windowID = dependencies.windowID
         let mcpServerEnabler = dependencies.mcpServerEnabler
@@ -182,6 +177,7 @@ final class AgentModeRunService {
                 attachments: attachments,
                 makeLease: makeLease
             )
+            recordNonCodexStartOutcome(startOutcome, session: session)
             return nil
         }
         if let acpRunRequest {
@@ -194,6 +190,7 @@ final class AgentModeRunService {
                 runRequest: acpRunRequest,
                 makeLease: makeLease
             )
+            recordNonCodexStartOutcome(startOutcome, session: session)
             return nil
         }
         await headlessRunner.startRun(
@@ -204,7 +201,27 @@ final class AgentModeRunService {
             attachments: attachments,
             makeLease: makeLease
         )
+        recordNonCodexStartOutcome(startOutcome, session: session)
         return nil
+    }
+
+    /// Classifies a non-Codex runner return as accepted or rejected-before-startup.
+    ///
+    /// Every non-Codex runner performs the same synchronous prologue — begin an attempt, set
+    /// `runState = .running`, then hand the provider work to `session.agentTask`. Any path that
+    /// refuses before that handoff commits a terminal state first, so an inactive run state on
+    /// return is exactly "never reached the provider pipeline". Checking the state rather than
+    /// `agentTask` avoids mistaking a previous attempt's retained task for this one's acceptance.
+    private func recordNonCodexStartOutcome(
+        _ startOutcome: AgentRunStartOutcomeRecorder?,
+        session: AgentTabSession
+    ) {
+        guard let startOutcome else { return }
+        if session.runState.isActive {
+            startOutcome.recordAccepted()
+        } else {
+            startOutcome.recordStartFailure(message: nil)
+        }
     }
 
     /// Attempts to submit a prompt into an already-active ACP session.
@@ -218,9 +235,6 @@ final class AgentModeRunService {
         targetController: ACPAgentSessionController
     ) async -> Bool {
         let selectedAgent = session.selectedAgent
-        let selectedModelString = session.selectedModelRaw == AgentModel.defaultModel.rawValue
-            ? nil
-            : session.selectedModelRaw
         let runtimePermission = dependencies.providerRuntimePermissionResolver(selectedAgent, session.permissionProfile)
         guard selectedAgent.acpProviderID != nil,
               session.runState == .running,
@@ -240,16 +254,14 @@ final class AgentModeRunService {
             await failBeforeProviderStartup(session: session, message: message)
             return false
         }
-        let runRequest = ACPRunRequest(
-            agentKind: selectedAgent,
-            modelString: selectedModelString,
+        guard let runRequest = Self.makeACPRunRequest(
+            session: session,
             workspacePath: workspacePath,
-            resumeSessionID: session.providerSessionID,
             attachments: attachments,
-            taskLabelKind: session.mcpControlContext?.taskLabelKind,
-            sessionModeID: runtimePermission.acpSessionModeID,
-            autoApproveAllToolPermissions: runtimePermission.autoApproveAllACPToolPermissions
-        )
+            runtimePermission: runtimePermission
+        ) else {
+            return false
+        }
         let sent = await acpRunner.submitActivePrompt(
             session: session,
             messageForRun: messageForRun,
@@ -259,8 +271,41 @@ final class AgentModeRunService {
             targetRunAttemptID: targetRunAttemptID,
             targetController: targetController
         )
-        steeringDebugLog("[AgentRunSteeringWake] ACP active submit runner returned sent=\(sent) agent=\(selectedAgent.rawValue) model=\(selectedModelString ?? "default") runID=\(String(describing: targetRunID)) attempt=\(String(describing: targetRunAttemptID))")
+        steeringDebugLog("[AgentRunSteeringWake] ACP active submit runner returned sent=\(sent) agent=\(selectedAgent.rawValue) model=\(runRequest.modelString ?? "default") runID=\(String(describing: targetRunID)) attempt=\(String(describing: targetRunAttemptID))")
         return sent
+    }
+
+    static func makeACPRunRequest(
+        session: AgentTabSession,
+        workspacePath: String?,
+        attachments: [AgentImageAttachment],
+        runtimePermission: AgentProviderRuntimePermissionBinding
+    ) -> ACPRunRequest? {
+        let selectedAgent = session.selectedAgent
+        guard selectedAgent.acpProviderID != nil else { return nil }
+        let selectedModelString = session.selectedModelRaw == AgentModel.defaultModel.rawValue
+            ? nil
+            : session.selectedModelRaw
+        return ACPRunRequest(
+            agentKind: selectedAgent,
+            modelString: selectedModelString,
+            workspacePath: workspacePath,
+            resumeSessionID: session.providerSessionID,
+            attachments: attachments,
+            taskLabelKind: session.mcpControlContext?.taskLabelKind,
+            sessionModeID: runtimePermission.acpSessionModeID,
+            autoApproveAllToolPermissions: runtimePermission.autoApproveAllACPToolPermissions,
+            launchPermissionMode: runtimePermission.acpLaunchPermissionMode,
+            // Resolve pins for whichever ACP provider is selected, not Cursor alone: OpenCode
+            // effort pins ride this same path, and narrowing it to `.cursor` silently drops them.
+            modelParameterSelections: selectedAgent.acpProviderID.map { providerID in
+                ACPModelParameterResolver.effectiveSelections(
+                    providerID: providerID,
+                    selectedModelRaw: session.selectedModelRaw,
+                    persistedSelections: session.acpModelParameterSelections
+                )
+            } ?? []
+        )
     }
 
     @discardableResult
@@ -790,7 +835,10 @@ final class AgentModeRunService {
                     session: session,
                     text: augmentedSteeringText,
                     attachments: [],
-                    intent: .runAttempt(ownership: ownership, runID: runID)
+                    intent: .runAttempt(ownership: ownership, runID: runID),
+                    // The active runner owns the current controller's event stream. Replacing it
+                    // here would strand the runner, so steering must keep failing closed.
+                    allowsCatalogRouteControllerRecovery: false
                 )
                 steeringDebugLog("[AgentRunSteeringWake] Claude flush send completed id=\(steering.id) tab=\(tabID) runID=\(runID) attempt=\(runAttemptID) outcome=\(String(describing: sendOutcome))")
                 switch sendOutcome {
@@ -1077,4 +1125,28 @@ final class AgentModeRunService {
         }
         return false
     }
+
+    #if DEBUG
+        /// Drives the ACP active-steering dispatch directly.
+        ///
+        /// The steering path has its own composition and acceptance boundary, and it is otherwise only
+        /// reachable through the composer/queue machinery. Exposing it keeps the runner-level parity
+        /// tests focused on the adapter rather than on steering-queue plumbing.
+        func test_submitACPActivePrompt(
+            session: AgentTabSession,
+            messageForRun: String,
+            runRequest: ACPRunRequest,
+            controller: ACPAgentSessionController
+        ) async -> Bool {
+            await acpRunner.submitActivePrompt(
+                session: session,
+                messageForRun: messageForRun,
+                attachments: [],
+                runRequest: runRequest,
+                targetRunID: session.runID,
+                targetRunAttemptID: session.activeRunAttemptID,
+                targetController: controller
+            )
+        }
+    #endif
 }

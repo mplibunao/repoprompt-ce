@@ -167,9 +167,10 @@ struct ContextBuilderAgentView: View {
         }
     }
 
-    /// The model that will be used for plan generation
+    /// The primary Oracle model that will be used for follow-up generation.
     private var planModelName: String {
-        oracleViewModel.promptViewModel.preferredAIModel.displayName
+        let rawValue = oracleViewModel.promptViewModel.planningModelName
+        return AIModel.fromModelName(rawValue)?.displayName ?? "Select an Oracle model"
     }
 
     /// Text describing what MCP will do after Context Builder completes
@@ -253,6 +254,11 @@ struct ContextBuilderAgentView: View {
             // Line 3: Plan actions (only when plan is ready)
             if case let .ready(route, previewText) = status {
                 planReadyActions(route: route, previewText: previewText)
+            } else if let route = viewModel.failedAnswerRoute(for: subjectTabID) {
+                Button("View in Chat", systemImage: "bubble.left.and.bubble.right") {
+                    viewGeneratedPlan(route: route)
+                }
+                .hoverTooltip(ContextBuilderGeneratedAnswerActionText.viewInChatTooltip)
             }
         }
         .padding(10)
@@ -338,6 +344,14 @@ struct ContextBuilderAgentView: View {
         return selectedFollowUpType.buttonLabel.lowercased()
     }
 
+    private var currentOracleGroupStreamingLabel: String? {
+        guard let tabID = subjectTabID, let session = viewModel.sessions[tabID] else { return nil }
+        return ContextBuilderOracleGroupProgressProjection.streamingLabel(
+            members: session.followUpOracleGroupState.members,
+            streamingSessionIDs: oracleViewModel.streamingSessions
+        )
+    }
+
     @ViewBuilder
     private var planStatusIndicator: some View {
         let status = viewModel.planStatus(for: subjectTabID)
@@ -347,7 +361,7 @@ struct ContextBuilderAgentView: View {
             HStack(spacing: 8) {
                 ProgressView()
                     .scaleEffect(0.7)
-                Text("Generating \(currentFollowUpLabel)...")
+                Text(currentOracleGroupStreamingLabel ?? "Generating \(currentFollowUpLabel)...")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -428,13 +442,13 @@ struct ContextBuilderAgentView: View {
     /// Inline model picker for plan generation
     private var planModelPicker: some View {
         OptimizedModelPicker(
-            selection: $oracleViewModel.promptViewModel.preferredModel,
+            selection: $oracleViewModel.promptViewModel.planningModelName,
             availableModels: oracleViewModel.promptViewModel.availableModels,
             font: .callout,
             widthStyle: .flexible()
         )
         .disabled(isContextBuilderRunningForTab)
-        .hoverTooltip("Model for \(selectedFollowUpType.buttonLabel.lowercased()) generation")
+        .hoverTooltip("Primary Oracle for \(selectedFollowUpType.buttonLabel.lowercased()) generation. Additional Oracles come from Agent Models.")
     }
 
     /// Inline follow-up type picker (Plan/Review/Question)
@@ -842,6 +856,33 @@ struct ContextBuilderAgentView: View {
                 .disabled(isContextBuilderRunningForTab)
                 .hoverTooltip("Select agent and model for Context Builder")
 
+                if let providerID = viewModel.selectedAgent.acpProviderID {
+                    let expectedModelRaw = viewModel.selectedModelRaw
+                    let expectedScope = viewModel.contextBuilderEditingScope
+                    ACPModelParameterProbeView(
+                        modelRaw: expectedModelRaw,
+                        providerID: providerID,
+                        probeContext: .resolved(viewModel.chooserProbeWorkspacePath),
+                        pinnedValueRaw: viewModel.contextBuilderThinkingParameterValueRaw,
+                        isEnabled: !isContextBuilderRunningForTab
+                    ) { configID, value in
+                        // Guarded write: re-check the live run permission, then re-check the
+                        // captured provider/model against live state inside the setter.
+                        guard !isContextBuilderRunningForTab else { return }
+                        viewModel.setContextBuilderModelParameter(
+                            ACPModelParameterSelection.thinkingPin(
+                                configID: configID,
+                                valueRaw: value,
+                                providerID: providerID,
+                                modelRaw: expectedModelRaw
+                            ),
+                            expectedProviderID: providerID,
+                            expectedModelRaw: expectedModelRaw,
+                            expectedScope: expectedScope
+                        )
+                    }
+                }
+
                 // Context Builder Prompts button
                 ContextBuilderPromptsButton(
                     selectedPromptIDs: $viewModel.selectedContextBuilderPromptIDs,
@@ -889,7 +930,7 @@ struct ContextBuilderAgentView: View {
                     set: { viewModel.questionTimeoutSeconds = $0 }
                 ),
                 analysisTokenBudget: Binding(
-                    get: { viewModel.analysisTokenBudget },
+                    get: { ContextBuilderDefaults.normalizedAnalysisTokenBudget(viewModel.analysisTokenBudget) },
                     set: { viewModel.analysisTokenBudget = $0 }
                 ),
                 followUpAnalysisEnabled: Binding(
@@ -1545,7 +1586,8 @@ private struct ContextBuilderSettingsPopover: View {
                                 SettingsBudgetSliderRow(
                                     label: "Target size",
                                     value: $analysisTokenBudget,
-                                    range: 40000 ... 200_000,
+                                    range: Double(ContextBuilderDefaults.analysisTokenBudgetRange.lowerBound)
+                                        ... Double(ContextBuilderDefaults.analysisTokenBudgetRange.upperBound),
                                     isDisabled: isDisabled
                                 )
                             }
@@ -1670,7 +1712,7 @@ private struct SettingsBudgetSliderRow: View {
 
             Slider(
                 value: Binding(
-                    get: { Double(value) },
+                    get: { min(max(Double(value), range.lowerBound), range.upperBound) },
                     set: { value = Int($0) }
                 ),
                 in: range,
