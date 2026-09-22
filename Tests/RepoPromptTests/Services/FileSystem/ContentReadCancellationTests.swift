@@ -987,6 +987,7 @@ final class ContentReadCancellationTests: XCTestCase {
 
     func testExplicitMaterializationRejectsRootTurnoverDuringPolicyRevalidation() async throws {
         let rootURL = try makeTemporaryRoot()
+        try "Target.swift\n".write(to: rootURL.appendingPathComponent(".repo_ignore"), atomically: true, encoding: .utf8)
         let targetURL = rootURL.appendingPathComponent("Target.swift")
         try "root turnover\n".write(to: targetURL, atomically: true, encoding: .utf8)
 
