@@ -66,7 +66,7 @@ import XCTest
                     XCTAssertFalse(ContextBuilderMultiRootDiscoveryDriver.text(read).contains("REPLACEMENT_SENTINEL_MUST_NOT_LEAK"))
                     let after = try driver.promotedSnapshot(for: connection)
                     XCTAssertEqual(after.runID, runID)
-                    XCTAssertEqual(after.frozenLookupContext?.rootScope, before.frozenLookupContext?.rootScope)
+                    XCTAssertNil(after.frozenLookupContext, "Root replacement must revoke the stale file lookup scope")
                     XCTAssertEqual(context.primaryRootSnapshot?.roots, original)
                 }
                 let completion = try await driver.fixture.perform("post-stream replacement ordinary commit") {
