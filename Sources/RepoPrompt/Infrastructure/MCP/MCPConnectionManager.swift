@@ -1637,6 +1637,12 @@ actor ServerNetworkManager {
         private var debugAfterPromptExportHostCompletionForTesting: (@Sendable (UUID, String, Duration) -> Void)?
         private var debugBeforeAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugBeforeActiveToolCancellationScanForTesting: (@Sendable (UUID, [UUID]) async -> Void)?
+        private struct DebugConnectionRemovalOperation {
+            let token: UUID
+            var waiters: [CheckedContinuation<Void, Never>] = []
+        }
+
+        private var debugConnectionRemovalOperations: [UUID: DebugConnectionRemovalOperation] = [:]
         private var debugAllocatedActiveToolScopeIDsForTesting: Set<UUID> = []
         private var debugDuringAdmissionEvictionCloseForTesting: (@Sendable (UUID) async -> Void)?
         private var debugAfterAdmissionEvictionRemovalCommittedForTesting: (@Sendable (UUID) async -> Void)?
@@ -5885,6 +5891,14 @@ actor ServerNetworkManager {
     private func rollbackCommittedConnectionRemoval(
         _ committedRemoval: CommittedConnectionRemoval
     ) -> Bool {
+        #if DEBUG
+            defer {
+                debugFinishConnectionRemoval(
+                    committedRemoval.connectionID,
+                    token: committedRemoval.debugOperationToken
+                )
+            }
+        #endif
         guard connectionsBeingRemoved.contains(committedRemoval.connectionID),
               connectionLifecycleGenerationByID[committedRemoval.connectionID] == committedRemoval.lifecycleGeneration,
               let connection = connections[committedRemoval.connectionID],
@@ -7147,6 +7161,7 @@ actor ServerNetworkManager {
         cleanupGraceMilliseconds: Double?
     ) async {
         guard executionWatchdogTerminalConnections.insert(id).inserted else { return }
+        MCPLifecycleDiagnostics.shared.record(.watchdogAbort, connectionID: id, invocationID: invocationID)
         let activeToolExecutionScopeCount = activeToolScopeIDs(ownedBy: id).values.reduce(0) { $0 + $1.count }
         let limiterDiagnostics = await callLimiters[id]?.executionWatchdogDiagnostics()
         let phaseDescription = handlerPhase.map {
@@ -7205,6 +7220,9 @@ actor ServerNetworkManager {
         let connectionIdentity: ObjectIdentifier
         let lifecycleGeneration: UInt64
         let connection: any MCPServerConnection
+        #if DEBUG
+            let debugOperationToken = UUID()
+        #endif
     }
 
     private func commitConnectionRemoval(
@@ -7219,12 +7237,18 @@ actor ServerNetworkManager {
         else { return nil }
         connectionsBeingRemoved.insert(connectionID)
         invalidateBootstrapReplacementCredits(predecessorConnectionID: connectionID)
-        return CommittedConnectionRemoval(
+        let removal = CommittedConnectionRemoval(
             connectionID: connectionID,
             connectionIdentity: expectedIdentity,
             lifecycleGeneration: expectedLifecycleGeneration,
             connection: connection
         )
+        #if DEBUG
+            debugConnectionRemovalOperations[connectionID] = DebugConnectionRemovalOperation(
+                token: removal.debugOperationToken
+            )
+        #endif
+        return removal
     }
 
     @MainActor
@@ -7327,6 +7351,9 @@ actor ServerNetworkManager {
                   let connection = connections[id],
                   ObjectIdentifier(connection as AnyObject) == committedRemoval.connectionIdentity
             else {
+                #if DEBUG
+                    debugFinishConnectionRemoval(id, token: committedRemoval.debugOperationToken)
+                #endif
                 return false
             }
         } else {
@@ -7344,6 +7371,11 @@ actor ServerNetworkManager {
         else {
             connectionLog("removeConnection: \(id) already removed; ignoring duplicate call")
             connectionsBeingRemoved.remove(id)
+            #if DEBUG
+                if let committedRemoval {
+                    debugFinishConnectionRemoval(id, token: committedRemoval.debugOperationToken)
+                }
+            #endif
             return false
         }
 
@@ -7351,7 +7383,20 @@ actor ServerNetworkManager {
             connectionsBeingRemoved.insert(id)
             invalidateBootstrapReplacementCredits(predecessorConnectionID: id)
         }
-        defer { connectionsBeingRemoved.remove(id) }
+        #if DEBUG
+            let debugRemovalToken = committedRemoval?.debugOperationToken ?? UUID()
+            if committedRemoval == nil {
+                debugConnectionRemovalOperations[id] = DebugConnectionRemovalOperation(token: debugRemovalToken)
+            }
+        #endif
+        defer {
+            connectionsBeingRemoved.remove(id)
+            #if DEBUG
+                debugFinishConnectionRemoval(id, token: debugRemovalToken)
+            #endif
+        }
+
+        MCPLifecycleDiagnostics.shared.record(.removalStarted, connectionID: id)
 
         // Claim and persist the first terminal cause before any suspension.
         // Later termination/watchdog cleanup must not overwrite the event that
@@ -7435,6 +7480,7 @@ actor ServerNetworkManager {
             id,
             reason: context.reason
         )
+        MCPLifecycleDiagnostics.shared.record(.ownedToolsCancelled, connectionID: id)
         if cancelledToolCount > 0 {
             connectionLog("Cancelled \(cancelledToolCount) active tool execution(s) owned by disconnected connection \(id)")
         }
@@ -7473,6 +7519,8 @@ actor ServerNetworkManager {
         if !connectionAlreadyStopped, let connectionManager = connections[id] {
             await connectionManager.stop()
         }
+
+        MCPLifecycleDiagnostics.shared.record(.connectionStopped, connectionID: id)
 
         // Cancel any associated tasks
         if let task = connectionTasks[id] {
@@ -7522,6 +7570,8 @@ actor ServerNetworkManager {
         // Removal is terminal for this connection ID. Sweep any scope that raced the initial
         // cancellation snapshot; exact deferred completions remain harmless no-ops.
         _ = removeActiveToolScopes(activeToolScopeIDs(ownedBy: id))
+
+        MCPLifecycleDiagnostics.shared.record(.removalFinished, connectionID: id)
 
         // Notify dashboard of connection removal
         emitDashboardUpdate()
@@ -10040,7 +10090,9 @@ actor ServerNetworkManager {
             saveRoutingState()
         }
 
-        func debugRemoveConnection(_ id: UUID) async {
+        /// Test cleanup must join the existing removal owner, not merely request removal.
+        /// Keep production duplicate-removal calls non-joining: an owner can depend on them.
+        func debugRemoveConnection(_ id: UUID, onJoiningRemoval: (@Sendable () -> Void)? = nil) async {
             #if DEBUG
                 debugExecutionWatchdogAbortTargets.removeValue(forKey: id)
             #endif
@@ -10051,6 +10103,28 @@ actor ServerNetworkManager {
                     initiator: .app
                 )
             )
+            // Joining the exact operation also covers the committed-before-body interval.
+            // A bare removal flag can outlive an invalidated commit and is not a completion owner.
+            guard debugConnectionRemovalOperations[id] != nil else { return }
+            await withCheckedContinuation { continuation in
+                debugConnectionRemovalOperations[id]?.waiters.append(continuation)
+                onJoiningRemoval?()
+            }
+        }
+
+        private func debugFinishConnectionRemoval(_ id: UUID, token: UUID) {
+            guard debugConnectionRemovalOperations[id]?.token == token,
+                  let operation = debugConnectionRemovalOperations.removeValue(forKey: id)
+            else { return }
+            operation.waiters.forEach { $0.resume() }
+        }
+
+        func debugConnectionRemovalWaiterCount(for id: UUID) -> Int {
+            debugConnectionRemovalOperations[id]?.waiters.count ?? 0
+        }
+
+        func debugHasConnectionRemovalOperation(for id: UUID) -> Bool {
+            debugConnectionRemovalOperations[id] != nil
         }
 
         #if DEBUG
@@ -10536,6 +10610,10 @@ actor ServerNetworkManager {
 
             func debugIsExecutionWatchdogTerminal(connectionID: UUID) -> Bool {
                 executionWatchdogTerminalConnections.contains(connectionID)
+            }
+
+            func debugExecutionWatchdogAdmittedCallCount(connectionID: UUID) async -> Int {
+                await callLimiters[connectionID]?.executionWatchdogDiagnostics().admittedCallCount ?? 0
             }
 
             func debugCodeStructureSettlementSnapshot(
@@ -12319,6 +12397,10 @@ actor ServerNetworkManager {
                 let resolvedRequestIdentity: MCPRequestTimelineIdentity? = nil
                 let lifecycleCorrelation = EditFlowPerf.makeLifecycleCorrelationIfActive()
             #endif
+            MCPLifecycleDiagnostics.shared.record(.requestEntered, connectionID: connectionID, invocationID: invocationID)
+            defer {
+                MCPLifecycleDiagnostics.shared.record(.handlerReturning, connectionID: connectionID, invocationID: invocationID)
+            }
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.MCPToolCall.received,
                 correlation: lifecycleCorrelation,
@@ -13749,6 +13831,7 @@ actor ServerNetworkManager {
                                     @Sendable func recordAbandonedSettlement(
                                         _ providerSettlement: MCPToolExecutionSettlement
                                     ) async {
+                                        MCPLifecycleDiagnostics.shared.record(.abandonedSettlement, connectionID: connectionID, invocationID: invocationID)
                                         if let slot = settlementAdmission.slot,
                                            let noticeProjection = await self.takeCodeStructureSettlementLimitNoticeAfterSettlement(
                                                slot: slot
@@ -13778,6 +13861,7 @@ actor ServerNetworkManager {
                                     @Sendable func recordForceDisconnectedSettlement(
                                         _ providerSettlement: MCPToolExecutionSettlement
                                     ) async {
+                                        MCPLifecycleDiagnostics.shared.record(.forceDisconnectedSettlement, connectionID: connectionID, invocationID: invocationID)
                                         if let slot = settlementAdmission.slot,
                                            let noticeProjection = await self.takeCodeStructureSettlementLimitNoticeAfterSettlement(
                                                slot: slot
@@ -13887,12 +13971,18 @@ actor ServerNetworkManager {
                                                     case .deadlineExpired:
                                                         await emitExecutionTrace(.deadlineExpired)
                                                     case let .cancellationRequested(origin):
+                                                        MCPLifecycleDiagnostics.shared.record(
+                                                            origin == .requestCancellation ? .requestCancellation : .deadlineCancellation,
+                                                            connectionID: connectionID,
+                                                            invocationID: invocationID
+                                                        )
                                                         await emitExecutionTrace(
                                                             .cancellationRequested,
                                                             cancellationRequested: true,
                                                             cancellationOrigin: origin
                                                         )
                                                     case let .settledDuringGrace(settlement, cancellationRequested):
+                                                        MCPLifecycleDiagnostics.shared.record(.settledDuringGrace, connectionID: connectionID, invocationID: invocationID)
                                                         await emitExecutionTrace(
                                                             .settledDuringGrace,
                                                             cancellationRequested: cancellationRequested,
@@ -13901,6 +13991,7 @@ actor ServerNetworkManager {
                                                             graceOutcome: cancellationRequested ? "settled" : "late_completion"
                                                         )
                                                     case .cleanupGraceCappedByOuterEnvelope:
+                                                        MCPLifecycleDiagnostics.shared.record(.cleanupGraceExpired, connectionID: connectionID, invocationID: invocationID)
                                                         await emitExecutionTrace(
                                                             .cleanupGraceExpired,
                                                             resolvedCleanupDisposition: .forceDisconnect,
@@ -13910,6 +14001,7 @@ actor ServerNetworkManager {
                                                             escalationReason: "outer_envelope_cleanup_cap"
                                                         )
                                                     case let .cleanupGraceExpired(resolvedDisposition):
+                                                        MCPLifecycleDiagnostics.shared.record(.cleanupGraceExpired, connectionID: connectionID, invocationID: invocationID)
                                                         await emitExecutionTrace(
                                                             .cleanupGraceExpired,
                                                             resolvedCleanupDisposition: resolvedDisposition,
@@ -14367,6 +14459,10 @@ actor ServerNetworkManager {
                                         #if DEBUG
                                             if let operation = await self.debugResolvedToolOperationOverrides[toolName] {
                                                 try providerEntryBridge?.providerWillEnter()
+                                                MCPLifecycleDiagnostics.shared.record(.providerEntered, connectionID: connectionID, invocationID: invocationID)
+                                                defer {
+                                                    MCPLifecycleDiagnostics.shared.record(.providerReturning, connectionID: connectionID, invocationID: invocationID)
+                                                }
                                                 return try await operation()
                                             }
                                         #endif
@@ -14378,7 +14474,13 @@ actor ServerNetworkManager {
                                             securityContext: invocationSecurityContext,
                                             admittedContext: admittedDomainContext,
                                             admissionDeadline: promptExportExecutionEnvelope?.admissionDeadline,
-                                            onProviderEntry: { try providerEntryBridge?.providerWillEnter() }
+                                            onProviderEntry: {
+                                                try providerEntryBridge?.providerWillEnter()
+                                                MCPLifecycleDiagnostics.shared.record(.providerEntered, connectionID: connectionID, invocationID: invocationID)
+                                            },
+                                            onProviderReturn: {
+                                                MCPLifecycleDiagnostics.shared.record(.providerReturning, connectionID: connectionID, invocationID: invocationID)
+                                            }
                                         ))
                                     }
 
