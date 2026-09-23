@@ -321,13 +321,25 @@ import XCTest
             if loadUnrelatedRoot {
                 // The unrelated directory is genuinely loaded. Changing the visible root set
                 // after the allowed reads must revoke the nested run's frozen file scope.
+                XCTAssertNotNil(
+                    try promotedSnapshot(for: connection).frozenLookupContext,
+                    "Nested lookup scope was lost before the unrelated root loaded"
+                )
                 try await files.loadFolder(at: URL(fileURLWithPath: fixture.rootPaths[2]), for: fixture.workspace)
                 let loadedRoots = await files.workspaceFileContextStore.roots()
                 XCTAssertTrue(loadedRoots.contains { $0.standardizedFullPath == fixture.rootPaths[2] })
                 do {
-                    let reply = try await connection.client.callTool(name: "read_file", arguments: ["path": .string(fixture.rootPaths[2] + "/README.md")])
-                    XCTAssertEqual(reply.isError, true, "Unrelated root was readable")
+                    let reply = try await connection.client.callTool(name: "read_file", arguments: [
+                        "path": .string(fixture.rootPaths[2] + "/README.md"), "_rawJSON": .bool(true)
+                    ])
+                    let value = try XCTUnwrap(Self.text(reply).data(using: .utf8))
+                    let result = try JSONDecoder().decode(ToolResultDTOs.ReadFileReply.self, from: value)
+                    XCTAssertEqual(result.errorCode, "workspace_authority_superseded", "Unrelated root was readable")
                 } catch is MCPError { /* Actual dispatcher may reject as a JSON-RPC error. */ }
+                XCTAssertNil(
+                    try promotedSnapshot(for: connection).frozenLookupContext,
+                    "Changed root catalog must revoke nested lookup scope"
+                )
                 // Restore the configured primary manifest before its commit validation.
                 await files.unloadRootFolderPath(fixture.rootPaths[2])
             }

@@ -2272,10 +2272,27 @@ extension MCPServerViewModel {
                 }
                 throw FileToolAuthorityFailure.superseded
             }
-            try await frozenAuthority.validate(
-                workspaceManager: workspaceManager,
-                store: promptVM.workspaceFileContextStore
-            )
+            do {
+                try await frozenAuthority.validate(
+                    workspaceManager: workspaceManager,
+                    store: promptVM.workspaceFileContextStore
+                )
+            } catch {
+                // A changed visible-root catalog permanently revokes a nested run's
+                // frozen scope, including when a newly loaded root was not admitted.
+                let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
+                if routed.snapshot.runID != nil,
+                   let connectionID = metadata.connectionID,
+                   frozenAuthority.canonicalRoots != currentRoots,
+                   var bound = tabContextByConnectionID[connectionID],
+                   fileToolLookupRouteMatches(bound, routed.snapshot),
+                   bound.frozenFileToolAuthority?.rootCatalogSnapshot == frozenAuthority.rootCatalogSnapshot
+                {
+                    bound.frozenLookupContext = nil
+                    tabContextByConnectionID[connectionID] = bound
+                }
+                throw error
+            }
             return frozenAuthority
         }
         var authoritySnapshot = routed.snapshot
@@ -2298,6 +2315,26 @@ extension MCPServerViewModel {
             snapshot: authoritySnapshot,
             source: routed.source
         )
+
+        // A nested run keeps the original root identities even if readiness for
+        // the changed catalog fails before a new snapshot can be captured.
+        if authoritySnapshot.runID != nil,
+           let frozenLookupContext = authoritySnapshot.frozenLookupContext,
+           case let .validatedSessionBoundWorkspace(canonicalRoots, _, _) = frozenLookupContext.rootScope
+        {
+            let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
+            guard canonicalRoots == currentRoots else {
+                if let connectionID = metadata.connectionID,
+                   var bound = tabContextByConnectionID[connectionID],
+                   fileToolLookupRouteMatches(bound, authoritySnapshot),
+                   bound.frozenLookupContext == frozenLookupContext
+                {
+                    bound.frozenLookupContext = nil
+                    tabContextByConnectionID[connectionID] = bound
+                }
+                throw FileToolAuthorityFailure.superseded
+            }
+        }
 
         let rootCatalogSnapshot: WorkspaceRootCatalogSnapshot
         do {
@@ -2324,6 +2361,20 @@ extension MCPServerViewModel {
             if authoritySnapshot.runID != nil,
                let frozenLookupContext = authoritySnapshot.frozenLookupContext
             {
+                if case let .validatedSessionBoundWorkspace(canonicalRoots, _, _) = frozenLookupContext.rootScope {
+                    let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
+                    guard canonicalRoots == currentRoots else {
+                        if let connectionID = metadata.connectionID,
+                           var bound = tabContextByConnectionID[connectionID],
+                           fileToolLookupRouteMatches(bound, authoritySnapshot),
+                           bound.frozenLookupContext == frozenLookupContext
+                        {
+                            bound.frozenLookupContext = nil
+                            tabContextByConnectionID[connectionID] = bound
+                        }
+                        throw FileToolAuthorityFailure.superseded
+                    }
+                }
                 lookupContext = frozenLookupContext
             } else if metadata.runPurpose == .discoverRun,
                       authoritySnapshot.runID != nil
