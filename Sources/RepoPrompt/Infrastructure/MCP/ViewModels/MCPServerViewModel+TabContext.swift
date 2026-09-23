@@ -2319,11 +2319,24 @@ extension MCPServerViewModel {
         }
 
         do {
-            let lookupContext = try await resolveFileToolLookupContext(
-                from: metadata,
-                rootCatalogSnapshot: rootCatalogSnapshot,
-                capturedRoute: capturedRoute
-            )
+            let lookupContext: WorkspaceLookupContext
+            if authoritySnapshot.runID != nil,
+               let frozenLookupContext = authoritySnapshot.frozenLookupContext
+            {
+                lookupContext = frozenLookupContext
+            } else if metadata.runPurpose == .discoverRun,
+                      authoritySnapshot.runID != nil
+            {
+                // A nested run whose frozen scope was revoked must never recover it
+                // from the newly visible roots.
+                throw FileToolAuthorityFailure.superseded
+            } else {
+                lookupContext = try await resolveFileToolLookupContext(
+                    from: metadata,
+                    rootCatalogSnapshot: rootCatalogSnapshot,
+                    capturedRoute: capturedRoute
+                )
+            }
             guard lookupContext != AgentWorkspaceLookupContextResolver.failClosedLookupContext,
                   fileToolRootCatalogSnapshotIsCurrent(rootCatalogSnapshot)
             else {

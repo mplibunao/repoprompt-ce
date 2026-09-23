@@ -51,7 +51,7 @@ import XCTest
                 let original = try XCTUnwrap(context.primaryRootSnapshot).roots
                 driver.streamBody = { runID in
                     let connection = try await driver.connectChild(runID: runID)
-                    try await driver.discover(using: connection)
+                    try await driver.discover(using: connection, loadUnrelatedRoot: false)
                     let before = try driver.promotedSnapshot(for: connection)
                     XCTAssertEqual(before.frozenLookupContext?.rootScope, context.lookupContext.rootScope)
                     await driver.files.unloadRootFolderPath(driver.fixture.rootPaths[1])

@@ -312,23 +312,25 @@ import XCTest
             ).snapshot
         }
 
-        func discover(using connection: RoutedConnection) async throws {
-            // The unrelated directory is genuinely loaded, not just an out-of-workspace missing path.
-            try await files.loadFolder(at: URL(fileURLWithPath: fixture.rootPaths[2]), for: fixture.workspace)
-            let loadedRoots = await files.workspaceFileContextStore.roots()
-            XCTAssertTrue(loadedRoots.contains { $0.standardizedFullPath == fixture.rootPaths[2] })
+        func discover(using connection: RoutedConnection, loadUnrelatedRoot: Bool = true) async throws {
             for path in fixture.rootPaths.prefix(2) {
                 let reply = try await connection.client.callTool(name: "read_file", arguments: ["path": .string(path + "/README.md")])
                 XCTAssertNotEqual(reply.isError, true, Self.text(reply))
                 XCTAssertTrue(Self.text(reply).contains("fixture"))
             }
-            do {
-                let reply = try await connection.client.callTool(name: "read_file", arguments: ["path": .string(fixture.rootPaths[2] + "/README.md")])
-                XCTAssertEqual(reply.isError, true, "Unrelated root was readable")
-            } catch is MCPError { /* Actual dispatcher may reject as a JSON-RPC error. */ }
-            // Finish this auxiliary read-isolation control before validating the configured
-            // primary manifest at commit. A/B themselves retain their original identities.
-            await files.unloadRootFolderPath(fixture.rootPaths[2])
+            if loadUnrelatedRoot {
+                // The unrelated directory is genuinely loaded. Changing the visible root set
+                // after the allowed reads must revoke the nested run's frozen file scope.
+                try await files.loadFolder(at: URL(fileURLWithPath: fixture.rootPaths[2]), for: fixture.workspace)
+                let loadedRoots = await files.workspaceFileContextStore.roots()
+                XCTAssertTrue(loadedRoots.contains { $0.standardizedFullPath == fixture.rootPaths[2] })
+                do {
+                    let reply = try await connection.client.callTool(name: "read_file", arguments: ["path": .string(fixture.rootPaths[2] + "/README.md")])
+                    XCTAssertEqual(reply.isError, true, "Unrelated root was readable")
+                } catch is MCPError { /* Actual dispatcher may reject as a JSON-RPC error. */ }
+                // Restore the configured primary manifest before its commit validation.
+                await files.unloadRootFolderPath(fixture.rootPaths[2])
+            }
             let selected = try await connection.client.callTool(name: "manage_selection", arguments: [
                 "op": .string("set"), "paths": .array(fixture.rootPaths.prefix(2).map { .string($0 + "/README.md") }), "mode": .string("full")
             ])
