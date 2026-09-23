@@ -1665,6 +1665,7 @@ extension MCPServerViewModel {
         merged.activeAgentSessionID = context.activeAgentSessionID
         merged.worktreeBindingState = context.worktreeBindingState
         merged.frozenFileToolAuthority = context.frozenFileToolAuthority
+        merged.frozenLookupContext = context.frozenLookupContext
         merged.contextBuilderReviewTargetResolution = context.contextBuilderReviewTargetResolution
         merged.readFileAutoSelectionGeneration = context.readFileAutoSelectionGeneration
         return merged
