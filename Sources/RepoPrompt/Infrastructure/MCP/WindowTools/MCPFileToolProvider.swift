@@ -22,6 +22,7 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         let metadata: MCPServerViewModel.RequestMetadata
         let frozen: MCPServerViewModel.FrozenFileToolAuthority
         let dependencies: Dependencies
+        let isRunlessOneShotHint: Bool
 
         var lookupContext: WorkspaceLookupContext {
             frozen.lookupContext
@@ -75,14 +76,24 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             let authority = ReadAuthority(
                 metadata: appContext.metadata,
                 frozen: frozen,
-                dependencies: appContext.fileToolDependencies
+                dependencies: appContext.fileToolDependencies,
+                isRunlessOneShotHint: appContext.resolvedTabContext.isRunlessOneShotHint
             )
             try await validate(authority)
             return authority
         }
         let metadata = await dependencies.context.captureRequestMetadata()
+        let route = try await dependencies.context.resolveTabContextSnapshot(
+            metadata,
+            "file_tool_lookup_scope"
+        )
         let frozen = try await dependencies.selection.requiredFileToolLookupContext(metadata)
-        return ReadAuthority(metadata: metadata, frozen: frozen, dependencies: dependencies)
+        return ReadAuthority(
+            metadata: metadata,
+            frozen: frozen,
+            dependencies: dependencies,
+            isRunlessOneShotHint: route.isRunlessOneShotHint
+        )
     }
 
     private func validate(_ authority: ReadAuthority) async throws {
@@ -386,11 +397,13 @@ final class MCPFileToolProvider: MCPAppToolProviding {
                         MCPServerViewModel.codeStructureSeedLimit(for: request)
                     )
                 } else {
-                    guard try await dependencies.files.drainReadFileAutoSelection(
-                        metadata,
-                        .canonicalSelection
-                    ) == .completed else {
-                        throw CancellationError()
+                    if !authority.isRunlessOneShotHint {
+                        guard try await dependencies.files.drainReadFileAutoSelection(
+                            metadata,
+                            .canonicalSelection
+                        ) == .completed else {
+                            throw CancellationError()
+                        }
                     }
                     files = try await dependencies.context.resolveSelectedFilesForCodeStructure(
                         metadata,
@@ -476,8 +489,10 @@ final class MCPFileToolProvider: MCPAppToolProviding {
                 await MCPToolExecutionHandlerPhaseContext.report(.getFileTreeIngressWait, transition: .completed)
                 await MCPToolExecutionHandlerPhaseContext.report(.getFileTreeConstruction)
                 if mode.lowercased() == "selected" {
-                    guard try await dependencies.files.drainReadFileAutoSelection(metadata, .canonicalSelection) == .completed else {
-                        throw CancellationError()
+                    if !authority.isRunlessOneShotHint {
+                        guard try await dependencies.files.drainReadFileAutoSelection(metadata, .canonicalSelection) == .completed else {
+                            throw CancellationError()
+                        }
                     }
                 }
                 let worktreeScope = ToolResultDTOs.WorktreeScopeDTO.sessionBound(from: lookupContext.bindingProjection)
@@ -601,7 +616,8 @@ final class MCPFileToolProvider: MCPAppToolProviding {
         }
         try Task.checkCancellation()
         let autoSelectOutcome = switch readResult {
-        case .workspace: "attempted"
+        case .workspace where !authority.isRunlessOneShotHint: "attempted"
+        case .workspace: "skipped"
         case .nonSelecting: "skipped"
         }
         try await validate(authority)
@@ -610,7 +626,9 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             EditFlowPerf.Stage.ReadFile.providerAutoSelect,
             EditFlowPerf.Dimensions(outcome: autoSelectOutcome)
         ) {
-            if case let .workspace(reply, absolutePhysicalPath) = readResult {
+            if case let .workspace(reply, absolutePhysicalPath) = readResult,
+               !authority.isRunlessOneShotHint
+            {
                 try await sideEffects.submitAndWait(fingerprint: "read_file_auto_selection") { [weak self] in
                     guard let self else { throw CancellationError() }
                     _ = try await applyReadFileSideEffect(
@@ -1035,17 +1053,19 @@ final class MCPFileToolProvider: MCPAppToolProviding {
             EditFlowPerf.Stage.Search.providerAutoSelection,
             EditFlowPerf.Dimensions(searchMode: mode.rawValue, contextLines: contextLines)
         ) {
-            try await sideEffects.submitAndWait(fingerprint: "file_search_auto_selection") { [weak self] in
-                guard let self else { throw CancellationError() }
-                _ = try await applyFileSearchSideEffect(
-                    mode: mode,
-                    contextLines: contextLines,
-                    reply: reply,
-                    resolvedPhysicalPaths: autoSelectionResolvedPhysicalPaths,
-                    metadata: metadata,
-                    authority: authority.frozen,
-                    files: dependencies.files
-                )
+            if !authority.isRunlessOneShotHint {
+                try await sideEffects.submitAndWait(fingerprint: "file_search_auto_selection") { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    _ = try await applyFileSearchSideEffect(
+                        mode: mode,
+                        contextLines: contextLines,
+                        reply: reply,
+                        resolvedPhysicalPaths: autoSelectionResolvedPhysicalPaths,
+                        metadata: metadata,
+                        authority: authority.frozen,
+                        files: dependencies.files
+                    )
+                }
             }
         }
         EditFlowPerf.lifecycleEvent(EditFlowPerf.Lifecycle.Search.providerAutoSelectionReturned)

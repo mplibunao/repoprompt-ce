@@ -4697,8 +4697,9 @@ final class MCPServerViewModel: ObservableObject {
         } else {
             await ServerNetworkManager.shared.runPurpose(for: connectionID)
         }
+        let resolvedContext: ResolvedTabContextSnapshot
         do {
-            _ = try resolveTabContextSnapshot(
+            resolvedContext = try resolveTabContextSnapshot(
                 from: metadata,
                 toolName: "enqueueReadFileAutoSelection"
             )
@@ -4709,6 +4710,14 @@ final class MCPServerViewModel: ObservableObject {
                 EditFlowPerf.Dimensions(outcome: "invalidContext")
             )
             throw error
+        }
+        if resolvedContext.isRunlessOneShotHint {
+            EditFlowPerf.end(
+                EditFlowPerf.Stage.ReadFile.AutoSelect.eligibilityResolution,
+                eligibilityResolution,
+                EditFlowPerf.Dimensions(outcome: "oneShotHint")
+            )
+            return false
         }
         let hasVirtualContext = true
         let shouldApply = AutoSliceSelection.shouldApply(
@@ -4788,6 +4797,7 @@ final class MCPServerViewModel: ObservableObject {
             from: metadata,
             toolName: "drainReadFileAutoSelection"
         )
+        if resolvedContext.isRunlessOneShotHint { return .completed }
         let key = try readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
         for predecessorKey in readFileAutoSelectionPredecessorContextKeys(
             metadata: metadata,
@@ -5602,6 +5612,14 @@ final class MCPServerViewModel: ObservableObject {
                 EditFlowPerf.Dimensions(outcome: "invalidContext")
             )
             throw error
+        }
+        if resolvedContext.isRunlessOneShotHint {
+            EditFlowPerf.end(
+                EditFlowPerf.Stage.Search.AutoSelect.agentEligibility,
+                agentEligibility,
+                EditFlowPerf.Dimensions(outcome: "oneShotHint")
+            )
+            return false
         }
         let shouldApply = AutoSliceSelection.shouldApply(
             purpose: purpose,

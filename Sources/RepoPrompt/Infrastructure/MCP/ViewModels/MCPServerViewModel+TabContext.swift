@@ -1616,6 +1616,10 @@ extension MCPServerViewModel {
         var snapshot: TabContextSnapshot
         let source: TabContextSnapshotSource?
 
+        var isRunlessOneShotHint: Bool {
+            source == .explicitHint && snapshot.runID == nil
+        }
+
         init(
             snapshot: TabContextSnapshot,
             source: TabContextSnapshotSource? = nil
@@ -2237,6 +2241,7 @@ extension MCPServerViewModel {
             from: metadata,
             toolName: "file_tool_lookup_scope"
         )
+        let authorityConnectionID = fileToolAuthorityConnectionID(metadata: metadata, routed: routed)
         if let frozenAuthority = routed.snapshot.frozenFileToolAuthority {
             guard let workspaceManager else { throw FileToolAuthorityFailure.unavailable }
             var liveSourceSnapshot = routed.snapshot
@@ -2258,7 +2263,7 @@ extension MCPServerViewModel {
                 } ?? .notApplicable
             }
             if frozenAuthority.sourceIdentity != liveSourceSnapshot.fileToolAuthoritySourceIdentity {
-                if let connectionID = metadata.connectionID,
+                if let connectionID = authorityConnectionID,
                    var bound = tabContextByConnectionID[connectionID],
                    fileToolLookupRouteMatches(bound, routed.snapshot)
                 {
@@ -2282,7 +2287,7 @@ extension MCPServerViewModel {
                 // frozen scope, including when a newly loaded root was not admitted.
                 let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
                 if routed.snapshot.runID != nil,
-                   let connectionID = metadata.connectionID,
+                   let connectionID = authorityConnectionID,
                    frozenAuthority.canonicalRoots != currentRoots,
                    var bound = tabContextByConnectionID[connectionID],
                    fileToolLookupRouteMatches(bound, routed.snapshot),
@@ -2298,7 +2303,7 @@ extension MCPServerViewModel {
         var authoritySnapshot = routed.snapshot
         guard await hydrateFileToolLookupSnapshotIfNeeded(
             &authoritySnapshot,
-            connectionID: metadata.connectionID
+            connectionID: authorityConnectionID
         ) else {
             throw FileToolAuthorityFailure.superseded
         }
@@ -2324,7 +2329,7 @@ extension MCPServerViewModel {
         {
             let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
             guard canonicalRoots == currentRoots else {
-                if let connectionID = metadata.connectionID,
+                if let connectionID = authorityConnectionID,
                    var bound = tabContextByConnectionID[connectionID],
                    fileToolLookupRouteMatches(bound, authoritySnapshot),
                    bound.frozenLookupContext == frozenLookupContext
@@ -2350,7 +2355,7 @@ extension MCPServerViewModel {
 
         guard fileToolLookupSnapshotIsCurrent(
             authoritySnapshot,
-            connectionID: metadata.connectionID
+            connectionID: authorityConnectionID
         ), fileToolBindingSourceIsCurrent(authoritySource, for: authoritySnapshot)
         else {
             throw FileToolAuthorityFailure.superseded
@@ -2364,7 +2369,7 @@ extension MCPServerViewModel {
                 if case let .validatedSessionBoundWorkspace(canonicalRoots, _, _) = frozenLookupContext.rootScope {
                     let currentRoots = await Set(promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace))
                     guard canonicalRoots == currentRoots else {
-                        if let connectionID = metadata.connectionID,
+                        if let connectionID = authorityConnectionID,
                            var bound = tabContextByConnectionID[connectionID],
                            fileToolLookupRouteMatches(bound, authoritySnapshot),
                            bound.frozenLookupContext == frozenLookupContext
@@ -2402,7 +2407,7 @@ extension MCPServerViewModel {
             )
             guard fileToolLookupSnapshotIsCurrent(
                 authoritySnapshot,
-                connectionID: metadata.connectionID
+                connectionID: authorityConnectionID
             ), fileToolBindingSourceIsCurrent(authoritySource, for: authoritySnapshot),
             fileToolRootCatalogSnapshotIsCurrent(rootCatalogSnapshot)
             else {
@@ -2419,7 +2424,7 @@ extension MCPServerViewModel {
             if error == .unavailable,
                !fileToolLookupSnapshotIsCurrent(
                    authoritySnapshot,
-                   connectionID: metadata.connectionID
+                   connectionID: authorityConnectionID
                ) || !fileToolBindingSourceIsCurrent(authoritySource, for: authoritySnapshot)
             {
                 throw FileToolAuthorityFailure.superseded
@@ -2461,6 +2466,9 @@ extension MCPServerViewModel {
             from: metadata,
             toolName: "file_tool_lookup_scope"
         ))
+        let authorityConnectionID = resolved.map {
+            fileToolAuthorityConnectionID(metadata: metadata, routed: $0)
+        } ?? metadata.connectionID
         if var snapshot = resolved?.snapshot {
             if capturedRoute == nil,
                snapshot.runID == nil,
@@ -2474,7 +2482,7 @@ extension MCPServerViewModel {
                 snapshot.worktreeBindingState = liveTab.activeAgentSessionID.map {
                     agentWorktreeBindingStateProvider?($0, snapshot.tabID) ?? .unhydrated
                 } ?? .notApplicable
-                if let connectionID = metadata.connectionID,
+                if let connectionID = authorityConnectionID,
                    var bound = tabContextByConnectionID[connectionID],
                    fileToolLookupRouteMatches(bound, snapshot)
                 {
@@ -2490,13 +2498,13 @@ extension MCPServerViewModel {
 
             guard await hydrateFileToolLookupSnapshotIfNeeded(
                 &snapshot,
-                connectionID: metadata.connectionID
+                connectionID: authorityConnectionID
             ) else {
                 return try unavailableFileToolLookupContext(rootCatalogSnapshot: rootCatalogSnapshot)
             }
 
             resolved?.snapshot = snapshot
-            if let connectionID = metadata.connectionID,
+            if let connectionID = authorityConnectionID,
                var bound = tabContextByConnectionID[connectionID],
                fileToolLookupRouteMatches(bound, snapshot)
             {
@@ -2529,7 +2537,7 @@ extension MCPServerViewModel {
             activeAgentSessionID: resolved.snapshot.activeAgentSessionID,
             worktreeBindingState: resolved.snapshot.worktreeBindingState
         )
-        guard let connectionID = metadata.connectionID,
+        guard let connectionID = authorityConnectionID,
               let boundSnapshot = tabContextByConnectionID[connectionID],
               fileToolLookupSnapshotMatches(boundSnapshot, resolved.snapshot),
               source.activeAgentSessionID != nil,
@@ -3001,6 +3009,19 @@ extension MCPServerViewModel {
         else { return false }
         return expectedBindingGeneration == nil
             || current.readFileAutoSelectionGeneration == expectedBindingGeneration
+    }
+
+    @MainActor
+    private func fileToolAuthorityConnectionID(
+        metadata: RequestMetadata,
+        routed: ResolvedTabContextSnapshot
+    ) -> UUID? {
+        // A runless one-shot hint never installs a connection binding. Its authority is
+        // the captured tab and root catalog, not a connection entry that cannot exist.
+        if routed.isRunlessOneShotHint {
+            return nil
+        }
+        return metadata.connectionID
     }
 
     @MainActor

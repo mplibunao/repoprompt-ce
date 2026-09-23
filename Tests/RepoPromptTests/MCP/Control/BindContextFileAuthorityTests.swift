@@ -622,6 +622,91 @@ import XCTest
             XCTAssertEqual(authority.lookupContext.bindingProjection, nil)
         }
 
+        @MainActor
+        func testUnboundOneShotHintsReadFilesWithoutInstallingBindingOrSelecting() async throws {
+            let root = try makeTemporaryRoot()
+            let file = root.appendingPathComponent("OneShotSentinel.swift")
+            try "struct OneShotSentinel {}\n".write(to: file, atomically: true, encoding: .utf8)
+            let fixture = try await makeFixture(rootPaths: [root.path])
+            let previousWindows = WindowStatesManager.shared.allWindows
+            WindowStatesManager.shared.allWindows = [fixture.window]
+            addTeardownBlock { @MainActor in
+                WindowStatesManager.shared.allWindows = previousWindows
+            }
+            try await AppGlobalMCPServiceComposition.shared.ensureRegistered()
+            let enabled = await fixture.window.mcpServer.setWindowToolsEnabled(true)
+            XCTAssertTrue(enabled)
+            addTeardownBlock { @MainActor in
+                _ = await fixture.window.mcpServer.setWindowToolsEnabled(false)
+            }
+            let connection = try await makeProductionMCPConnection()
+            addTeardownBlock { await connection.cleanup() }
+            let identity = WorkspaceSelectionIdentity(workspaceID: fixture.workspace.id, tabID: fixture.contextID)
+            let initialSelection = try XCTUnwrap(fixture.window.workspaceManager.composeTab(for: identity)).selection
+
+            let roots = try await connection.client.callTool(name: "get_file_tree", arguments: [
+                "type": .string("roots"),
+                "_windowID": .int(fixture.window.windowID),
+                "_rawJSON": .bool(true)
+            ])
+            XCTAssertNotEqual(roots.isError, true, toolText(roots))
+            let rootsReply = try JSONDecoder().decode(
+                ToolResultDTOs.FileTreeDTO.self,
+                from: XCTUnwrap(toolText(roots).data(using: .utf8))
+            )
+            XCTAssertEqual(rootsReply.rootsCount, 1)
+            XCTAssertNil(rootsReply.errorCode)
+
+            let read = try await connection.client.callTool(name: "read_file", arguments: [
+                "path": .string(file.path),
+                "context_id": .string(fixture.contextID.uuidString),
+                "_rawJSON": .bool(true)
+            ])
+            XCTAssertNotEqual(read.isError, true, toolText(read))
+            let readReply = try JSONDecoder().decode(
+                ToolResultDTOs.ReadFileReply.self,
+                from: XCTUnwrap(toolText(read).data(using: .utf8))
+            )
+            XCTAssertTrue(readReply.content.contains("OneShotSentinel"))
+            XCTAssertNil(readReply.errorCode)
+
+            let selected = try await connection.client.callTool(name: "get_file_tree", arguments: [
+                "mode": .string("selected"),
+                "context_id": .string(fixture.contextID.uuidString),
+                "_rawJSON": .bool(true)
+            ])
+            XCTAssertNotEqual(selected.isError, true, toolText(selected))
+            XCTAssertNil(fixture.window.mcpServer.boundTabID(forConnection: connection.connectionID))
+            XCTAssertEqual(fixture.window.workspaceManager.composeTab(for: identity)?.selection, initialSelection)
+        }
+
+        @MainActor
+        func testRunScopedOneShotHintStillRequiresConnectionAuthority() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let runID = UUID()
+            fixture.window.mcpServer.connectionIDToRunID[fixture.connectionID] = runID
+            addTeardownBlock { @MainActor in
+                fixture.window.mcpServer.connectionIDToRunID.removeValue(forKey: fixture.connectionID)
+            }
+            let metadata = MCPServerViewModel.RequestMetadata(
+                connectionID: fixture.connectionID,
+                clientName: "BindContextFileAuthorityTests",
+                windowID: fixture.window.windowID,
+                tabContextHint: MCPServerViewModel.TabContextHint(
+                    tabID: fixture.contextID,
+                    workspaceID: fixture.workspace.id,
+                    windowID: fixture.window.windowID
+                )
+            )
+
+            do {
+                _ = try await fixture.window.mcpServer.requiredFileToolLookupContext(from: metadata)
+                XCTFail("A run-scoped hint without a connection binding must fail closed")
+            } catch let failure as MCPServerViewModel.FileToolAuthorityFailure {
+                XCTAssertEqual(failure, .superseded)
+            }
+        }
+
         func testFileTreeReadinessFailureIsTypedAndRetryable() throws {
             let value = try failureValue(tool: MCPWindowToolName.getFileTree, args: ["type": .string("roots")])
             let reply = try XCTUnwrap(value.decode(ToolResultDTOs.FileTreeDTO.self))
