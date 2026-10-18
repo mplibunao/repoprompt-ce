@@ -1,0 +1,8 @@
+# leading comment
+[mcp_servers.zeta]
+command="z"
+[features.code_mode]
+# owned section comment
+enabled = false
+[mcp_servers.alpha]
+command="a"

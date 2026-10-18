@@ -1,0 +1,4 @@
+[mcp_servers."space name"]
+command="echo"
+[mcp_servers."dot\x2ename"]
+command="echo"

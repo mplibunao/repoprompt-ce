@@ -1,0 +1,693 @@
+{
+  "artifactSHA256": {
+    "README.md": "9eeeab8844e1ece19393f23bc6582e4b4e8f5e00094447e53b7ed899428c240a",
+    "report.md": "2cd21fa8c2c4712b60549361a2b16bedd9737bcb9562d02fe5f57edad3fb5ef0",
+    "results/characterization.json": "4eca9d1bbf5d89cbb86ea6eeb243d38df1f1530bc6cff3c37d99ef8106e2a82f",
+    "results/dependency-audit.json": "ca98409420ed3a7cfc1d3c72d695d6ed18f274b5a26ebf52c5f0f1cdaf156745",
+    "results/dialect.json": "9d952fceba0c6a0ad0b8017df99a16a51eba9f185da01f2b531dbce2028bc92b",
+    "results/order-mutation.json": "5081bddec5b76d2e5fcce81aabcde756d9142fcff95384cba07a1d59aeeedacd",
+    "results/package-audit.json": "cfb128c78eab6391835881aa8bc00734882b5e31d3ec439b5e4f339d3897902e",
+    "results/run-state.json": "0ee084555a8a8b75cbc60630161d2cd35cf15c4d1284ef10e1e9d70e2de88ba4",
+    "results/summary.json": "c769e67fd14d098100a5f447b7536abc638eef6149f252ef14bb215bb3a814a6"
+  },
+  "checks": [
+    {
+      "check": "evidence run completed",
+      "detail": "{'schema': 1, 'status': 'complete'}",
+      "result": "pass"
+    },
+    {
+      "check": "fixture count dialect",
+      "detail": "48 of 48 expected",
+      "result": "pass"
+    },
+    {
+      "check": "fixture count order",
+      "detail": "14 of 14 expected",
+      "result": "pass"
+    },
+    {
+      "check": "fixture count adversarial",
+      "detail": "37 of 37 expected",
+      "result": "pass"
+    },
+    {
+      "check": "manifest covers dialect fixtures",
+      "detail": "unmatched []",
+      "result": "pass"
+    },
+    {
+      "check": "manifest covers order fixtures",
+      "detail": "unmatched []",
+      "result": "pass"
+    },
+    {
+      "check": "adversarial manifest lists exactly the present corpus",
+      "detail": "missing [], unexpected []",
+      "result": "pass"
+    },
+    {
+      "check": "adversarial fixtures match manifest digests",
+      "detail": "mismatched []",
+      "result": "pass"
+    },
+    {
+      "check": "characterization verified the adversarial manifest",
+      "detail": "adversarialManifestVerified=True",
+      "result": "pass"
+    },
+    {
+      "check": "generated fixtures use the documented input-size boundary",
+      "detail": "{'bytes-limit-minus-1.toml': 1048575, 'bytes-limit.toml': 1048576, 'bytes-limit-plus-1.toml': 1048577}",
+      "result": "pass"
+    },
+    {
+      "check": "characterization uses the documented input-size boundary",
+      "detail": "recorded 1048576, policy 1048576",
+      "result": "pass"
+    },
+    {
+      "check": "Swift probe uses the documented input-size boundary",
+      "detail": "1_048_576",
+      "result": "pass"
+    },
+    {
+      "check": "dialect schema 2",
+      "detail": "schema 2",
+      "result": "pass"
+    },
+    {
+      "check": "dialect has 48 rows",
+      "detail": "48 rows",
+      "result": "pass"
+    },
+    {
+      "check": "dialect rows carry 5 engines",
+      "detail": "5 engines per row",
+      "result": "pass"
+    },
+    {
+      "check": "dialect recorded oracle identity verification",
+      "detail": "oracleIdentityVerified=True",
+      "result": "pass"
+    },
+    {
+      "check": "both oracle controls established validity",
+      "detail": "{'codex-0.149.0': True, 'codex-0.152.0': True}",
+      "result": "pass"
+    },
+    {
+      "check": "every temporary Codex home was removed",
+      "detail": "96/96 removed",
+      "result": "pass"
+    },
+    {
+      "check": "probe records are schema 3",
+      "detail": "schemas [3]",
+      "result": "pass"
+    },
+    {
+      "check": "no negative control claims a full traversal",
+      "detail": "observed ['full_recursive_traversal', 'root_decode_only', 'root_table_only']",
+      "result": "pass"
+    },
+    {
+      "check": "order schema 3",
+      "detail": "schema 3",
+      "result": "pass"
+    },
+    {
+      "check": "order projections total 2800",
+      "detail": "2800 projections",
+      "result": "pass"
+    },
+    {
+      "check": "order repeats are 100 per configuration",
+      "detail": "100 repeats",
+      "result": "pass"
+    },
+    {
+      "check": "order projections deterministic",
+      "detail": "one distinct projection hash per configuration",
+      "result": "pass"
+    },
+    {
+      "check": "existing owned-section mutation is covered",
+      "detail": "4 configurations covering replacement and insertion",
+      "result": "pass"
+    },
+    {
+      "check": "existing owned-section mutations changed the document and are idempotent",
+      "detail": "all changed and byte-identical on reapplication",
+      "result": "pass"
+    },
+    {
+      "check": "byte-confinement negative checks reject every off-range edit",
+      "detail": "{'bomLossRejected': True, 'commentChangeRejected': True, 'offRangeBooleanChangeRejected': True, 'orderingChangeRejected': True, 'unrelatedValueChangeRejected': True}",
+      "result": "pass"
+    },
+    {
+      "check": "characterization schema 3",
+      "detail": "schema 3",
+      "result": "pass"
+    },
+    {
+      "check": "diagnostic repeats are 100",
+      "detail": "100 repeats",
+      "result": "pass"
+    },
+    {
+      "check": "adversarial covers 37 fixtures in 2 configurations",
+      "detail": "74 cases",
+      "result": "pass"
+    },
+    {
+      "check": "sanitizer evidence mode is full when findings are published",
+      "detail": "evidenceMode=full, findings=1",
+      "result": "pass"
+    },
+    {
+      "check": "sanitizer coverage matches the adversarial corpus",
+      "detail": "37/37",
+      "result": "pass"
+    },
+    {
+      "check": "report mentions the sanitizer only with matching coverage",
+      "detail": "coverage 37/37",
+      "result": "pass"
+    },
+    {
+      "check": "reproduction documents the full-evidence mode",
+      "detail": "run_all.sh and README both document it",
+      "result": "pass"
+    },
+    {
+      "check": "package-audit schema 2",
+      "detail": "schema 2",
+      "result": "pass"
+    },
+    {
+      "check": "upstream test count recorded",
+      "detail": "751 tests in 8 suites",
+      "result": "pass"
+    },
+    {
+      "check": "TOMLDecoder optional dependencies absent from resolved graph",
+      "detail": "['swift-toml', 'tomldecoder', 'tomlkit']",
+      "result": "pass"
+    },
+    {
+      "check": "package audit cleared the documented optional-dependency switches",
+      "detail": "{'clearedSwitches': ['TOMLDECODER_BENCHMARKS', 'TOMLDECODER_DOCS', 'SPI_GENERATE_DOCS', 'TOMLDECODER_FORMATTING'], 'inheritedBeforeClearing': [], 'presentDuringRun': []}",
+      "result": "pass"
+    },
+    {
+      "check": "environment-conditioned manifest keys detected",
+      "detail": "['SPI_GENERATE_DOCS', 'TOMLDECODER_BENCHMARKS', 'TOMLDECODER_DOCS', 'TOMLDECODER_FORMATTING']",
+      "result": "pass"
+    },
+    {
+      "check": "summary regenerates from raw artifacts",
+      "detail": "ok",
+      "result": "pass"
+    },
+    {
+      "check": "stored summary matches a fresh derivation",
+      "detail": "None",
+      "result": "pass"
+    },
+    {
+      "check": "gate dialect-parity recomputed from raw",
+      "detail": "published 46/48, recomputed 46/48",
+      "result": "pass"
+    },
+    {
+      "check": "gate oracle-agreement recomputed from raw",
+      "detail": "published 48/48, recomputed 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "gate order-projection recomputed from raw",
+      "detail": "published 26/28, recomputed 26/28",
+      "result": "pass"
+    },
+    {
+      "check": "gate mutation-transaction recomputed from raw",
+      "detail": "published 26/28, recomputed 26/28",
+      "result": "pass"
+    },
+    {
+      "check": "gate order-determinism recomputed from raw",
+      "detail": "published 28/28, recomputed 28/28",
+      "result": "pass"
+    },
+    {
+      "check": "gate adversarial-classification recomputed from raw",
+      "detail": "published 69/74, recomputed 69/74",
+      "result": "pass"
+    },
+    {
+      "check": "gate structured-line recomputed from raw",
+      "detail": "published 0/48, recomputed 0/48",
+      "result": "pass"
+    },
+    {
+      "check": "gate diagnostic-determinism recomputed from raw",
+      "detail": "published 48/48, recomputed 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "gate sanitizer-coverage recomputed from raw",
+      "detail": "published 37/37, recomputed 37/37",
+      "result": "pass"
+    },
+    {
+      "check": "gate no-crash recomputed from raw",
+      "detail": "2 crashes in raw",
+      "result": "pass"
+    },
+    {
+      "check": "gate no-sanitizer-finding recomputed from raw",
+      "detail": "1 findings in raw",
+      "result": "pass"
+    },
+    {
+      "check": "sanitizer statuses are all clean or recognized findings",
+      "detail": "{'clean': 36, 'sanitizer_finding': 1}",
+      "result": "pass"
+    },
+    {
+      "check": "decision follows the stated rule",
+      "detail": "NO-GO with 8 blocking failures",
+      "result": "pass"
+    },
+    {
+      "check": "published blocking failures match the gate results",
+      "detail": "['adversarial-classification', 'debug-latency-budget', 'dialect-parity', 'mutation-transaction', 'no-crash', 'no-sanitizer-finding', 'order-projection', 'structured-line']",
+      "result": "pass"
+    },
+    {
+      "check": "no winner is recorded for a NO-GO",
+      "detail": "None",
+      "result": "pass"
+    },
+    {
+      "check": "summary mismatch IDs match raw rows",
+      "detail": "['n04-integer-overflow', 'u01-bom']",
+      "result": "pass"
+    },
+    {
+      "check": "declaration authority is the manifest, not the candidate",
+      "detail": "fixture manifest; candidate-reported keys are compared against it, never used as the yardstick",
+      "result": "pass"
+    },
+    {
+      "check": "every MCP-bearing fixture carries declarations",
+      "detail": "13 declared",
+      "result": "pass"
+    },
+    {
+      "check": "env and header declarations preserved",
+      "detail": "6 exhaustive declarations",
+      "result": "pass"
+    },
+    {
+      "check": "mutation pass proves preservation",
+      "detail": "confinement, projection, comments, and newline style asserted on every passing mutation",
+      "result": "pass"
+    },
+    {
+      "check": "report states dialect parity",
+      "detail": "expects 46/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states oracle agreement",
+      "detail": "expects 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states corpus expectation",
+      "detail": "expects 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states name set agreement",
+      "detail": "expects 13/13",
+      "result": "pass"
+    },
+    {
+      "check": "report states oracle projected fields",
+      "detail": "expects 13/13",
+      "result": "pass"
+    },
+    {
+      "check": "report states declared key/value",
+      "detail": "expects 13/13",
+      "result": "pass"
+    },
+    {
+      "check": "report states declared env and headers",
+      "detail": "expects 6/6",
+      "result": "pass"
+    },
+    {
+      "check": "report states order pass",
+      "detail": "expects 26/28",
+      "result": "pass"
+    },
+    {
+      "check": "report states order determinism",
+      "detail": "expects 28/28",
+      "result": "pass"
+    },
+    {
+      "check": "report states mutation pass",
+      "detail": "expects 26/28",
+      "result": "pass"
+    },
+    {
+      "check": "report states adversarial pass",
+      "detail": "expects 69/74",
+      "result": "pass"
+    },
+    {
+      "check": "report states structured line",
+      "detail": "expects 0/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states structured column",
+      "detail": "expects 0/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states free-form line",
+      "detail": "expects 32/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states diagnostic determinism",
+      "detail": "expects 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states diagnostic decoded",
+      "detail": "expects 48/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states sanitizer coverage",
+      "detail": "expects 37/37",
+      "result": "pass"
+    },
+    {
+      "check": "report states negative control swift-toml-2.0.0",
+      "detail": "expects 42/48",
+      "result": "pass"
+    },
+    {
+      "check": "report states negative control tomlkit-0.6.0",
+      "detail": "expects 42/48",
+      "result": "pass"
+    },
+    {
+      "check": "every number in the measured sections is derived from raw results",
+      "detail": "unverified []",
+      "result": "pass"
+    },
+    {
+      "check": "dialect lane free of superseded 28-case ratios",
+      "detail": "found []",
+      "result": "pass"
+    },
+    {
+      "check": "report.md free of superseded claims",
+      "detail": "none present",
+      "result": "pass"
+    },
+    {
+      "check": "report.md states the decision",
+      "detail": "expects NO-GO",
+      "result": "pass"
+    },
+    {
+      "check": "README.md free of superseded claims",
+      "detail": "none present",
+      "result": "pass"
+    },
+    {
+      "check": "README.md states the decision",
+      "detail": "expects NO-GO",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse audit_dependencies.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse build_summary.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse generate_adversarial.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse generate_fixtures.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse generate_order_fixtures.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse render_report_tables.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse run_characterization.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse run_dialect.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse run_order.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse run_package_audit.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse run_state.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse verify_artifacts.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "AST parse verify_negative_cases.py",
+      "detail": "parsed",
+      "result": "pass"
+    },
+    {
+      "check": "sh -n run_all.sh",
+      "detail": "ok",
+      "result": "pass"
+    },
+    {
+      "check": "run_all.sh references every script",
+      "detail": "all referenced",
+      "result": "pass"
+    },
+    {
+      "check": "plan present",
+      "detail": "docs/plans/codex-user-mcp-bridge-2026-08-30.md",
+      "result": "pass"
+    },
+    {
+      "check": "plan parser section revised",
+      "detail": "sha256 5b5e8eaff77042a08a09237a7dc7092b3192f22c8e38e5c591326634de75a566",
+      "result": "pass"
+    },
+    {
+      "check": "plan: grammar authority is the bundled Codex binary",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: regression oracle named",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: conformance claims are insufficient",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: TOML 1.1 escapes are mandatory fixtures",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: parse success requires full materialization",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: validation precedes extraction and mutation",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: accepted transaction order preserved",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: mutator demoted from validity authority",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: multiline-aware source index required",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: ordered projection required without dictionary iteration",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: typed failure instead of empty list",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: structured diagnostics required",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: error text must not drive control flow",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: resource safety gate stated",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: decision is NO-GO",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: no production dependency authorized",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: stop condition opened",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: native versus out-of-process next step",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: approval gate before touching the root package",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: prohibitions retained",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan: candidate versions recorded",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 1_048_576",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 128",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 50_000",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 10_000",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 262_144",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan states limit 256",
+      "detail": "present",
+      "result": "pass"
+    },
+    {
+      "check": "plan does not select a production dependency",
+      "detail": "no dependency selected",
+      "result": "pass"
+    },
+    {
+      "check": "working-tree changes stay inside authorized paths",
+      "detail": "135 authorized paths",
+      "result": "pass"
+    },
+    {
+      "check": "product sources unmodified in the working tree",
+      "detail": "clean",
+      "result": "pass"
+    },
+    {
+      "check": "product sources unmodified in the index",
+      "detail": "clean",
+      "result": "pass"
+    },
+    {
+      "check": "no product path is staged or untracked",
+      "detail": "none",
+      "result": "pass"
+    }
+  ],
+  "passed": 135,
+  "schema": 3,
+  "total": 135
+}

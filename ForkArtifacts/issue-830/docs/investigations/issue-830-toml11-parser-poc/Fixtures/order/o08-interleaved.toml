@@ -1,0 +1,9 @@
+# before
+[mcp_servers.zeta]
+command="z"
+# between
+[synthetic]
+value="keep"
+[mcp_servers.alpha]
+command="a"
+# after

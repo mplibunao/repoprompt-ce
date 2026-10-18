@@ -1,0 +1,4 @@
+[mcp_servers.alpha]
+command="a"
+[mcp_servers.alpha]
+url="http://localhost"

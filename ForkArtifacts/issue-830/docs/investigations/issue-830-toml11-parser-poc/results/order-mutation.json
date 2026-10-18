@@ -1,0 +1,4225 @@
+{
+  "confinementNegativeChecks": {
+    "bomLossRejected": true,
+    "commentChangeRejected": true,
+    "offRangeBooleanChangeRejected": true,
+    "orderingChangeRejected": true,
+    "unrelatedValueChangeRejected": true
+  },
+  "controls": {
+    "invalid_unrelated": {
+      "mutation": {
+        "changed": false,
+        "failure": "source_validation",
+        "wrote": false
+      },
+      "source": {
+        "accepted": false,
+        "diagnostic": {
+          "category": "invalid_syntax",
+          "message": "Illegal escape character 'q'."
+        },
+        "durationNanoseconds": 133500,
+        "engine": "TOMLDecoder",
+        "evidenceValidated": true,
+        "expectedOutcome": "syntax_error",
+        "fixtureIdentity": {
+          "bytes": 45,
+          "file": "control.toml",
+          "sha256": "00075e552e1be12ee5d1774372a1f8a07c6648f73de257a7018f76ab6d0f8c0d"
+        },
+        "materialization": "failed",
+        "metrics": {
+          "inputBytes": 45,
+          "maximumArrayElements": 0,
+          "maximumDepth": 0,
+          "maximumStringBytes": 0,
+          "mcpServerCount": 0,
+          "nodeCount": 0
+        },
+        "orderedMCPServers": [],
+        "outcome": "syntax_error",
+        "parserInvoked": true,
+        "schema": 3,
+        "selectedMCPServers": [],
+        "version": "0.4.5"
+      }
+    },
+    "over_byte_limit": {
+      "mutation": {
+        "changed": false,
+        "failure": "source_validation",
+        "wrote": false
+      },
+      "source": {
+        "accepted": false,
+        "diagnostic": {
+          "category": "input_too_large",
+          "message": "input exceeds configured byte limit"
+        },
+        "durationNanoseconds": 243834,
+        "engine": "TOMLDecoder",
+        "evidenceValidated": true,
+        "expectedOutcome": "input_too_large",
+        "fixtureIdentity": {
+          "bytes": 1048577,
+          "file": "control.toml",
+          "sha256": "fad0d673d5d079f127d694fb414fa911665408dee31804f8f4e423dffba58f0b"
+        },
+        "materialization": "not_attempted",
+        "metrics": {
+          "inputBytes": 1048577,
+          "maximumArrayElements": 0,
+          "maximumDepth": 0,
+          "maximumStringBytes": 0,
+          "mcpServerCount": 0,
+          "nodeCount": 0
+        },
+        "orderedMCPServers": [],
+        "outcome": "input_too_large",
+        "parserInvoked": false,
+        "schema": 3,
+        "selectedMCPServers": [],
+        "version": "0.4.5"
+      }
+    },
+    "owned_value_conflict": {
+      "indexedHeaders": [
+        {
+          "line": 1,
+          "path": [
+            "features",
+            "code_mode"
+          ]
+        }
+      ],
+      "mutation": {
+        "changed": false,
+        "failure": "owned_value_conflict",
+        "wrote": false
+      },
+      "source": {
+        "accepted": true,
+        "durationNanoseconds": 114083,
+        "engine": "TOMLDecoder",
+        "evidenceValidated": true,
+        "expectedOutcome": "accepted",
+        "fixtureIdentity": {
+          "bytes": 36,
+          "file": "control.toml",
+          "sha256": "9e61e6956307905d6351ae3f296c46b059af778e675baf8855114dd413ad1779"
+        },
+        "materialization": "full_recursive_traversal",
+        "metrics": {
+          "inputBytes": 36,
+          "maximumArrayElements": 0,
+          "maximumDepth": 3,
+          "maximumStringBytes": 4,
+          "mcpServerCount": 0,
+          "nodeCount": 3
+        },
+        "orderedMCPServers": [],
+        "outcome": "accepted",
+        "parserInvoked": true,
+        "schema": 3,
+        "selectedMCPServers": [],
+        "version": "0.4.5"
+      }
+    }
+  },
+  "protocol": "validate source -> index layout -> raw exact-byte-range mutation -> validate output -> second-application byte identity",
+  "results": [
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o01-nonlexicographic-regular.toml",
+      "id": "o01-nonlexicographic-regular",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "cca4f4f5e41555c8050e456a17716664cd5eb6b847e95bd5ae4e186b67a01c51"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 435834,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 99,
+            "file": "candidate.toml",
+            "sha256": "23f57e28cf7d0b3f07f66dd3d94d799aa4cc8816969817f8af52d6e03b372c51"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 99,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            63,
+            99
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            63,
+            63
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 1288583,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 63,
+            "file": "o01-nonlexicographic-regular.toml",
+            "sha256": "ed73fbf6ba93247033f1a4844e0c9ff4272831c54bf96f87a8737d06e133ccb8"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 63,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "dot.name",
+        "space name"
+      ],
+      "file": "o02-quoted-dot-space.toml",
+      "id": "o02-quoted-dot-space",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "6ef06a1b27a94b065f35fece428cbdef893710d72569d7f8e7daf3e9cd6e6e32"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "dot.name",
+            "space name"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 195709,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 112,
+            "file": "candidate.toml",
+            "sha256": "44d441315514c6c5ea5f0a87d49470095838c914262104f1ab82fd0a794fbc97"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 112,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "dot.name",
+            "space name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "d",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "s",
+              "name": "space name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "dot.name"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "space name"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            76,
+            112
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            76,
+            76
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 469834,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 76,
+            "file": "o02-quoted-dot-space.toml",
+            "sha256": "d24c57aa5e9763be12798e95e5e16b630a94710a5bbddd624b82c66aeb5c99d1"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 76,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "dot.name",
+            "space name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "d",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "s",
+              "name": "space name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "a\u001blpha"
+      ],
+      "file": "o03-toml11-escapes.toml",
+      "id": "o03-toml11-escapes",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "fe992d88c84de1320572c19ef01c3615c47cd5475122cfdd776d99cd75c1a458"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "a\u001blpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 252959,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "candidate.toml",
+            "sha256": "8325cfd1018fa579958ad221501a580aea7c187ef5a13a4cd43b85afcd3660e4"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "a\u001blpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "echo",
+              "name": "a\u001blpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "a\u001blpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            81,
+            117
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            81,
+            81
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 402292,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 81,
+            "file": "o03-toml11-escapes.toml",
+            "sha256": "3cd07c9845736ce1996850f2ac8652f1d6af4e6ba43876f41640d06933459a6e"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 81,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "a\u001blpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "echo",
+              "name": "a\u001blpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o04-dotted-assignments.toml",
+      "id": "o04-dotted-assignments",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "e1434cb5aeb47ae9167d6a2f521bd93d4beb21b1139731be4fb330f9cfcfc4f7"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 199209,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 95,
+            "file": "candidate.toml",
+            "sha256": "edf836f4d18a5236d79a33ca8f445b79280cc7a80247757350f4f5783fdd71eb"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 95,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            59,
+            95
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            59,
+            59
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 406459,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 59,
+            "file": "o04-dotted-assignments.toml",
+            "sha256": "74a5feedae893cb4afbe674739c187604997f4b172232bbcd61d74964c710062"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 59,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o05-inline-root.toml",
+      "id": "o05-inline-root",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "3dcf7f6d8a997323654712019e453bbdf3aa73d0b1e1390dc3b861a8dfc5d419"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 224959,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 106,
+            "file": "candidate.toml",
+            "sha256": "054b2e9d6559d08d9f2cfcdabf2b39c827b689905c619f391d9611746e8b9b65"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 106,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            70,
+            106
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            70,
+            70
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 621750,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 70,
+            "file": "o05-inline-root.toml",
+            "sha256": "aedcb471ac1da5f076bb26c976e2db8c90e55199b42c8e5fb7f85dcb50c3554c"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o06-nested-subsections.toml",
+      "id": "o06-nested-subsections",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "300068eb8630a5e45b90017c882e0507bea02e9811b08c70922f4c9958adca9f"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 277625,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 186,
+            "file": "candidate.toml",
+            "sha256": "4be5c7a8531f94146c8d44d9f4c5678d0b6c39282133ed4530754820cef5e3a5"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 186,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 2,
+            "nodeCount": 12
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "httpHeaders": {
+                "Synthetic": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "http_headers",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "zeta",
+              "env"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            150,
+            186
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            150,
+            150
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 427375,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 150,
+            "file": "o06-nested-subsections.toml",
+            "sha256": "ba395ccb3e0452859be4ca454494d3b26c3dc59b83445957bb41eb9a0c41a595"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 150,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 2,
+            "nodeCount": 9
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "httpHeaders": {
+                "Synthetic": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "http_headers",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o07-implicit-parent.toml",
+      "id": "o07-implicit-parent",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "e20187ecde6d49de2ca8dc50a1f4c7296c39dfb1d938c570d81ef20ec45cc738"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 222917,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 136,
+            "file": "candidate.toml",
+            "sha256": "6d30f2bec3c5d75a8bd344a05ab63d55c92fc31ff1bba9169c640b6e8fe17d25"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 136,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 10
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta",
+              "env"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            100,
+            136
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            100,
+            100
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 496083,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 100,
+            "file": "o07-implicit-parent.toml",
+            "sha256": "e0d49ece86dd5d9a67251d8dcf3010c933f9353d89fb28ae731877fba18037d3"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 100,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o08-interleaved.toml",
+      "id": "o08-interleaved",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "7eb7e22f443c5d8f6c9f0c723370f55363aca0c9c9efef3d9506c74f9427a6d3"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 210792,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 151,
+            "file": "candidate.toml",
+            "sha256": "8f828a11173edfc69e03db5c257d800be06f0dd6aefc8a410062604e9e1954c6"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 151,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 10
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "synthetic"
+            ]
+          },
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            115,
+            151
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            115,
+            115
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 416542,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 115,
+            "file": "o08-interleaved.toml",
+            "sha256": "f8ce25df571b83f0be337ae51137d2cdd8b67df85ead81dd9f06c22b9304d3ae"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 115,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o09-multiline-basic-decoy.toml",
+      "id": "o09-multiline-basic-decoy",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "edfb3d791aa834956a47cfa9139d39d06ac81d70d78b74b5467b48feb610385d"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "real"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 251625,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 153,
+            "file": "candidate.toml",
+            "sha256": "c40fcfb9406015ae17b7e7e172e2559eaf77df9dd64089855e89c1a7d017cbb1"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 153,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "real"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            117,
+            153
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            117,
+            117
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 493083,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "o09-multiline-basic-decoy.toml",
+            "sha256": "f0f7539a01cb32c0635ce8e84161c44938b4bae1bf9eda4474a2f9a6181ce345"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o10-multiline-literal-decoy.toml",
+      "id": "o10-multiline-literal-decoy",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "edfb3d791aa834956a47cfa9139d39d06ac81d70d78b74b5467b48feb610385d"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "real"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 254125,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 153,
+            "file": "candidate.toml",
+            "sha256": "e720e7719953c0ddcab0ac9d92107ab3b6b3ce6a9c556d379bc16c7369907be5"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 153,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "real"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            117,
+            153
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            117,
+            117
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 703375,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "o10-multiline-literal-decoy.toml",
+            "sha256": "9ebdef8f018e19cdf983a3c8ca0d26540e8434a0b73145d432b580ecb8c13839"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o11-bom-crlf.toml",
+      "id": "o11-bom-crlf",
+      "mutationPass": false,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "7d8e325d2d9d73ea1518809228fa70e762461d68a5a6c61bce00c20dbf8feee6"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": []
+        }
+      ],
+      "orderPass": false,
+      "repeats": 100,
+      "representative": {
+        "mutation": {
+          "changed": false,
+          "failure": "source_validation",
+          "wrote": false
+        },
+        "source": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: missing =."
+          },
+          "durationNanoseconds": 570667,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "syntax_error",
+          "fixtureIdentity": {
+            "bytes": 70,
+            "file": "o11-bom-crlf.toml",
+            "sha256": "563fff967a6ee431132af082941e649453062a1c2d488e13dc9370c9832b09d4"
+          },
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [],
+      "file": "o12-missing-mcp.toml",
+      "id": "o12-missing-mcp",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "ff976fa4c50bfaa8871230b5553bdc35eb6b144e5b52b2c7dba2fa98b3b1d6bc"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": []
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 219042,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 69,
+            "file": "candidate.toml",
+            "sha256": "06e9cb48c573da06c09c30f7701800c64811a4f1d0a43ba2b1f373214b780964"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 69,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 9,
+            "mcpServerCount": 0,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            33,
+            69
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            33,
+            33
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 2712750,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 33,
+            "file": "o12-missing-mcp.toml",
+            "sha256": "8a0d807805787dee780868f16099749c37642a93f9bd98717ffebd52699dd181"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 33,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 9,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o13-existing-section-boolean-replacement.toml",
+      "id": "o13-existing-section-boolean-replacement",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "cf9e6aea63d0a400d85dc0cdef7fb0ef5d9457e73728ee788119fa7951120050"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 270583,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 149,
+            "file": "candidate.toml",
+            "sha256": "764c24f1e5e6fd129f53630c094b0f4ef356eff7d64db758af8805707a9a6d89"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 149,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 4,
+            "path": [
+              "features",
+              "code_mode"
+            ]
+          },
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            109,
+            113
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            109,
+            114
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 424500,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 150,
+            "file": "o13-existing-section-boolean-replacement.toml",
+            "sha256": "87eaf3e7edafe258ae4794d644522d5e4ed7f152227aead462da123e37ab3fec"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 150,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "debug",
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o14-existing-section-key-insertion.toml",
+      "id": "o14-existing-section-key-insertion",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "332444d77805cbbeea25b5a93a5979edb71e4199001da2e2673793bc5d03dc59"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 239916,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 157,
+            "file": "candidate.toml",
+            "sha256": "e26645bcb1b71fb2d1dfa80ae8491143e19e12629d3433f35eda37010fc461e3"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 157,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 4,
+            "path": [
+              "features",
+              "code_mode"
+            ]
+          },
+          {
+            "line": 6,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            74,
+            90
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            74,
+            74
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 442083,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 141,
+            "file": "o14-existing-section-key-insertion.toml",
+            "sha256": "154bd7ed52a474bfd5fba6d2aed7376c70b94bc4c6e046449764b863606d15fe"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 141,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o01-nonlexicographic-regular.toml",
+      "id": "o01-nonlexicographic-regular",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "cca4f4f5e41555c8050e456a17716664cd5eb6b847e95bd5ae4e186b67a01c51"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 105000,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 99,
+            "file": "candidate.toml",
+            "sha256": "23f57e28cf7d0b3f07f66dd3d94d799aa4cc8816969817f8af52d6e03b372c51"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 99,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            63,
+            99
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            63,
+            63
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 531875,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 63,
+            "file": "o01-nonlexicographic-regular.toml",
+            "sha256": "ed73fbf6ba93247033f1a4844e0c9ff4272831c54bf96f87a8737d06e133ccb8"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 63,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "dot.name",
+        "space name"
+      ],
+      "file": "o02-quoted-dot-space.toml",
+      "id": "o02-quoted-dot-space",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "6ef06a1b27a94b065f35fece428cbdef893710d72569d7f8e7daf3e9cd6e6e32"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "dot.name",
+            "space name"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 183334,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 112,
+            "file": "candidate.toml",
+            "sha256": "44d441315514c6c5ea5f0a87d49470095838c914262104f1ab82fd0a794fbc97"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 112,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "dot.name",
+            "space name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "d",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "s",
+              "name": "space name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "dot.name"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "space name"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            76,
+            112
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            76,
+            76
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 147125,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 76,
+            "file": "o02-quoted-dot-space.toml",
+            "sha256": "d24c57aa5e9763be12798e95e5e16b630a94710a5bbddd624b82c66aeb5c99d1"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 76,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "dot.name",
+            "space name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "d",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "s",
+              "name": "space name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "a\u001blpha"
+      ],
+      "file": "o03-toml11-escapes.toml",
+      "id": "o03-toml11-escapes",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "fe992d88c84de1320572c19ef01c3615c47cd5475122cfdd776d99cd75c1a458"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "a\u001blpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 121500,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "candidate.toml",
+            "sha256": "8325cfd1018fa579958ad221501a580aea7c187ef5a13a4cd43b85afcd3660e4"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "a\u001blpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "echo",
+              "name": "a\u001blpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "a\u001blpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            81,
+            117
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            81,
+            81
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 114583,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 81,
+            "file": "o03-toml11-escapes.toml",
+            "sha256": "3cd07c9845736ce1996850f2ac8652f1d6af4e6ba43876f41640d06933459a6e"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 81,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "a\u001blpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "echo",
+              "name": "a\u001blpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o04-dotted-assignments.toml",
+      "id": "o04-dotted-assignments",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "e1434cb5aeb47ae9167d6a2f521bd93d4beb21b1139731be4fb330f9cfcfc4f7"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 128709,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 95,
+            "file": "candidate.toml",
+            "sha256": "edf836f4d18a5236d79a33ca8f445b79280cc7a80247757350f4f5783fdd71eb"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 95,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            59,
+            95
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            59,
+            59
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 131375,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 59,
+            "file": "o04-dotted-assignments.toml",
+            "sha256": "74a5feedae893cb4afbe674739c187604997f4b172232bbcd61d74964c710062"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 59,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o05-inline-root.toml",
+      "id": "o05-inline-root",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "3dcf7f6d8a997323654712019e453bbdf3aa73d0b1e1390dc3b861a8dfc5d419"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 123875,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 106,
+            "file": "candidate.toml",
+            "sha256": "054b2e9d6559d08d9f2cfcdabf2b39c827b689905c619f391d9611746e8b9b65"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 106,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            70,
+            106
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            70,
+            70
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 120416,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 70,
+            "file": "o05-inline-root.toml",
+            "sha256": "aedcb471ac1da5f076bb26c976e2db8c90e55199b42c8e5fb7f85dcb50c3554c"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o06-nested-subsections.toml",
+      "id": "o06-nested-subsections",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "300068eb8630a5e45b90017c882e0507bea02e9811b08c70922f4c9958adca9f"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 119166,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 186,
+            "file": "candidate.toml",
+            "sha256": "4be5c7a8531f94146c8d44d9f4c5678d0b6c39282133ed4530754820cef5e3a5"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 186,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 2,
+            "nodeCount": 12
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "httpHeaders": {
+                "Synthetic": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "http_headers",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "zeta",
+              "env"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            150,
+            186
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            150,
+            150
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 121000,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 150,
+            "file": "o06-nested-subsections.toml",
+            "sha256": "ba395ccb3e0452859be4ca454494d3b26c3dc59b83445957bb41eb9a0c41a595"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 150,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 2,
+            "nodeCount": 9
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "httpHeaders": {
+                "Synthetic": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "http_headers",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o07-implicit-parent.toml",
+      "id": "o07-implicit-parent",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "e20187ecde6d49de2ca8dc50a1f4c7296c39dfb1d938c570d81ef20ec45cc738"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 146833,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 136,
+            "file": "candidate.toml",
+            "sha256": "6d30f2bec3c5d75a8bd344a05ab63d55c92fc31ff1bba9169c640b6e8fe17d25"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 136,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 10
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 1,
+            "path": [
+              "mcp_servers",
+              "zeta",
+              "env"
+            ]
+          },
+          {
+            "line": 3,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            100,
+            136
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            100,
+            100
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 111166,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 100,
+            "file": "o07-implicit-parent.toml",
+            "sha256": "e0d49ece86dd5d9a67251d8dcf3010c933f9353d89fb28ae731877fba18037d3"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 100,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "env": {
+                "SYNTHETIC": "x"
+              },
+              "name": "zeta",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o08-interleaved.toml",
+      "id": "o08-interleaved",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "7eb7e22f443c5d8f6c9f0c723370f55363aca0c9c9efef3d9506c74f9427a6d3"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 141917,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 151,
+            "file": "candidate.toml",
+            "sha256": "8f828a11173edfc69e03db5c257d800be06f0dd6aefc8a410062604e9e1954c6"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 151,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 10
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 5,
+            "path": [
+              "synthetic"
+            ]
+          },
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            115,
+            151
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            115,
+            115
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 132500,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 115,
+            "file": "o08-interleaved.toml",
+            "sha256": "f8ce25df571b83f0be337ae51137d2cdd8b67df85ead81dd9f06c22b9304d3ae"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 115,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o09-multiline-basic-decoy.toml",
+      "id": "o09-multiline-basic-decoy",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "edfb3d791aa834956a47cfa9139d39d06ac81d70d78b74b5467b48feb610385d"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "real"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 122458,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 153,
+            "file": "candidate.toml",
+            "sha256": "c40fcfb9406015ae17b7e7e172e2559eaf77df9dd64089855e89c1a7d017cbb1"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 153,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "real"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            117,
+            153
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            117,
+            117
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 150833,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "o09-multiline-basic-decoy.toml",
+            "sha256": "f0f7539a01cb32c0635ce8e84161c44938b4bae1bf9eda4474a2f9a6181ce345"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o10-multiline-literal-decoy.toml",
+      "id": "o10-multiline-literal-decoy",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "edfb3d791aa834956a47cfa9139d39d06ac81d70d78b74b5467b48feb610385d"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "real"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 113209,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 153,
+            "file": "candidate.toml",
+            "sha256": "e720e7719953c0ddcab0ac9d92107ab3b6b3ce6a9c556d379bc16c7369907be5"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 153,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "real"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            117,
+            153
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            117,
+            117
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 142000,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 117,
+            "file": "o10-multiline-literal-decoy.toml",
+            "sha256": "9ebdef8f018e19cdf983a3c8ca0d26540e8434a0b73145d432b580ecb8c13839"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 117,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 69,
+            "mcpServerCount": 1,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [
+            "real"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "real",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o11-bom-crlf.toml",
+      "id": "o11-bom-crlf",
+      "mutationPass": false,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "7d8e325d2d9d73ea1518809228fa70e762461d68a5a6c61bce00c20dbf8feee6"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": []
+        }
+      ],
+      "orderPass": false,
+      "repeats": 100,
+      "representative": {
+        "mutation": {
+          "changed": false,
+          "failure": "source_validation",
+          "wrote": false
+        },
+        "source": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: missing =."
+          },
+          "durationNanoseconds": 133917,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "syntax_error",
+          "fixtureIdentity": {
+            "bytes": 70,
+            "file": "o11-bom-crlf.toml",
+            "sha256": "563fff967a6ee431132af082941e649453062a1c2d488e13dc9370c9832b09d4"
+          },
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [],
+      "file": "o12-missing-mcp.toml",
+      "id": "o12-missing-mcp",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "ff976fa4c50bfaa8871230b5553bdc35eb6b144e5b52b2c7dba2fa98b3b1d6bc"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": []
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 97041,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 69,
+            "file": "candidate.toml",
+            "sha256": "06e9cb48c573da06c09c30f7701800c64811a4f1d0a43ba2b1f373214b780964"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 69,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 9,
+            "mcpServerCount": 0,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            33,
+            69
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            33,
+            33
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 133375,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 33,
+            "file": "o12-missing-mcp.toml",
+            "sha256": "8a0d807805787dee780868f16099749c37642a93f9bd98717ffebd52699dd181"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 33,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 9,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o13-existing-section-boolean-replacement.toml",
+      "id": "o13-existing-section-boolean-replacement",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "cf9e6aea63d0a400d85dc0cdef7fb0ef5d9457e73728ee788119fa7951120050"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 126833,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 149,
+            "file": "candidate.toml",
+            "sha256": "764c24f1e5e6fd129f53630c094b0f4ef356eff7d64db758af8805707a9a6d89"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 149,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 4,
+            "path": [
+              "features",
+              "code_mode"
+            ]
+          },
+          {
+            "line": 7,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            109,
+            113
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            109,
+            114
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 117250,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 150,
+            "file": "o13-existing-section-boolean-replacement.toml",
+            "sha256": "87eaf3e7edafe258ae4794d644522d5e4ed7f152227aead462da123e37ab3fec"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 150,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    },
+    {
+      "configuration": "release",
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o14-existing-section-key-insertion.toml",
+      "id": "o14-existing-section-key-insertion",
+      "mutationPass": true,
+      "observedProjectionHashes": [
+        {
+          "count": 100,
+          "sha256": "332444d77805cbbeea25b5a93a5979edb71e4199001da2e2673793bc5d03dc59"
+        }
+      ],
+      "observedSourceOrders": [
+        {
+          "count": 100,
+          "order": [
+            "zeta",
+            "alpha"
+          ]
+        }
+      ],
+      "orderPass": true,
+      "repeats": 100,
+      "representative": {
+        "candidateOutput": {
+          "accepted": true,
+          "durationNanoseconds": 133000,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 157,
+            "file": "candidate.toml",
+            "sha256": "e26645bcb1b71fb2d1dfa80ae8491143e19e12629d3433f35eda37010fc461e3"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 157,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 8
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "indexedHeaders": [
+          {
+            "line": 2,
+            "path": [
+              "mcp_servers",
+              "zeta"
+            ]
+          },
+          {
+            "line": 4,
+            "path": [
+              "features",
+              "code_mode"
+            ]
+          },
+          {
+            "line": 6,
+            "path": [
+              "mcp_servers",
+              "alpha"
+            ]
+          }
+        ],
+        "mutation": {
+          "bomPreserved": true,
+          "changed": true,
+          "commentsPreserved": true,
+          "diffConfinedToOwnedSpan": true,
+          "failure": null,
+          "newlineStylePreserved": true,
+          "outputOwnedByteRange": [
+            74,
+            90
+          ],
+          "outsideOwnedBytesIdentical": true,
+          "secondApplicationByteIdentical": true,
+          "sourceOwnedByteRange": [
+            74,
+            74
+          ],
+          "sourcePrefixPreservedWhenAppending": true,
+          "unrelatedProjectionUnchanged": true,
+          "wrote": true
+        },
+        "source": {
+          "accepted": true,
+          "durationNanoseconds": 113833,
+          "engine": "TOMLDecoder",
+          "evidenceValidated": true,
+          "expectedOutcome": "accepted",
+          "fixtureIdentity": {
+            "bytes": 141,
+            "file": "o14-existing-section-key-insertion.toml",
+            "sha256": "154bd7ed52a474bfd5fba6d2aed7376c70b94bc4c6e046449764b863606d15fe"
+          },
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 141,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 7
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        }
+      },
+      "stable": true
+    }
+  ],
+  "schema": 3,
+  "scope": "isolated proof-of-concept transaction, not product integration",
+  "summary": {
+    "confinementNegativeChecksPass": true,
+    "fixtureConfigurations": 28,
+    "mutationPass": 26,
+    "noWriteControlsPass": true,
+    "orderPass": 26,
+    "stable": 28
+  }
+}

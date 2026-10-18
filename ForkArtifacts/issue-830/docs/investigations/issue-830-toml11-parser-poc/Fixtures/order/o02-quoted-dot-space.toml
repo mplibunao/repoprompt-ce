@@ -1,0 +1,4 @@
+[mcp_servers."dot.name"]
+command="d"
+[mcp_servers."space name"]
+command="s"

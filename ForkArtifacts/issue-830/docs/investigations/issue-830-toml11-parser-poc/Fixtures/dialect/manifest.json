@@ -1,0 +1,574 @@
+{
+  "cases": [
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "s01-existing-escapes.toml",
+      "id": "s01-existing-escapes"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "s02-escape-e.toml",
+      "id": "s02-escape-e"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "s03-escape-x41.toml",
+      "id": "s03-escape-x41"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "s04-escape-x1b.toml",
+      "id": "s04-escape-x1b"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "s05-mixed-escapes.toml",
+      "id": "s05-mixed-escapes"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "name"
+        }
+      ],
+      "file": "s06-escape-in-quoted-key.toml",
+      "fullProjectionDeclared": true,
+      "id": "s06-escape-in-quoted-key"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s07-unknown-escape.toml",
+      "id": "s07-unknown-escape"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s08-short-x.toml",
+      "id": "s08-short-x"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s09-nonhex-x.toml",
+      "id": "s09-nonhex-x"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s10-short-u.toml",
+      "id": "s10-short-u"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s11-short-U.toml",
+      "id": "s11-short-U"
+    },
+    {
+      "category": "strings",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "s12-invalid-scalar.toml",
+      "id": "s12-invalid-scalar"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m01-unterminated-basic.toml",
+      "id": "m01-unterminated-basic"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m02-unterminated-multiline.toml",
+      "id": "m02-unterminated-multiline"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m03-malformed-header.toml",
+      "id": "m03-malformed-header"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m04-trailing-characters.toml",
+      "id": "m04-trailing-characters"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m05-bare-cr.toml",
+      "id": "m05-bare-cr"
+    },
+    {
+      "category": "malformed",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "m06-control-character.toml",
+      "id": "m06-control-character"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d01-duplicate-key.toml",
+      "id": "d01-duplicate-key"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d02-duplicate-table.toml",
+      "id": "d02-duplicate-table"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d03-dotted-extension-conflict.toml",
+      "id": "d03-dotted-extension-conflict"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d04-inline-table-sealed.toml",
+      "id": "d04-inline-table-sealed"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d05-scalar-table-conflict.toml",
+      "id": "d05-scalar-table-conflict"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d06-array-table-conflict.toml",
+      "id": "d06-array-table-conflict"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d07-dotted-table-conflict.toml",
+      "id": "d07-dotted-table-conflict"
+    },
+    {
+      "category": "duplicates",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "d08-table-array-table-conflict.toml",
+      "id": "d08-table-array-table-conflict"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c01-regular-headers.toml",
+      "fullProjectionDeclared": false,
+      "id": "c01-regular-headers"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c02-dotted-assignments.toml",
+      "fullProjectionDeclared": false,
+      "id": "c02-dotted-assignments"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "dot.name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "dot.name"
+        }
+      ],
+      "file": "c03-quoted-dot.toml",
+      "fullProjectionDeclared": false,
+      "id": "c03-quoted-dot"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c04-inline-root.toml",
+      "fullProjectionDeclared": false,
+      "id": "c04-inline-root"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "SYNTHETIC": "value"
+          },
+          "name": "alpha"
+        }
+      ],
+      "file": "c05-implicit-parent.toml",
+      "fullProjectionDeclared": false,
+      "id": "c05-implicit-parent"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "c06-array-of-tables.toml",
+      "id": "c06-array-of-tables"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c07-legal-mixed.toml",
+      "fullProjectionDeclared": false,
+      "id": "c07-legal-mixed"
+    },
+    {
+      "category": "construction",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "SYNTHETIC": "value"
+          },
+          "name": "alpha"
+        }
+      ],
+      "file": "c08-nested-subsection.toml",
+      "fullProjectionDeclared": false,
+      "id": "c08-nested-subsection"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "n01-signs-underscores.toml",
+      "id": "n01-signs-underscores"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "n02-radices.toml",
+      "id": "n02-radices"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "n03-leading-zero.toml",
+      "id": "n03-leading-zero"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "n04-integer-overflow.toml",
+      "id": "n04-integer-overflow"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "n05-invalid-date.toml",
+      "id": "n05-invalid-date"
+    },
+    {
+      "category": "numeric",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "n06-valid-datetime.toml",
+      "id": "n06-valid-datetime"
+    },
+    {
+      "category": "unicode",
+      "expectedAccept": true,
+      "expectedMCPNames": [],
+      "file": "u01-bom.toml",
+      "id": "u01-bom"
+    },
+    {
+      "category": "unicode",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "日本語"
+      ],
+      "expectedServers": [
+        {
+          "command": "écho",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "日本語"
+        }
+      ],
+      "file": "u02-nonascii.toml",
+      "fullProjectionDeclared": true,
+      "id": "u02-nonascii"
+    },
+    {
+      "category": "unicode",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "u03-invalid-utf8.toml",
+      "id": "u03-invalid-utf8"
+    },
+    {
+      "category": "unicode",
+      "expectedAccept": false,
+      "expectedMCPNames": [],
+      "file": "u04-disallowed-control.toml",
+      "id": "u04-disallowed-control"
+    },
+    {
+      "category": "mcp",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "stdio"
+      ],
+      "expectedServers": [
+        {
+          "arguments": [
+            "synthetic"
+          ],
+          "command": "echo",
+          "declaredKeys": [
+            "args",
+            "command",
+            "enabled"
+          ],
+          "enabled": true,
+          "name": "stdio"
+        }
+      ],
+      "file": "p01-stdio.toml",
+      "fullProjectionDeclared": true,
+      "id": "p01-stdio"
+    },
+    {
+      "category": "mcp",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "remote"
+      ],
+      "expectedServers": [
+        {
+          "declaredKeys": [
+            "enabled",
+            "url"
+          ],
+          "enabled": false,
+          "name": "remote",
+          "url": "http://127.0.0.1:9/mcp"
+        }
+      ],
+      "file": "p02-streamable-http.toml",
+      "fullProjectionDeclared": true,
+      "id": "p02-streamable-http"
+    },
+    {
+      "category": "mcp",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "local",
+        "remote"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "TOKEN": "SYNTHETIC_NOT_SECRET"
+          },
+          "name": "local"
+        },
+        {
+          "declaredKeys": [
+            "enabled",
+            "http_headers",
+            "url"
+          ],
+          "enabled": false,
+          "httpHeaders": {
+            "Authorization": "SYNTHETIC_HEADER"
+          },
+          "name": "remote",
+          "url": "http://127.0.0.1:9/mcp"
+        }
+      ],
+      "file": "p03-env-and-headers.toml",
+      "fullProjectionDeclared": true,
+      "id": "p03-env-and-headers"
+    },
+    {
+      "category": "mcp",
+      "expectedAccept": true,
+      "expectedMCPNames": [
+        "space name",
+        "dot.name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "space name"
+        },
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "dot.name"
+        }
+      ],
+      "file": "p04-quoted-escaped-names.toml",
+      "fullProjectionDeclared": true,
+      "id": "p04-quoted-escaped-names"
+    }
+  ],
+  "declaredServerCases": 13,
+  "documentCount": 48,
+  "fullProjectionCases": 6,
+  "schema": 3
+}

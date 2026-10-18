@@ -1,0 +1,127 @@
+{
+  "cases": [
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o01-nonlexicographic-regular.toml",
+      "id": "o01-nonlexicographic-regular"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "dot.name",
+        "space name"
+      ],
+      "file": "o02-quoted-dot-space.toml",
+      "id": "o02-quoted-dot-space"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "a\u001blpha"
+      ],
+      "file": "o03-toml11-escapes.toml",
+      "id": "o03-toml11-escapes"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o04-dotted-assignments.toml",
+      "id": "o04-dotted-assignments"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o05-inline-root.toml",
+      "id": "o05-inline-root"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o06-nested-subsections.toml",
+      "id": "o06-nested-subsections"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o07-implicit-parent.toml",
+      "id": "o07-implicit-parent"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o08-interleaved.toml",
+      "id": "o08-interleaved"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o09-multiline-basic-decoy.toml",
+      "id": "o09-multiline-basic-decoy"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "real"
+      ],
+      "file": "o10-multiline-literal-decoy.toml",
+      "id": "o10-multiline-literal-decoy"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o11-bom-crlf.toml",
+      "id": "o11-bom-crlf"
+    },
+    {
+      "exercisesExistingOwnedSection": false,
+      "expectedOrder": [],
+      "file": "o12-missing-mcp.toml",
+      "id": "o12-missing-mcp"
+    },
+    {
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o13-existing-section-boolean-replacement.toml",
+      "id": "o13-existing-section-boolean-replacement"
+    },
+    {
+      "exercisesExistingOwnedSection": true,
+      "expectedOrder": [
+        "zeta",
+        "alpha"
+      ],
+      "file": "o14-existing-section-key-insertion.toml",
+      "id": "o14-existing-section-key-insertion"
+    }
+  ],
+  "fixtureCount": 14,
+  "schema": 2
+}

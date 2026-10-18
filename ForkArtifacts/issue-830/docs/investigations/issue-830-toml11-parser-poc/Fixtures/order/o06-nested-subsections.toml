@@ -1,0 +1,7 @@
+[mcp_servers.zeta]
+command="z"
+[mcp_servers.zeta.env]
+SYNTHETIC="x"
+[mcp_servers.alpha]
+url="http://127.0.0.1:9/mcp"
+http_headers={Synthetic="value"}

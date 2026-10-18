@@ -1,0 +1,207 @@
+{
+  "builds": [
+    {
+      "command": [
+        "swift",
+        "build",
+        "--package-path",
+        "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+        "--scratch-path",
+        "$TMPDIR/issue-830-build-audit-bvj_bjb5/debug",
+        "--product",
+        "probe-tomldecoder"
+      ],
+      "configuration": "debug",
+      "durationSeconds": 6.491739416,
+      "exitCode": 0,
+      "kind": "clean",
+      "outcome": "pass",
+      "stderrTail": "Fetching https://github.com/dduan/TOMLDecoder.git from cache\nFetching https://github.com/mattt/swift-toml.git from cache\nFetching https://github.com/LebJe/TOMLKit.git from cache\nFetched https://github.com/dduan/TOMLDecoder.git from cache (1.09s)\nFetched https://github.com/LebJe/TOMLKit.git from cache (1.09s)\nFetched https://github.com/mattt/swift-toml.git from cache (1.10s)\nComputing version for https://github.com/LebJe/TOMLKit.git\nComputed https://github.com/LebJe/TOMLKit.git at 0.6.0 (1.14s)\nComputing version for https://github.com/mattt/swift-toml.git\nComputed https://github.com/mattt/swift-toml.git at 2.0.0 (0.02s)\nComputing version for https://github.com/dduan/TOMLDecoder.git\nComputed https://github.com/dduan/TOMLDecoder.git at 0.4.5 (0.02s)\nComputed https://github.com/LebJe/TOMLKit.git at 0.6.0 (0.00s)\nComputed https://github.com/mattt/swift-toml.git at 2.0.0 (0.00s)\nComputed https://github.com/dduan/TOMLDecoder.git at 0.4.5 (0.00s)\nCreating working copy for https://github.com/dduan/TOMLDecoder.git\nWorking copy of https://github.com/dduan/TOMLDecoder.git resolved at 0.4.5\nCreating working copy for https://github.com/LebJe/TOMLKit.git\nWorking copy of https://github.com/LebJe/TOMLKit.git resolved at 0.6.0\nCreating working copy for https://github.com/mattt/swift-toml.git\nWorking copy of https://github.com/mattt/swift-toml.git resolved at 2.0.0\n",
+      "stdoutTail": "txt\n[6/25] Emitting module TOMLDecoder\n[7/26] Compiling TOMLDecoder _TOMLDecoder.swift\n[8/26] Compiling TOMLDecoder TOMLUnkeyedDecodingContainer.swift\n[9/26] Compiling TOMLDecoder TOMLArray.swift\n[10/26] Compiling TOMLDecoder TOMLDecoder.swift\n[11/26] Compiling TOMLDecoder TOMLDocument.swift\n[12/26] Compiling TOMLDecoder Token.swift\n[13/26] Compiling TOMLDecoder TOMLKeyedDecodingContainer.swift\n[14/26] Compiling TOMLDecoder DateTime.swift\n[15/26] Compiling TOMLDecoder Constants.swift\n[16/26] Compiling TOMLDecoder Parser+Finish.swift\n[17/26] Compiling TOMLDecoder Parser.swift\n[18/26] Compiling TOMLDecoder TOMLError.swift\n[19/26] Compiling TOMLDecoder TOMLKey.swift\n[20/26] Compiling TOMLDecoder TOMLTable.swift\n[21/26] Compiling TOMLDecoder TOMLSingleValueDecodingContainer.Generated.swift\n[22/26] Compiling ProbeSupport ProbeSupport.swift\n<worktree>/docs/investigations/issue-830-toml11-parser-poc/Sources/ProbeSupport/ProbeSupport.swift:65:16: warning: immutable property will not be decoded because it is declared with an initial value which cannot be overwritten\n63 | \n64 | public struct ProbeRecord: Codable, Sendable {\n65 |     public let schema = 3\n   |                |- warning: immutable property will not be decoded because it is declared with an initial value which cannot be overwritten\n   |                |- note: set the initial value via the initializer or explicitly define a CodingKeys enum including a 'schema' case to silence this warning\n   |                `- note: make the property mutable instead\n66 |     public let engine: String\n67 |     public let version: String\n[23/26] Emitting module ProbeSupport\n[24/28] Compiling ProbeTOMLDecoder main.swift\n[25/28] Emitting module ProbeTOMLDecoder\n[25/28] Write Objects.LinkFileList\n[26/28] Linking probe-tomldecoder\n[27/28] Applying probe-tomldecoder\nBuild of product 'probe-tomldecoder' complete! (6.19s)\n"
+    },
+    {
+      "command": [
+        "swift",
+        "build",
+        "--package-path",
+        "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+        "--scratch-path",
+        "$TMPDIR/issue-830-build-audit-bvj_bjb5/debug",
+        "--product",
+        "probe-tomldecoder"
+      ],
+      "configuration": "debug",
+      "durationSeconds": 0.378463875,
+      "exitCode": 0,
+      "kind": "incremental",
+      "outcome": "pass",
+      "stderrTail": "",
+      "stdoutTail": "[0/1] Planning build\nBuilding for debugging...\n[0/3] Write swift-version--58304C5D6DBC2206.txt\nBuild of product 'probe-tomldecoder' complete! (0.11s)\n"
+    },
+    {
+      "command": [
+        "swift",
+        "build",
+        "--package-path",
+        "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+        "--scratch-path",
+        "$TMPDIR/issue-830-build-audit-bvj_bjb5/release",
+        "--product",
+        "probe-tomldecoder",
+        "-c",
+        "release"
+      ],
+      "configuration": "release",
+      "durationSeconds": 6.977362625,
+      "exitCode": 0,
+      "kind": "clean",
+      "outcome": "pass",
+      "stderrTail": "Fetching https://github.com/mattt/swift-toml.git from cache\nFetching https://github.com/dduan/TOMLDecoder.git from cache\nFetching https://github.com/LebJe/TOMLKit.git from cache\nFetched https://github.com/mattt/swift-toml.git from cache (0.86s)\nFetched https://github.com/dduan/TOMLDecoder.git from cache (0.86s)\nFetched https://github.com/LebJe/TOMLKit.git from cache (0.86s)\nComputing version for https://github.com/LebJe/TOMLKit.git\nComputed https://github.com/LebJe/TOMLKit.git at 0.6.0 (0.90s)\nComputing version for https://github.com/mattt/swift-toml.git\nComputed https://github.com/mattt/swift-toml.git at 2.0.0 (0.02s)\nComputing version for https://github.com/dduan/TOMLDecoder.git\nComputed https://github.com/dduan/TOMLDecoder.git at 0.4.5 (0.02s)\nComputed https://github.com/LebJe/TOMLKit.git at 0.6.0 (0.00s)\nComputed https://github.com/mattt/swift-toml.git at 2.0.0 (0.00s)\nComputed https://github.com/dduan/TOMLDecoder.git at 0.4.5 (0.00s)\nCreating working copy for https://github.com/mattt/swift-toml.git\nWorking copy of https://github.com/mattt/swift-toml.git resolved at 2.0.0\nCreating working copy for https://github.com/dduan/TOMLDecoder.git\nWorking copy of https://github.com/dduan/TOMLDecoder.git resolved at 0.4.5\nCreating working copy for https://github.com/LebJe/TOMLKit.git\nWorking copy of https://github.com/LebJe/TOMLKit.git resolved at 0.6.0\n",
+      "stdoutTail": "Building for production...\n[0/6] Write sources\n[3/6] Write swift-version--58304C5D6DBC2206.txt\n[5/8] Compiling ProbeSupport ProbeSupport.swift\n<worktree>/docs/investigations/issue-830-toml11-parser-poc/Sources/ProbeSupport/ProbeSupport.swift:65:16: warning: immutable property will not be decoded because it is declared with an initial value which cannot be overwritten\n63 | \n64 | public struct ProbeRecord: Codable, Sendable {\n65 |     public let schema = 3\n   |                |- warning: immutable property will not be decoded because it is declared with an initial value which cannot be overwritten\n   |                |- note: set the initial value via the initializer or explicitly define a CodingKeys enum including a 'schema' case to silence this warning\n   |                `- note: make the property mutable instead\n66 |     public let engine: String\n67 |     public let version: String\n[6/8] Compiling TOMLDecoder DateTime.swift\n[7/9] Compiling ProbeTOMLDecoder main.swift\n[7/9] Write Objects.LinkFileList\n[8/9] Linking probe-tomldecoder\nBuild of product 'probe-tomldecoder' complete! (6.72s)\n"
+    },
+    {
+      "command": [
+        "swift",
+        "build",
+        "--package-path",
+        "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+        "--scratch-path",
+        "$TMPDIR/issue-830-build-audit-bvj_bjb5/release",
+        "--product",
+        "probe-tomldecoder",
+        "-c",
+        "release"
+      ],
+      "configuration": "release",
+      "durationSeconds": 0.373549791,
+      "exitCode": 0,
+      "kind": "incremental",
+      "outcome": "pass",
+      "stderrTail": "",
+      "stdoutTail": "[0/1] Planning build\nBuilding for production...\n[0/2] Write swift-version--58304C5D6DBC2206.txt\nBuild of product 'probe-tomldecoder' complete! (0.11s)\n"
+    }
+  ],
+  "candidate": {
+    "binaryArtifactDeclarations": 0,
+    "checkoutBytes": 33086204,
+    "checkoutBytesExcludingVCS": 32927783,
+    "licenseFiles": [
+      {
+        "name": "LICENSE.md",
+        "sha256": "ee59f20a0a5550b0b071a0d9edb31c29629ce4bad2d8f5d0467ee7d574b541cf"
+      }
+    ],
+    "macroDeclarations": 0,
+    "manifestConditionalEnvironmentKeys": [
+      "SPI_GENERATE_DOCS",
+      "TOMLDECODER_BENCHMARKS",
+      "TOMLDECODER_DOCS",
+      "TOMLDECODER_FORMATTING"
+    ],
+    "name": "TOMLDecoder",
+    "pluginDeclarations": 1,
+    "productionTargetNativeFileCount": 0,
+    "productionTargetNativeFiles": [],
+    "revision": "a2bbd2796fe3064e107de18cb56031052c4fa899",
+    "tag": "0.4.5",
+    "unsafeFlagsPresent": false
+  },
+  "environmentSanitization": {
+    "clearedSwitches": [
+      "TOMLDECODER_BENCHMARKS",
+      "TOMLDECODER_DOCS",
+      "SPI_GENERATE_DOCS",
+      "TOMLDECODER_FORMATTING"
+    ],
+    "inheritedBeforeClearing": [],
+    "presentDuringRun": []
+  },
+  "footprint": {
+    "releaseExecutableBytes": 739136,
+    "releaseObjectBytes": 3576720,
+    "releaseObjectFileCount": 30,
+    "rootApplicationDeltaMeasured": false,
+    "rootApplicationDeltaReason": "The POC is isolated and production dependency integration is not authorized.",
+    "strippedReleaseExecutableBytes": 468768
+  },
+  "resolvedGraph": {
+    "identities": [
+      "swift-toml",
+      "tomldecoder",
+      "tomlkit"
+    ],
+    "showDependencies": {
+      "dependencies": [
+        {
+          "dependencies": [],
+          "identity": "tomldecoder",
+          "name": "TOMLDecoder",
+          "path": "<worktree>/docs/investigations/issue-830-toml11-parser-poc/.build/checkouts/TOMLDecoder",
+          "traits": [
+            "default"
+          ],
+          "url": "https://github.com/dduan/TOMLDecoder.git",
+          "version": "0.4.5"
+        },
+        {
+          "dependencies": [],
+          "identity": "swift-toml",
+          "name": "TOML",
+          "path": "<worktree>/docs/investigations/issue-830-toml11-parser-poc/.build/checkouts/swift-toml",
+          "traits": [
+            "default"
+          ],
+          "url": "https://github.com/mattt/swift-toml.git",
+          "version": "2.0.0"
+        },
+        {
+          "dependencies": [],
+          "identity": "tomlkit",
+          "name": "TOMLKit",
+          "path": "<worktree>/docs/investigations/issue-830-toml11-parser-poc/.build/checkouts/TOMLKit",
+          "traits": [
+            "default"
+          ],
+          "url": "https://github.com/LebJe/TOMLKit.git",
+          "version": "0.6.0"
+        }
+      ],
+      "identity": "issue-830-toml11-parser-poc",
+      "name": "TOML11ParserPOC",
+      "path": "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+      "traits": [
+        "default"
+      ],
+      "url": "<worktree>/docs/investigations/issue-830-toml11-parser-poc",
+      "version": "unspecified"
+    },
+    "tomlDecoderOptionalDependenciesAbsent": true
+  },
+  "schema": 2,
+  "toolchain": {
+    "architecture": "arm64",
+    "macOS": "26.6.2",
+    "swift": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+    "xcode": [
+      "Xcode 26.6",
+      "Build version 17F113"
+    ]
+  },
+  "upstreamTests": {
+    "command": [
+      "swift",
+      "test",
+      "--package-path",
+      "<worktree>/docs/investigations/issue-830-toml11-parser-poc/.build/checkouts/TOMLDecoder",
+      "--scratch-path",
+      "$TMPDIR/issue-830-upstream-tests-2ktr14gd"
+    ],
+    "durationSeconds": 13.510783084,
+    "exitCode": 0,
+    "outcome": "pass",
+    "reportedExecutedTestCount": 751,
+    "reportedSuiteCount": 8,
+    "stderrTail": "ing module TOMLDecoder\n[11/34] Compiling TOMLDecoder _TOMLDecoder.swift\n[12/34] Emitting module Resources\n[13/34] Compiling Resources Resources.swift\n[14/34] Compiling Resources Canada.swift\n[15/34] Compiling Resources Twitter.swift\n[16/34] Compiling TOMLDecoder TOMLUnkeyedDecodingContainer.swift\n[17/34] Compiling TOMLDecoder TOMLArray.swift\n[18/34] Compiling TOMLDecoder TOMLDecoder.swift\n[19/34] Compiling TOMLDecoder TOMLError.swift\n[20/34] Compiling TOMLDecoder TOMLKey.swift\n[21/34] Compiling TOMLDecoder TOMLSingleValueDecodingContainer.Generated.swift\n[22/34] Compiling TOMLDecoder TOMLTable.swift\n[23/34] Compiling TOMLDecoder TOMLDocument.swift\n[24/34] Compiling TOMLDecoder Token.swift\n[25/34] Compiling TOMLDecoder TOMLKeyedDecodingContainer.swift\n[26/34] Compiling TOMLDecoder DateTime.swift\n[27/34] Compiling TOMLDecoder Constants.swift\n[28/34] Compiling TOMLDecoder Parser+Finish.swift\n[29/34] Compiling TOMLDecoder Parser.swift\n[30/46] Emitting module compliance\n[31/46] Compiling compliance main.swift\n[31/46] Write Objects.LinkFileList\n[32/46] Linking compliance\n[33/46] Applying compliance\n[35/46] Compiling TOMLDecoderTests TOMLTableKeyMembershipTests.swift\n[36/47] Compiling TOMLDecoderTests DateTimeDescriptionTests.swift\n[37/47] Emitting module TOMLDecoderTests\n[38/47] Compiling TOMLDecoderTests ValidationTests.Generated.swift\n[39/47] Compiling TOMLDecoderTests TOMLDecoderTests.swift\n[40/47] Compiling TOMLDecoderTests Tags.Generated.swift\n[41/47] Compiling TOMLDecoderTests LeafValueDecodingTests.Generated.swift\n[42/47] Compiling TOMLDecoderTests DateStrategyTests.swift\n[43/47] Compiling TOMLDecoderTests DateTimeExactMatchTests.swift\n[44/47] Compiling TOMLDecoderTests InvalidationTests.Generated.swift\n[45/47] Compiling TOMLDecoderTests TOMLComplianceSupport.swift\n[46/49] Compiling TOMLDecoderPackageTests runner.swift\n[47/49] Emitting module TOMLDecoderPackageTests\n[47/49] Write Objects.LinkFileList\n[48/49] Linking TOMLDecoderPackageTests\nBuild complete! (12.07s)\n",
+    "stdoutTail": "✔ Test \"[datetime] month under\" passed after 0.035 seconds.\n✔ Test \"[integer] positive bin\" passed after 0.034 seconds.\n✔ Test \"[float] exp trailing us 02\" passed after 0.034 seconds.\n✔ Test \"[string] no open 03\" passed after 0.035 seconds.\n✔ Test \"[table] bare invalid character 01\" passed after 0.034 seconds.\n✔ Test \"[control] rawstring us\" passed after 0.034 seconds.\n✔ Test \"[table] no close 02\" passed after 0.034 seconds.\n✔ Test \"[bool] almost false\" passed after 0.034 seconds.\n✔ Test \"[local-date] day 1digit\" passed after 0.034 seconds.\n✔ Test \"[array] no comma 01\" passed after 0.034 seconds.\n✔ Test \"[string] bad multiline\" passed after 0.034 seconds.\n✔ Test \"[inline-table] no comma 01\" passed after 0.034 seconds.\n✔ Test \"[table] no close 09\" passed after 0.034 seconds.\n✔ Test \"[local-time] minute over\" passed after 0.035 seconds.\n✔ Test \"[table] newline 04\" passed after 0.035 seconds.\n✔ Test \"[local-date] y10k\" passed after 0.034 seconds.\n✔ Test \"[bool] just f\" passed after 0.033 seconds.\n✔ Test \"[float] exp trailing us\" passed after 0.034 seconds.\n✔ Test \"[table] multiline key 01\" passed after 0.034 seconds.\n✔ Test \"[inline-table] empty 02\" passed after 0.034 seconds.\n✔ Test \"[key] no eol 04\" passed after 0.034 seconds.\n✔ Test \"[float] leading dot plus\" passed after 0.034 seconds.\n✔ Test \"[array] no comma 03\" passed after 0.033 seconds.\n✔ Test \"[table] duplicate key 03\" passed after 0.034 seconds.\n✔ Test \"[string] bad uni esc 02\" passed after 0.034 seconds.\n✔ Test \"[control] rawmulti del\" passed after 0.033 seconds.\n✔ Test \"[bool] mixed case true\" passed after 0.034 seconds.\n✔ Suite DateStrategyTests passed after 0.058 seconds.\n✔ Suite DateTimeDescriptionTests passed after 0.059 seconds.\n✔ Suite TOMLValidationTests passed after 0.059 seconds.\n✔ Suite TOMLInvalidationTests passed after 0.059 seconds.\n✔ Test canada() passed after 0.399 seconds.\n✔ Suite TOMLDecoderTests passed after 0.400 seconds.\n✔ Test run with 751 tests in 8 suites passed after 0.400 seconds.\n"
+  }
+}

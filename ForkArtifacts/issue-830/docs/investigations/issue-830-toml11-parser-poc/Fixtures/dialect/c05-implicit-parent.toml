@@ -1,0 +1,4 @@
+[mcp_servers.alpha.env]
+SYNTHETIC="value"
+[mcp_servers.alpha]
+command="echo"

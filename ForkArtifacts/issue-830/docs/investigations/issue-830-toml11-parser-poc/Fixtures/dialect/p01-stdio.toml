@@ -1,0 +1,4 @@
+[mcp_servers.stdio]
+command="echo"
+args=["synthetic"]
+enabled=true

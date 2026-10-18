@@ -1,0 +1,10 @@
+[mcp_servers.s000]
+command="synthetic-0"
+[mcp_servers.s001]
+command="synthetic-1"
+[mcp_servers.s002]
+command="synthetic-2"
+[mcp_servers.s003]
+command="synthetic-3"
+[mcp_servers.s004]
+command="synthetic-4"

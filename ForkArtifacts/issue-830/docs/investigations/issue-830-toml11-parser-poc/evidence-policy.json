@@ -1,0 +1,10 @@
+{
+  "inputByteLimit": 1048576,
+  "optionalDependencyEnvironmentSwitches": [
+    "SPI_GENERATE_DOCS",
+    "TOMLDECODER_BENCHMARKS",
+    "TOMLDECODER_DOCS",
+    "TOMLDECODER_FORMATTING"
+  ],
+  "schema": 1
+}

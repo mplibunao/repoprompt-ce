@@ -1,0 +1,7 @@
+# leading comment
+[mcp_servers.zeta]
+command="z"
+[features.code_mode]
+# owned section without the key
+[mcp_servers.alpha]
+command="a"

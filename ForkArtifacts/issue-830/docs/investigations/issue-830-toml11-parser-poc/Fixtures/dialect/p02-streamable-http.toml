@@ -1,0 +1,3 @@
+[mcp_servers.remote]
+url="http://127.0.0.1:9/mcp"
+enabled=false

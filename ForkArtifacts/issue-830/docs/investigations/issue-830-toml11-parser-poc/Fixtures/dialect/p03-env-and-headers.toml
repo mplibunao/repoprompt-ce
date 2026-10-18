@@ -1,0 +1,8 @@
+[mcp_servers.local]
+command="echo"
+[mcp_servers.local.env]
+TOKEN="SYNTHETIC_NOT_SECRET"
+[mcp_servers.remote]
+url="http://127.0.0.1:9/mcp"
+http_headers={Authorization="SYNTHETIC_HEADER"}
+enabled=false

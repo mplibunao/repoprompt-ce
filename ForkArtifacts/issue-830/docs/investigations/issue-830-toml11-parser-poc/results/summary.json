@@ -1,0 +1,467 @@
+{
+  "blockingGateFailures": [
+    "dialect-parity",
+    "order-projection",
+    "mutation-transaction",
+    "no-crash",
+    "no-sanitizer-finding",
+    "structured-line",
+    "adversarial-classification",
+    "debug-latency-budget"
+  ],
+  "candidate": "TOMLDecoder-0.4.5",
+  "decision": "NO-GO",
+  "decisionRule": "NO-GO when any blocking gate fails; GO only when every blocking gate passes",
+  "gateCounts": {
+    "failedBlocking": 8,
+    "passed": 16,
+    "total": 24
+  },
+  "gates": [
+    {
+      "blocking": true,
+      "id": "oracle-agreement",
+      "observed": "48/48",
+      "requirement": "Both pinned Codex binaries agree on every document",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "corpus-expectation",
+      "observed": "48/48",
+      "requirement": "Codex classifies every fixture as the corpus declares",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "dialect-parity",
+      "observed": "46/48",
+      "requirement": "Candidate matches bundled Codex 0.149.0 on every document",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "mcp-name-set",
+      "observed": "13/13",
+      "requirement": "Server name sets match the oracle on accepted documents",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "oracle-projected-fields",
+      "observed": "13/13",
+      "requirement": "Every source-specified oracle-reported field matches, with no omissions",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "declared-key-value",
+      "observed": "13/13",
+      "requirement": "Declared keys and values match for every MCP-bearing document",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "declared-env-header",
+      "observed": "6/6",
+      "requirement": "Exhaustive declarations match, including env and http_headers",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "order-projection",
+      "observed": "26/28",
+      "requirement": "Declaration order recovered for every fixture and configuration",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "order-determinism",
+      "observed": "28/28",
+      "requirement": "Order and projection identical across every repeat",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "mutation-transaction",
+      "observed": "26/28",
+      "requirement": "Mutation validates, preserves, and is byte-identical on reapplication",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "no-write-controls",
+      "observed": {
+        "invalid_unrelated": "source_validation",
+        "over_byte_limit": "source_validation",
+        "owned_value_conflict": "owned_value_conflict"
+      },
+      "requirement": "Invalid, over-cap, and conflicting inputs write nothing",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "no-crash",
+      "observed": "2 crashes",
+      "requirement": "No crash on the adversarial corpus",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "no-sanitizer-finding",
+      "observed": "1 findings",
+      "requirement": "No AddressSanitizer finding on the adversarial corpus",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "sanitizer-coverage",
+      "observed": "37/37",
+      "requirement": "Sanitizer sweep covers every adversarial fixture",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "structured-line",
+      "observed": "0/48",
+      "requirement": "A structured syntax line number is exposed for every syntax error",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "diagnostic-determinism",
+      "observed": "48/48",
+      "requirement": "Diagnostics decode, classify as expected, and are identical across every repeat",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "adversarial-classification",
+      "observed": "69/74",
+      "requirement": "Every adversarial fixture classifies as its expected outcome",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "release-latency",
+      "observed": "4/4",
+      "requirement": "Every release latency gate met by decoded, correctly classified runs",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "debug-latency-budget",
+      "observed": "3 over budget",
+      "requirement": "Every debug invocation completes within 5 seconds",
+      "result": "fail"
+    },
+    {
+      "blocking": true,
+      "id": "peak-memory",
+      "observed": 2228224,
+      "requirement": "Peak memory increase for a 1 MiB document stays within 64 MiB",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "builds-and-upstream-tests",
+      "observed": "builds True, upstream pass",
+      "requirement": "Debug and release build, and upstream tests pass",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "no-native-production-code",
+      "observed": 0,
+      "requirement": "Production target adds no native source file",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "no-unsafe-flags",
+      "observed": false,
+      "requirement": "Manifest declares no unsafe flags",
+      "result": "pass"
+    },
+    {
+      "blocking": true,
+      "id": "clean-dependency-graph",
+      "observed": true,
+      "requirement": "Optional benchmark, DocC, and formatting dependencies stay out of the resolved graph",
+      "result": "pass"
+    }
+  ],
+  "lanes": {
+    "characterization": {
+      "adversarialPass": "69/74",
+      "crashes": [
+        {
+          "bytes": 1048574,
+          "configuration": "debug",
+          "fixture": "depth-max-under-byte-cap.toml"
+        },
+        {
+          "bytes": 1048574,
+          "configuration": "release",
+          "fixture": "depth-max-under-byte-cap.toml"
+        }
+      ],
+      "debugBudgetMisses": [
+        {
+          "actualMilliseconds": 8013.851708,
+          "classificationCorrect": true,
+          "configuration": "debug",
+          "fixture": "nodes-49999.toml",
+          "gateSeconds": 5.0
+        },
+        {
+          "actualMilliseconds": 7859.416,
+          "classificationCorrect": true,
+          "configuration": "debug",
+          "fixture": "nodes-50000.toml",
+          "gateSeconds": 5.0
+        },
+        {
+          "actualMilliseconds": 9050.508167,
+          "classificationCorrect": true,
+          "configuration": "debug",
+          "fixture": "nodes-50001.toml",
+          "gateSeconds": 5.0
+        }
+      ],
+      "diagnosticCases": 48,
+      "diagnosticDecodedAndClassified": "48/48",
+      "diagnosticDeterministic": "48/48",
+      "diagnosticValid": "48/48",
+      "evidenceMode": "full",
+      "lineOnlyInFreeFormText": "32/48",
+      "oneMiBPeakRSSDeltaBytes": 2228224,
+      "oneMiBRSSGatePass": true,
+      "performance": [
+        {
+          "bytes": 65536,
+          "decodedAndClassified": true,
+          "fixture": "representative-64k.toml",
+          "gateMilliseconds": 25.0,
+          "maxMilliseconds": 4.288,
+          "p50Milliseconds": 3.745,
+          "p95Milliseconds": 4.164,
+          "pass": true
+        },
+        {
+          "bytes": 1048576,
+          "decodedAndClassified": true,
+          "fixture": "near-1mib-valid.toml",
+          "gateMilliseconds": 500.0,
+          "maxMilliseconds": 6.463,
+          "p50Milliseconds": 5.176,
+          "p95Milliseconds": 6.333,
+          "pass": true
+        },
+        {
+          "bytes": 1048573,
+          "decodedAndClassified": true,
+          "fixture": "near-1mib-invalid-eof.toml",
+          "gateMilliseconds": 500.0,
+          "maxMilliseconds": 5.861,
+          "p50Milliseconds": 5.499,
+          "p95Milliseconds": 5.829,
+          "pass": true
+        },
+        {
+          "bytes": 1048577,
+          "decodedAndClassified": true,
+          "fixture": "bytes-limit-plus-1.toml",
+          "gateMilliseconds": 10.0,
+          "maxMilliseconds": 4.269,
+          "p50Milliseconds": 3.843,
+          "p95Milliseconds": 4.252,
+          "pass": true
+        }
+      ],
+      "performanceAllDecoded": true,
+      "releaseWideTableMillisecondsRange": [
+        654.9,
+        684.8
+      ],
+      "sanitizerCoverage": "37/37",
+      "sanitizerCoverageComplete": true,
+      "sanitizerFindings": [
+        {
+          "dominantFrame": "Parser.parseKeyValue(bytes:tableIndex:isKeyed:)",
+          "dominantFrameRepeats": 253,
+          "errorClass": "stack-overflow",
+          "fixture": "depth-max-under-byte-cap.toml",
+          "reportedFrames": 255,
+          "sanitizer": "AddressSanitizer"
+        }
+      ],
+      "sanitizerRequested": true,
+      "sanitizerStatusCounts": {
+        "clean": 36,
+        "sanitizer_finding": 1,
+        "timeout": 0,
+        "unclassified_failure": 0
+      },
+      "structuredColumn": "0/48",
+      "structuredLine": "0/48"
+    },
+    "dialect": {
+      "acceptedMCPNameSetAgreement": "13/13",
+      "candidateAcceptRejectParity": "46/48",
+      "candidateMaterialization": [
+        "full_recursive_traversal"
+      ],
+      "candidateParityMismatches": [
+        {
+          "candidate": true,
+          "codex": false,
+          "id": "n04-integer-overflow"
+        },
+        {
+          "candidate": false,
+          "codex": true,
+          "id": "u01-bom"
+        }
+      ],
+      "codexOracleAgreement": "48/48",
+      "corpusExpectationAgreement": "48/48",
+      "declarationAuthority": "fixture manifest; candidate-reported keys are compared against it, never used as the yardstick",
+      "declaredEnvHeaderAgreement": "6/6",
+      "declaredEnvHeaderFailures": [],
+      "declaredKeyValueAgreement": "13/13",
+      "declaredKeyValueFailures": [],
+      "documents": 48,
+      "negativeControlMaterialization": {
+        "swift-toml-2.0.0": [
+          "root_decode_only"
+        ],
+        "tomlkit-0.6.0": [
+          "root_table_only"
+        ]
+      },
+      "negativeControlParity": {
+        "swift-toml-2.0.0": "42/48",
+        "tomlkit-0.6.0": "42/48"
+      },
+      "oracleEmitsSortedServerNames": "6/6",
+      "oracleProjectedFieldAgreement": "13/13",
+      "oracleProjectedFieldFailures": [],
+      "oracleProjectedFields": [
+        "arguments",
+        "command",
+        "enabled",
+        "url"
+      ],
+      "oracleReportsEnvOrHeaders": false,
+      "oracleUsableAsOrderAuthority": false
+    },
+    "order": {
+      "deterministic": "28/28",
+      "existingOwnedSectionConfigurations": 4,
+      "existingOwnedSectionPass": 4,
+      "failures": [
+        {
+          "configuration": "debug",
+          "id": "o11-bom-crlf",
+          "mutation": false,
+          "order": false
+        },
+        {
+          "configuration": "release",
+          "id": "o11-bom-crlf",
+          "mutation": false,
+          "order": false
+        }
+      ],
+      "fixtureConfigurations": 28,
+      "mutationPass": "26/28",
+      "noWriteControls": {
+        "invalid_unrelated": "source_validation",
+        "over_byte_limit": "source_validation",
+        "owned_value_conflict": "owned_value_conflict"
+      },
+      "noWriteControlsWroteNothing": true,
+      "orderPass": "26/28",
+      "repeatsPerConfiguration": [
+        100
+      ],
+      "totalProjections": 2800
+    },
+    "package": {
+      "builds": [
+        {
+          "configuration": "debug",
+          "kind": "clean",
+          "outcome": "pass",
+          "seconds": 6.49
+        },
+        {
+          "configuration": "debug",
+          "kind": "incremental",
+          "outcome": "pass",
+          "seconds": 0.38
+        },
+        {
+          "configuration": "release",
+          "kind": "clean",
+          "outcome": "pass",
+          "seconds": 6.98
+        },
+        {
+          "configuration": "release",
+          "kind": "incremental",
+          "outcome": "pass",
+          "seconds": 0.37
+        }
+      ],
+      "buildsPassed": true,
+      "checkoutBytesExcludingVCS": 32927783,
+      "crossCandidateDebugExecutableBytes": {
+        "probe-swift-toml": 1360640,
+        "probe-tomldecoder": 1173648,
+        "probe-tomlkit": 1867808
+      },
+      "crossCandidateReleaseExecutableBytes": {
+        "probe-swift-toml": 811440,
+        "probe-tomldecoder": 739136,
+        "probe-tomlkit": 1066752
+      },
+      "footprint": {
+        "releaseExecutableBytes": 739136,
+        "releaseObjectBytes": 3576720,
+        "releaseObjectFileCount": 30,
+        "rootApplicationDeltaMeasured": false,
+        "rootApplicationDeltaReason": "The POC is isolated and production dependency integration is not authorized.",
+        "strippedReleaseExecutableBytes": 468768
+      },
+      "manifestConditionalEnvironmentKeys": [
+        "SPI_GENERATE_DOCS",
+        "TOMLDECODER_BENCHMARKS",
+        "TOMLDECODER_DOCS",
+        "TOMLDECODER_FORMATTING"
+      ],
+      "optionalDependenciesAbsentFromResolvedGraph": true,
+      "productionTargetNativeFileCount": 0,
+      "revision": "a2bbd2796fe3064e107de18cb56031052c4fa899",
+      "tag": "0.4.5",
+      "toolchain": {
+        "architecture": "arm64",
+        "macOS": "26.6.2",
+        "swift": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+        "xcode": [
+          "Xcode 26.6",
+          "Build version 17F113"
+        ]
+      },
+      "unsafeFlagsPresent": false,
+      "upstreamTests": {
+        "outcome": "pass",
+        "suites": 8,
+        "tests": 751
+      }
+    }
+  },
+  "schema": 3,
+  "winner": null
+}

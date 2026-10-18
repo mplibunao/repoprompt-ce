@@ -1,0 +1,109 @@
+{
+  "candidates": [
+    {
+      "candidate": "TOMLDecoder",
+      "licenses": [
+        {
+          "name": "LICENSE.md",
+          "sha256": "ee59f20a0a5550b0b071a0d9edb31c29629ce4bad2d8f5d0467ee7d574b541cf",
+          "titleLine": "The MIT License (MIT)"
+        }
+      ],
+      "nativeSourceFileCount": 0,
+      "nativeSourceFiles": [],
+      "revision": "a2bbd2796fe3064e107de18cb56031052c4fa899",
+      "tag": "0.4.5",
+      "unsafeFlagsPresent": false
+    },
+    {
+      "candidate": "swift-toml",
+      "licenses": [
+        {
+          "name": "LICENSE.md",
+          "sha256": "2f9b695627d569a3ce452b2c03fdd34310df78c8ea94edfafd9ce38381e5b502",
+          "titleLine": "Copyright 2025 Mattt (https://mat.tt)"
+        }
+      ],
+      "nativeSourceFileCount": 3,
+      "nativeSourceFiles": [
+        "Sources/CTomlPlusPlus/ctoml.cpp",
+        "Sources/CTomlPlusPlus/include/ctoml.h",
+        "Sources/CTomlPlusPlus/toml.hpp"
+      ],
+      "revision": "827506c90475e82d5a7f191f950fb3025cbdc0d6",
+      "tag": "2.0.0",
+      "unsafeFlagsPresent": false
+    },
+    {
+      "candidate": "TOMLKit",
+      "licenses": [
+        {
+          "name": "LICENSE",
+          "sha256": "bccd5fe8b98c6caede07def6c03f55877416ec40ea5fcd18e668b5c6fbb10abe",
+          "titleLine": "MIT License"
+        }
+      ],
+      "nativeSourceFileCount": 8,
+      "nativeSourceFiles": [
+        "Sources/CTOML/Sources/Array.cpp",
+        "Sources/CTOML/Sources/Conversion.cpp",
+        "Sources/CTOML/Sources/Conversion.hpp",
+        "Sources/CTOML/Sources/Date&Time&DateTime.cpp",
+        "Sources/CTOML/Sources/Node.cpp",
+        "Sources/CTOML/Sources/Table.cpp",
+        "Sources/CTOML/Sources/toml.hpp",
+        "Sources/CTOML/include/CTOML/CTOML.h"
+      ],
+      "revision": "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
+      "tag": "0.6.0",
+      "unsafeFlagsPresent": false
+    }
+  ],
+  "debugExecutableBytes": {
+    "probe-swift-toml": 1360640,
+    "probe-tomldecoder": 1173648,
+    "probe-tomlkit": 1867808
+  },
+  "macOSDeploymentTarget": "14.0",
+  "releaseExecutableBytes": {
+    "probe-swift-toml": 811440,
+    "probe-tomldecoder": 739136,
+    "probe-tomlkit": 1066752
+  },
+  "resolved": {
+    "originHash": "eaa267c5de27b18676795e5c21b4da0934f1a8285bd302380752e33777456d85",
+    "pins": [
+      {
+        "identity": "swift-toml",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/mattt/swift-toml.git",
+        "state": {
+          "revision": "827506c90475e82d5a7f191f950fb3025cbdc0d6",
+          "version": "2.0.0"
+        }
+      },
+      {
+        "identity": "tomldecoder",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/dduan/TOMLDecoder.git",
+        "state": {
+          "revision": "a2bbd2796fe3064e107de18cb56031052c4fa899",
+          "version": "0.4.5"
+        }
+      },
+      {
+        "identity": "tomlkit",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/LebJe/TOMLKit.git",
+        "state": {
+          "revision": "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
+          "version": "0.6.0"
+        }
+      }
+    ],
+    "version": 3
+  },
+  "schema": 2,
+  "scope": "cross-candidate identity and footprint; build results live in package-audit.json",
+  "swiftVersion": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+}

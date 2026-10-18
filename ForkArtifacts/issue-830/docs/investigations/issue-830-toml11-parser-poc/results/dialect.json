@@ -1,0 +1,5637 @@
+{
+  "command": "CODEX_HOME=<fresh-temporary-home> codex mcp list --json",
+  "controls": {
+    "codex-0.149.0": {
+      "malformed": {
+        "accepted": false,
+        "exitCode": 1,
+        "outcome": "parse_error",
+        "selectedMCPServers": [],
+        "stderrStored": false,
+        "temporaryHomeRemoved": true
+      },
+      "valid": {
+        "accepted": true,
+        "exitCode": 0,
+        "outcome": "accepted",
+        "selectedMCPServers": [
+          {
+            "arguments": [
+              "synthetic"
+            ],
+            "command": "echo",
+            "enabled": true,
+            "name": "stdio",
+            "url": null
+          }
+        ],
+        "stderrStored": false,
+        "temporaryHomeRemoved": true
+      },
+      "validityEstablished": true
+    },
+    "codex-0.152.0": {
+      "malformed": {
+        "accepted": false,
+        "exitCode": 1,
+        "outcome": "parse_error",
+        "selectedMCPServers": [],
+        "stderrStored": false,
+        "temporaryHomeRemoved": true
+      },
+      "valid": {
+        "accepted": true,
+        "exitCode": 0,
+        "outcome": "accepted",
+        "selectedMCPServers": [
+          {
+            "arguments": [
+              "synthetic"
+            ],
+            "command": "echo",
+            "enabled": true,
+            "name": "stdio",
+            "url": null
+          }
+        ],
+        "stderrStored": false,
+        "temporaryHomeRemoved": true
+      },
+      "validityEstablished": true
+    }
+  },
+  "networkBehavior": "configuration inventory only; configured MCP servers are not started",
+  "oracleIdentityVerified": true,
+  "oracleProvenance": {
+    "codex-0.149.0": {
+      "path": "~/Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/Resources/BundledRuntimes/Codex/aarch64-apple-darwin/bin/codex",
+      "sha256": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+      "signing": {
+        "Authority": [
+          "Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)",
+          "Developer ID Certification Authority",
+          "Apple Root CA"
+        ],
+        "Identifier": [
+          "codex"
+        ],
+        "TeamIdentifier": [
+          "2DC432GLL2"
+        ]
+      },
+      "version": "codex-cli 0.149.0"
+    },
+    "codex-0.152.0": {
+      "path": "~/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "sha256": "166e0593c333c1c6412cc9cea72b6e1dfc4fc79b4813da02c511a3339c9b9593",
+      "signing": {
+        "Authority": [
+          "Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)",
+          "Developer ID Certification Authority",
+          "Apple Root CA"
+        ],
+        "Identifier": [
+          "codex"
+        ],
+        "TeamIdentifier": [
+          "2DC432GLL2"
+        ]
+      },
+      "version": "codex-cli 0.152.0"
+    }
+  },
+  "privacy": "synthetic fixtures only; stderr and source excerpts are not stored",
+  "rows": [
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 388459,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 26,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 538125,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 26,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 10,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 433375,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 26,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s01-existing-escapes.toml",
+      "id": "s01-existing-escapes"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 17,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\e' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 152708,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 126250,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 12,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 17,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\e' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 164541,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s02-escape-e.toml",
+      "id": "s02-escape-e"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 142792,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 132875,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 3,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 121417,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s03-escape-x41.toml",
+      "id": "s03-escape-x41"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 15,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 139042,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 19,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 121458,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 19,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 5,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 15,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 157000,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 19,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s04-escape-x1b.toml",
+      "id": "s04-escape-x1b"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\e' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 168916,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 35,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 166250,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 35,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 5,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\e' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 127500,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 35,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s05-mixed-escapes.toml",
+      "id": "s05-mixed-escapes"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 18,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 228084,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 41,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 132666,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 41,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 1,
+            "nodeCount": 3
+          },
+          "orderedMCPServers": [
+            "name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 18,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 157959,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 41,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "name"
+        }
+      ],
+      "file": "s06-escape-in-quoted-key.toml",
+      "fullProjectionDeclared": true,
+      "id": "s06-escape-in-quoted-key"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: unknown escape sequence '\\q'"
+          },
+          "durationNanoseconds": 165833,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 13,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Illegal escape character 'q'."
+          },
+          "durationNanoseconds": 160542,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 13,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: unknown escape sequence '\\q'"
+          },
+          "durationNanoseconds": 135500,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 13,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s07-unknown-escape.toml",
+      "id": "s07-unknown-escape"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 143875,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 14,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Expected 2 hexadecimal characters after '1.'."
+          },
+          "durationNanoseconds": 134167,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 14,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 141000,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 14,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s08-short-x.toml",
+      "id": "s08-short-x"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 142792,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 15,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Invalid hexadecimal characters 'G'."
+          },
+          "durationNanoseconds": 117709,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 15,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 11,
+            "line": 1,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 130375,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 15,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s09-nonhex-x.toml",
+      "id": "s09-nonhex-x"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 15,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: expected hex digit, saw '\"'"
+          },
+          "durationNanoseconds": 150541,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Expected 4 hexadecimal characters after '3.'."
+          },
+          "durationNanoseconds": 115458,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 15,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: expected hex digit, saw '\"'"
+          },
+          "durationNanoseconds": 145000,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s10-short-u.toml",
+      "id": "s10-short-u"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: expected hex digit, saw '\"'"
+          },
+          "durationNanoseconds": 166042,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Expected 8 hexadecimal characters after '4.'."
+          },
+          "durationNanoseconds": 120250,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: expected hex digit, saw '\"'"
+          },
+          "durationNanoseconds": 154750,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s11-short-U.toml",
+      "id": "s11-short-U"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "strings",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 16,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: unicode surrogates (U+D800 - U+DFFF) are explicitly prohibited"
+          },
+          "durationNanoseconds": 137625,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Illegal UCS code '55296'."
+          },
+          "durationNanoseconds": 118875,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 16,
+            "line": 1,
+            "message": "Error while parsing unicode scalar sequence: unicode surrogates (U+D800 - U+DFFF) are explicitly prohibited"
+          },
+          "durationNanoseconds": 136500,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "s12-invalid-scalar.toml",
+      "id": "s12-invalid-scalar"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 22,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 148209,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: unterminated quote."
+          },
+          "durationNanoseconds": 110500,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 22,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 142667,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m01-unterminated-basic.toml",
+      "id": "m01-unterminated-basic"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 25,
+            "line": 1,
+            "message": "Error while parsing string: encountered end-of-file"
+          },
+          "durationNanoseconds": 168666,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: unterminated triple-d-quote."
+          },
+          "durationNanoseconds": 126250,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 25,
+            "line": 1,
+            "message": "Error while parsing string: encountered end-of-file"
+          },
+          "durationNanoseconds": 131292,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m02-unterminated-multiline.toml",
+      "id": "m02-unterminated-multiline"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 1,
+            "message": "Error while parsing table header: expected ']', saw '\\n'"
+          },
+          "durationNanoseconds": 140125,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 36,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: invalid key."
+          },
+          "durationNanoseconds": 123167,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 36,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 1,
+            "message": "Error while parsing table header: expected ']', saw '\\n'"
+          },
+          "durationNanoseconds": 116375,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 36,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m03-malformed-header.toml",
+      "id": "m03-malformed-header"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 14,
+            "line": 1,
+            "message": "Error while parsing key-value pair: expected a comment or whitespace, saw 't'"
+          },
+          "durationNanoseconds": 127958,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: extra chars after value."
+          },
+          "durationNanoseconds": 127875,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 14,
+            "line": 1,
+            "message": "Error while parsing key-value pair: expected a comment or whitespace, saw 't'"
+          },
+          "durationNanoseconds": 107166,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m04-trailing-characters.toml",
+      "id": "m04-trailing-characters"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 14,
+            "line": 1,
+            "message": "Error while parsing key-value pair: expected '\\n' after '\\r', saw 'm'"
+          },
+          "durationNanoseconds": 128083,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 44,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: bare carriage return is not allowed."
+          },
+          "durationNanoseconds": 117875,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 44,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 14,
+            "line": 1,
+            "message": "Error while parsing key-value pair: expected '\\n' after '\\r', saw 'm'"
+          },
+          "durationNanoseconds": 118542,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 44,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m05-bare-cr.toml",
+      "id": "m05-bare-cr"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "malformed",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 143458,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Invalid character '\u0001'."
+          },
+          "durationNanoseconds": 118166,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 153458,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "m06-control-character.toml",
+      "id": "m06-control-character"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 9,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing string 'model'"
+          },
+          "durationNanoseconds": 160000,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Ill-formed key."
+          },
+          "durationNanoseconds": 135708,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 9,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing string 'model'"
+          },
+          "durationNanoseconds": 130375,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 24,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d01-duplicate-key.toml",
+      "id": "d01-duplicate-key"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 3,
+            "message": "Error while parsing table header: cannot redefine existing table 'mcp_servers.alpha'"
+          },
+          "durationNanoseconds": 164334,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 75,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 3) Key already exists."
+          },
+          "durationNanoseconds": 114583,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 75,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 3,
+            "message": "Error while parsing table header: cannot redefine existing table 'mcp_servers.alpha'"
+          },
+          "durationNanoseconds": 116542,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 75,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d02-duplicate-table.toml",
+      "id": "d02-duplicate-table"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 3,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing integer as dotted key-value pair"
+          },
+          "durationNanoseconds": 134750,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Key already exists."
+          },
+          "durationNanoseconds": 140125,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 3,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing integer as dotted key-value pair"
+          },
+          "durationNanoseconds": 197500,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d03-dotted-extension-conflict.toml",
+      "id": "d03-dotted-extension-conflict"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing table as dotted key-value pair"
+          },
+          "durationNanoseconds": 172875,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Syntax error: cannot add to explicitly defined table using dotted keys."
+          },
+          "durationNanoseconds": 270125,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing key-value pair: cannot redefine existing table as dotted key-value pair"
+          },
+          "durationNanoseconds": 148667,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 22,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d04-inline-table-sealed.toml",
+      "id": "d04-inline-table-sealed"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing integer 'a' as table"
+          },
+          "durationNanoseconds": 135209,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Key already exists."
+          },
+          "durationNanoseconds": 121250,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing integer 'a' as table"
+          },
+          "durationNanoseconds": 216542,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 16,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d05-scalar-table-conflict.toml",
+      "id": "d05-scalar-table-conflict"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing array 'a' as table"
+          },
+          "durationNanoseconds": 163042,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Key already exists."
+          },
+          "durationNanoseconds": 126875,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing array 'a' as table"
+          },
+          "durationNanoseconds": 145958,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 17,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d06-array-table-conflict.toml",
+      "id": "d06-array-table-conflict"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing integer 'a.b' as table"
+          },
+          "durationNanoseconds": 149625,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 2) Key already exists."
+          },
+          "durationNanoseconds": 126125,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 2,
+            "message": "Error while parsing table header: cannot redefine existing integer 'a.b' as table"
+          },
+          "durationNanoseconds": 144708,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d07-dotted-table-conflict.toml",
+      "id": "d07-dotted-table-conflict"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "duplicates",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 3,
+            "message": "Error while parsing table header: cannot redefine existing table 'a' as array-of-tables"
+          },
+          "durationNanoseconds": 146667,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 3) Key already exists."
+          },
+          "durationNanoseconds": 118375,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 1,
+            "line": 3,
+            "message": "Error while parsing table header: cannot redefine existing table 'a' as array-of-tables"
+          },
+          "durationNanoseconds": 142375,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 18,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "d08-table-array-table-conflict.toml",
+      "id": "d08-table-array-table-conflict"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 117000,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 63,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 127167,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 63,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 71209,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 63,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c01-regular-headers.toml",
+      "fullProjectionDeclared": false,
+      "id": "c01-regular-headers"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 120125,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 59,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 126916,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 59,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 93375,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 59,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c02-dotted-assignments.toml",
+      "fullProjectionDeclared": false,
+      "id": "c02-dotted-assignments"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "dot.name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "dot.name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 111417,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 40,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 143708,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 40,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 1,
+            "nodeCount": 3
+          },
+          "orderedMCPServers": [
+            "dot.name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 75834,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 40,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "dot.name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "dot.name"
+        }
+      ],
+      "file": "c03-quoted-dot.toml",
+      "fullProjectionDeclared": false,
+      "id": "c03-quoted-dot"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 118708,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 130583,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 80625,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 70,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c04-inline-root.toml",
+      "fullProjectionDeclared": false,
+      "id": "c04-inline-root"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 100625,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 136167,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 5,
+            "mcpServerCount": 1,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "env": {
+                "SYNTHETIC": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 108917,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "SYNTHETIC": "value"
+          },
+          "name": "alpha"
+        }
+      ],
+      "file": "c05-implicit-parent.toml",
+      "fullProjectionDeclared": false,
+      "id": "c05-implicit-parent"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 140000,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 62,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 162709,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 62,
+            "maximumArrayElements": 2,
+            "maximumDepth": 3,
+            "maximumStringBytes": 3,
+            "mcpServerCount": 0,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 86084,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 62,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "c06-array-of-tables.toml",
+      "id": "c06-array-of-tables"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "a",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "z",
+              "enabled": true,
+              "name": "zeta",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 110542,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 61,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 130875,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 61,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 1,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "zeta",
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "z",
+              "name": "zeta",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "a",
+              "name": "alpha",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 99042,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 61,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "zeta",
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "z",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "zeta"
+        },
+        {
+          "command": "a",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "alpha"
+        }
+      ],
+      "file": "c07-legal-mixed.toml",
+      "fullProjectionDeclared": false,
+      "id": "c07-legal-mixed"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "construction",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "alpha",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 99542,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 136250,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 5,
+            "mcpServerCount": 1,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "alpha"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "env": {
+                "SYNTHETIC": "value"
+              },
+              "name": "alpha",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 72541,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 77,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "alpha"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "SYNTHETIC": "value"
+          },
+          "name": "alpha"
+        }
+      ],
+      "file": "c08-nested-subsection.toml",
+      "fullProjectionDeclared": false,
+      "id": "c08-nested-subsection"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 109334,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 123333,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 2
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 83083,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n01-signs-underscores.toml",
+      "id": "n01-signs-underscores"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 124125,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 150625,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 3
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 70916,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n02-radices.toml",
+      "id": "n02-radices"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 28,
+            "line": 1,
+            "message": "Error while parsing decimal integer: leading zeroes are prohibited"
+          },
+          "durationNanoseconds": 126208,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Invalid date-time value for key 'model_context_window': expected valid time."
+          },
+          "durationNanoseconds": 118250,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 28,
+            "line": 1,
+            "message": "Error while parsing decimal integer: leading zeroes are prohibited"
+          },
+          "durationNanoseconds": 142792,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n03-leading-zero.toml",
+      "id": "n03-leading-zero"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": false,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 43,
+            "line": 1,
+            "message": "Error while parsing decimal integer: '9223372036854775808' is not representable as a signed 64-bit integer"
+          },
+          "durationNanoseconds": 149791,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 43,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 129166,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 43,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 43,
+            "line": 1,
+            "message": "Error while parsing decimal integer: '9223372036854775808' is not representable in 64 bits"
+          },
+          "durationNanoseconds": 131625,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 43,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n04-integer-overflow.toml",
+      "id": "n04-integer-overflow"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 28,
+            "line": 1,
+            "message": "Error while parsing date: expected day between 1 and 28 (inclusive), saw 30"
+          },
+          "durationNanoseconds": 159667,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Invalid date-time value for key 'synthetic_date': February only has 28 days in non-leap years."
+          },
+          "durationNanoseconds": 127417,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 28,
+            "line": 1,
+            "message": "Error while parsing date: expected day between 1 and 28 (inclusive), saw 30"
+          },
+          "durationNanoseconds": 132625,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 28,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n05-invalid-date.toml",
+      "id": "n05-invalid-date"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "numeric",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 549208,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 38,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 127708,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 38,
+            "maximumArrayElements": 0,
+            "maximumDepth": 1,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 1
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 82125,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 38,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "n06-valid-datetime.toml",
+      "id": "n06-valid-datetime"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": false,
+      "category": "unicode",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 114459,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 23,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "(Line 1) Syntax error: missing =."
+          },
+          "durationNanoseconds": 121750,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 23,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 77250,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 23,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "u01-bom.toml",
+      "id": "u01-bom"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "unicode",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "écho",
+              "enabled": true,
+              "name": "日本語",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "écho",
+              "enabled": true,
+              "name": "日本語",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 103584,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 42,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 140875,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 42,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 5,
+            "mcpServerCount": 1,
+            "nodeCount": 3
+          },
+          "orderedMCPServers": [
+            "日本語"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "écho",
+              "name": "日本語",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 82416,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 42,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "日本語"
+      ],
+      "expectedServers": [
+        {
+          "command": "écho",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "日本語"
+        }
+      ],
+      "file": "u02-nonascii.toml",
+      "fullProjectionDeclared": true,
+      "id": "u02-nonascii"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "unicode",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "schema_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "schema_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "decode_error",
+            "message": "Invalid data: Unable to convert data to UTF-8 string"
+          },
+          "durationNanoseconds": 81250,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 12,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_utf8",
+            "message": "input is not valid UTF-8"
+          },
+          "durationNanoseconds": 79792,
+          "engine": "TOMLDecoder",
+          "materialization": "not_attempted",
+          "metrics": {
+            "inputBytes": 12,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "invalid_utf8",
+          "parserInvoked": false,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_utf8",
+            "message": "input is not valid UTF-8"
+          },
+          "durationNanoseconds": 84125,
+          "engine": "TOMLKit",
+          "materialization": "not_attempted",
+          "metrics": {
+            "inputBytes": 12,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "invalid_utf8",
+          "parserInvoked": false,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "u03-invalid-utf8.toml",
+      "id": "u03-invalid-utf8"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": null,
+      "candidateParity": true,
+      "category": "unicode",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": false,
+          "exitCode": 1,
+          "outcome": "parse_error",
+          "selectedMCPServers": [],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 161542,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "message": "Invalid character ''."
+          },
+          "durationNanoseconds": 163792,
+          "engine": "TOMLDecoder",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 13,
+            "line": 1,
+            "message": "Error while parsing string: unescaped control characters other than TAB (U+0009) are explicitly prohibited"
+          },
+          "durationNanoseconds": 130042,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 20,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": false,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [],
+      "file": "u04-disallowed-control.toml",
+      "id": "u04-disallowed-control"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "mcp",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [
+                "synthetic"
+              ],
+              "command": "echo",
+              "enabled": true,
+              "name": "stdio",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [
+                "synthetic"
+              ],
+              "command": "echo",
+              "enabled": true,
+              "name": "stdio",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 100292,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 136375,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 1,
+            "maximumDepth": 4,
+            "maximumStringBytes": 9,
+            "mcpServerCount": 1,
+            "nodeCount": 6
+          },
+          "orderedMCPServers": [
+            "stdio"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "arguments": [
+                "synthetic"
+              ],
+              "command": "echo",
+              "enabled": true,
+              "name": "stdio",
+              "specifiedKeys": [
+                "args",
+                "command",
+                "enabled"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 71250,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 67,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "stdio"
+      ],
+      "expectedServers": [
+        {
+          "arguments": [
+            "synthetic"
+          ],
+          "command": "echo",
+          "declaredKeys": [
+            "args",
+            "command",
+            "enabled"
+          ],
+          "enabled": true,
+          "name": "stdio"
+        }
+      ],
+      "file": "p01-stdio.toml",
+      "fullProjectionDeclared": true,
+      "id": "p01-stdio"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "mcp",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": null,
+              "command": null,
+              "enabled": false,
+              "name": "remote",
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": null,
+              "command": null,
+              "enabled": false,
+              "name": "remote",
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 149625,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 64,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 122875,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 64,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 1,
+            "nodeCount": 4
+          },
+          "orderedMCPServers": [
+            "remote"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "enabled": false,
+              "name": "remote",
+              "specifiedKeys": [
+                "enabled",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 83500,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 64,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "remote"
+      ],
+      "expectedServers": [
+        {
+          "declaredKeys": [
+            "enabled",
+            "url"
+          ],
+          "enabled": false,
+          "name": "remote",
+          "url": "http://127.0.0.1:9/mcp"
+        }
+      ],
+      "file": "p02-streamable-http.toml",
+      "fullProjectionDeclared": true,
+      "id": "p02-streamable-http"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "mcp",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "local",
+              "url": null
+            },
+            {
+              "arguments": null,
+              "command": null,
+              "enabled": false,
+              "name": "remote",
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "local",
+              "url": null
+            },
+            {
+              "arguments": null,
+              "command": null,
+              "enabled": false,
+              "name": "remote",
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": true,
+          "durationNanoseconds": 108000,
+          "engine": "swift-toml",
+          "materialization": "root_decode_only",
+          "metrics": {
+            "inputBytes": 200,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 163792,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 200,
+            "maximumArrayElements": 0,
+            "maximumDepth": 4,
+            "maximumStringBytes": 22,
+            "mcpServerCount": 2,
+            "nodeCount": 10
+          },
+          "orderedMCPServers": [
+            "local",
+            "remote"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "env": {
+                "TOKEN": "SYNTHETIC_NOT_SECRET"
+              },
+              "name": "local",
+              "specifiedKeys": [
+                "command",
+                "env"
+              ]
+            },
+            {
+              "enabled": false,
+              "httpHeaders": {
+                "Authorization": "SYNTHETIC_HEADER"
+              },
+              "name": "remote",
+              "specifiedKeys": [
+                "enabled",
+                "http_headers",
+                "url"
+              ],
+              "url": "http://127.0.0.1:9/mcp"
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": true,
+          "durationNanoseconds": 79583,
+          "engine": "TOMLKit",
+          "materialization": "root_table_only",
+          "metrics": {
+            "inputBytes": 200,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "local",
+        "remote"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command",
+            "env"
+          ],
+          "env": {
+            "TOKEN": "SYNTHETIC_NOT_SECRET"
+          },
+          "name": "local"
+        },
+        {
+          "declaredKeys": [
+            "enabled",
+            "http_headers",
+            "url"
+          ],
+          "enabled": false,
+          "httpHeaders": {
+            "Authorization": "SYNTHETIC_HEADER"
+          },
+          "name": "remote",
+          "url": "http://127.0.0.1:9/mcp"
+        }
+      ],
+      "file": "p03-env-and-headers.toml",
+      "fullProjectionDeclared": true,
+      "id": "p03-env-and-headers"
+    },
+    {
+      "bundledMCPNameSetAgreement": true,
+      "candidateMCPNameAgreement": true,
+      "candidateParity": true,
+      "category": "mcp",
+      "codexVectorAgreement": true,
+      "engines": {
+        "codex-0.149.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "dot.name",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "space name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "codex-0.152.0": {
+          "accepted": true,
+          "exitCode": 0,
+          "outcome": "accepted",
+          "selectedMCPServers": [
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "dot.name",
+              "url": null
+            },
+            {
+              "arguments": [],
+              "command": "echo",
+              "enabled": true,
+              "name": "space name",
+              "url": null
+            }
+          ],
+          "stderrStored": false,
+          "temporaryHomeRemoved": true
+        },
+        "swift-toml-2.0.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 3,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 145750,
+          "engine": "swift-toml",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 85,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "2.0.0"
+        },
+        "tomldecoder-0.4.5": {
+          "accepted": true,
+          "durationNanoseconds": 127959,
+          "engine": "TOMLDecoder",
+          "materialization": "full_recursive_traversal",
+          "metrics": {
+            "inputBytes": 85,
+            "maximumArrayElements": 0,
+            "maximumDepth": 3,
+            "maximumStringBytes": 4,
+            "mcpServerCount": 2,
+            "nodeCount": 5
+          },
+          "orderedMCPServers": [
+            "space name",
+            "dot.name"
+          ],
+          "outcome": "accepted",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [
+            {
+              "command": "echo",
+              "name": "space name",
+              "specifiedKeys": [
+                "command"
+              ]
+            },
+            {
+              "command": "echo",
+              "name": "dot.name",
+              "specifiedKeys": [
+                "command"
+              ]
+            }
+          ],
+          "version": "0.4.5"
+        },
+        "tomlkit-0.6.0": {
+          "accepted": false,
+          "diagnostic": {
+            "category": "invalid_syntax",
+            "column": 19,
+            "line": 3,
+            "message": "Error while parsing string: escape sequence '\\x' is not supported in TOML 1.0.0 and earlier"
+          },
+          "durationNanoseconds": 138917,
+          "engine": "TOMLKit",
+          "materialization": "failed",
+          "metrics": {
+            "inputBytes": 85,
+            "maximumArrayElements": 0,
+            "maximumDepth": 0,
+            "maximumStringBytes": 0,
+            "mcpServerCount": 0,
+            "nodeCount": 0
+          },
+          "orderedMCPServers": [],
+          "outcome": "syntax_error",
+          "parserInvoked": true,
+          "schema": 3,
+          "selectedMCPServers": [],
+          "version": "0.6.0"
+        }
+      },
+      "expectedAccept": true,
+      "expectedClassificationAgreement": true,
+      "expectedMCPNames": [
+        "space name",
+        "dot.name"
+      ],
+      "expectedServers": [
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "space name"
+        },
+        {
+          "command": "echo",
+          "declaredKeys": [
+            "command"
+          ],
+          "name": "dot.name"
+        }
+      ],
+      "file": "p04-quoted-escaped-names.toml",
+      "fullProjectionDeclared": true,
+      "id": "p04-quoted-escaped-names"
+    }
+  ],
+  "schema": 2,
+  "summary": {
+    "acceptedMCPNameCases": 13,
+    "acceptedMCPNameSetMatches": 13,
+    "candidateParityMatches": 46,
+    "codexVectorMatches": 48,
+    "documents": 48,
+    "expectedClassificationMatches": 48,
+    "negativeControlMatches": {
+      "swift-toml-2.0.0": 42,
+      "tomlkit-0.6.0": 42
+    }
+  }
+}
