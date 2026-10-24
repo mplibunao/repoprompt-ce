@@ -12,13 +12,17 @@ final class AgentModeProviderBindingService {
         self.preferences = preferences
     }
 
-    func topLevelSettingsControlsBinding(providerID: AgentProviderBindingID) -> AgentProviderControlsBinding {
-        preferences.topLevelSettingsControlsBinding(providerID: providerID)
+    func topLevelSettingsControlsBinding(
+        providerID: AgentProviderBindingID,
+        claudeEffortLevel: ClaudeCodeEffortLevel? = nil
+    ) -> AgentProviderControlsBinding {
+        preferences.topLevelSettingsControlsBinding(providerID: providerID, claudeEffortLevel: claudeEffortLevel)
     }
 
     func controlsBinding(
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String? = nil,
+        claudeEffortLevel: ClaudeCodeEffortLevel? = nil,
         permissionProfile: AgentProviderPermissionProfile,
         isSubagent: Bool,
         externallyManagedReason: String?
@@ -26,6 +30,7 @@ final class AgentModeProviderBindingService {
         preferences.controlsBinding(
             selectedAgent: selectedAgent,
             selectedModelRaw: selectedModelRaw,
+            claudeEffortLevel: claudeEffortLevel,
             permissionProfile: permissionProfile,
             isSubagent: isSubagent,
             externallyManagedReason: externallyManagedReason
@@ -206,7 +211,7 @@ final class AgentModeProviderBindingService {
                 // Claude launch settings are revalidated immediately before dispatch.
                 // Avoid an eager untracked shutdown that could race a newly started run.
                 break
-            case .openCode:
+            case .openCode, .antigravity:
                 let runtime = runtimePermission(for: session.selectedAgent, profile: session.permissionProfile)
                 guard let sessionModeID = runtime.acpSessionModeID,
                       session.runState.isActive,
@@ -239,11 +244,11 @@ final class AgentModeProviderBindingService {
                         updateActiveBindings(session)
                     }
                 }
-            case .grokBuild:
-                // Grok full access is a launch-time `--always-approve` flag; it applies to
-                // newly launched processes and never mutates a running controller. The next
-                // run builds a fresh controller because `isCompatibleWith` keys on the
-                // permission flag for Grok.
+            case .grokBuild, .devin:
+                // These providers take their permission level as a launch-time CLI flag
+                // (`--always-approve` / `--permission-mode`); it applies to newly launched
+                // processes and never mutates a running controller. The next run builds a
+                // fresh controller because `isCompatibleWith` keys on that flag.
                 break
             }
         }

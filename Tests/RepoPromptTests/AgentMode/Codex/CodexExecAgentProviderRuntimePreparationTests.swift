@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptProcess
 import XCTest
 
 final class CodexExecAgentProviderRuntimePreparationTests: XCTestCase {
@@ -9,7 +10,7 @@ final class CodexExecAgentProviderRuntimePreparationTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let executable = directory.appendingPathComponent("codex")
-        try "#!/bin/sh\necho 'codex 0.149.0'\n".write(to: executable, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\necho 'codex 0.156.0'\n".write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let recorder = PreparedRuntimeRecorder()
         let provider = CodexExecAgentProvider(
@@ -21,7 +22,9 @@ final class CodexExecAgentProviderRuntimePreparationTests: XCTestCase {
         )
 
         do {
-            _ = try await provider.prepare()
+            _ = try await ProviderProcessLaunchPolicy.$allowsLaunchForTesting.withValue(true) {
+                try await provider.prepare()
+            }
             XCTFail("prepare must fail when isolated Codex state preparation fails")
         } catch let AIProviderError.invalidConfiguration(detail) {
             XCTAssertTrue(detail.contains("unable to prepare its isolated Codex state"))

@@ -52,6 +52,7 @@ extension DomainAgentRunSnapshot {
         agentDisplayName: String?,
         modelRaw: String?,
         reasoningEffortRaw: String?,
+        modelParameterSelections: [ModelParameterSelection] = [],
         status: Status,
         statusText: String?,
         latestAssistantPreview: String?,
@@ -73,6 +74,7 @@ extension DomainAgentRunSnapshot {
             agentDisplayName: agentDisplayName,
             modelRaw: modelRaw,
             reasoningEffortRaw: reasoningEffortRaw,
+            modelParameterSelections: modelParameterSelections,
             status: status,
             statusText: statusText,
             latestAssistantPreview: latestAssistantPreview,
@@ -144,6 +146,8 @@ extension DomainAgentRunSnapshot.FailureReason {
             "Timeout"
         case .agentError:
             "Agent Error"
+        case .resumeHistoryTooLarge:
+            "Resume History Too Large"
         case .cancelled:
             "Cancelled"
         }

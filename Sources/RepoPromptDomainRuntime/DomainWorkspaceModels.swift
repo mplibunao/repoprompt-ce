@@ -1,3 +1,4 @@
+import CoreFoundation
 import CryptoKit
 import Foundation
 
@@ -117,6 +118,8 @@ package struct DomainContextMetadata: Codable, Equatable {
 package struct DomainWorkspaceMetadata: Codable, Equatable {
     package let workspaceID: UUID
     package let schemaVersion: Int
+    package let dateModified: Date
+    package let lastUsed: Date
     package let name: String
     package let repoPaths: [String]
     package let customStoragePath: URL?
@@ -131,6 +134,8 @@ package struct DomainWorkspaceMetadata: Codable, Equatable {
     package init(
         workspaceID: UUID,
         schemaVersion: Int,
+        dateModified: Date,
+        lastUsed: Date,
         name: String,
         repoPaths: [String],
         customStoragePath: URL?,
@@ -144,6 +149,8 @@ package struct DomainWorkspaceMetadata: Codable, Equatable {
     ) {
         self.workspaceID = workspaceID
         self.schemaVersion = schemaVersion
+        self.dateModified = dateModified
+        self.lastUsed = lastUsed
         self.name = name
         self.repoPaths = repoPaths
         self.customStoragePath = customStoragePath
@@ -196,6 +203,44 @@ package struct DomainWorkspaceSnapshot: Codable, Equatable {
     package let contexts: [DomainContextSnapshot]
 }
 
+/// A target-only activation read. It never claims that the full catalog is ready.
+package struct DomainWorkspaceActivationSnapshot {
+    package let workspace: DomainWorkspaceSnapshot?
+    package let publicationSequence: UInt64
+    package let catalogRevision: UInt64
+}
+
+/// Recovery-aware canonical selection shared by folder resolution and command admission.
+package enum DomainExactRootSelection: Equatable {
+    case matched(DomainWorkspaceSnapshot)
+    case noMatch
+    case recoveryBlocked
+    case changed
+}
+
+/// Exact registered-workspace routing facts, independent of session/delegation authority.
+package enum DomainWorkspaceReadSelector: Equatable, Sendable {
+    case id(UUID)
+    case exactName(String)
+}
+
+package struct DomainWorkspaceReadLocation: Equatable, Sendable {
+    package let runtimeID: UUID
+    package let lifecycleGeneration: UInt64
+    package let locationGeneration: UInt64
+    package let workspaceID: UUID
+    package let name: String
+    package let directory: URL
+}
+
+package enum DomainWorkspaceLocationSelection: Equatable, Sendable {
+    case matched(DomainWorkspaceReadLocation)
+    case ambiguous
+    case unavailable
+    case notReady
+    case notRegistered
+}
+
 package struct DomainWorkspaceCatalogSnapshot: Equatable {
     package let runtimeIdentity: DomainRuntimeIdentity
     package let isBootstrapped: Bool
@@ -203,6 +248,9 @@ package struct DomainWorkspaceCatalogSnapshot: Equatable {
     package let catalogRevision: UInt64
     package let health: DomainAuthorityHealth
     package let workspaces: [DomainWorkspaceSnapshot]
+    /// Known, nondeleted catalog members the authority cannot currently supply a record for.
+    /// Transient: completeness is separate from aggregate `health`, which may remain writable.
+    package let unavailableWorkspaceIDs: Set<UUID>
 
     package init(
         runtimeIdentity: DomainRuntimeIdentity,
@@ -210,7 +258,8 @@ package struct DomainWorkspaceCatalogSnapshot: Equatable {
         publicationSequence: UInt64,
         catalogRevision: UInt64,
         health: DomainAuthorityHealth,
-        workspaces: [DomainWorkspaceSnapshot]
+        workspaces: [DomainWorkspaceSnapshot],
+        unavailableWorkspaceIDs: Set<UUID> = []
     ) {
         self.runtimeIdentity = runtimeIdentity
         self.isBootstrapped = isBootstrapped
@@ -218,6 +267,7 @@ package struct DomainWorkspaceCatalogSnapshot: Equatable {
         self.catalogRevision = catalogRevision
         self.health = health
         self.workspaces = workspaces
+        self.unavailableWorkspaceIDs = unavailableWorkspaceIDs
     }
 }
 
@@ -268,6 +318,17 @@ package enum DomainContentDigest {
 
 private enum DomainWorkspaceDocumentDecoder {
     static let maximumSupportedSchemaVersion = 1
+
+    private static func persistedDate(forKey key: String, in object: [String: Any]) -> Date? {
+        guard let value = object[key] as? NSNumber,
+              CFGetTypeID(value) != CFBooleanGetTypeID(),
+              value.doubleValue.isFinite
+        else {
+            return nil
+        }
+        let interval = value.doubleValue
+        return Date(timeIntervalSinceReferenceDate: interval)
+    }
 
     static func decodeMetadata(from data: Data) throws -> DomainWorkspaceMetadata {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -330,9 +391,14 @@ private enum DomainWorkspaceDocumentDecoder {
         } else {
             nil
         }
+        let persistedDateModified = persistedDate(forKey: "dateModified", in: object)
         return DomainWorkspaceMetadata(
             workspaceID: workspaceID,
             schemaVersion: schemaVersion,
+            dateModified: persistedDateModified ?? .distantPast,
+            lastUsed: persistedDate(forKey: "lastUsed", in: object)
+                ?? persistedDateModified
+                ?? .distantPast,
             name: object["name"] as? String ?? "Untitled Workspace",
             repoPaths: object["repoPaths"] as? [String] ?? [],
             customStoragePath: customStoragePath,

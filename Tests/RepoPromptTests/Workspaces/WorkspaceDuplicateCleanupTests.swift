@@ -1,5 +1,8 @@
 @testable import RepoPromptApp
 @testable import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
+import RepoPromptSettingsCore
+import RepoPromptShared
 import XCTest
 
 #if DEBUG
@@ -19,6 +22,7 @@ import XCTest
             originalStoragePath = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL")
             storageRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("WorkspaceDuplicateCleanupTests-\(UUID().uuidString)", isDirectory: true)
+            storageRoot = AppProfileLocations.current.customWorkspaceDirectory(selectedDirectory: storageRoot)
             try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
             agentWorkspaceRoot = storageRoot.appendingPathComponent("AgentWorkspaces", isDirectory: true)
             chatWorkspaceRoot = storageRoot.appendingPathComponent("ChatWorkspaces", isDirectory: true)
@@ -27,13 +31,13 @@ import XCTest
             await AgentSessionDataService.shared.test_setWorkspaceRootOverride(agentWorkspaceRoot)
             await ChatDataService.test_setWorkspaceRootOverride(chatWorkspaceRoot)
             UserDefaults.standard.set(storageRoot.path, forKey: "GlobalCustomStorageURL")
-            await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.removeAllForTesting()
+            await WorkspaceDiskWriterComposition.processWriter.removeAllForTesting()
         }
 
         override func tearDown() async throws {
             managers.forEach { $0.prepareForWindowClose() }
             managers.removeAll()
-            await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.removeAllForTesting()
+            await WorkspaceDiskWriterComposition.processWriter.removeAllForTesting()
             await AgentSessionDataService.shared.test_setWorkspaceRootOverride(nil)
             await ChatDataService.test_setWorkspaceRootOverride(nil)
             try? FileManager.default.removeItem(at: storageRoot)
@@ -180,7 +184,7 @@ import XCTest
                 contextID: nil,
                 operationID: UUID(),
                 origin: .appPresentation(windowID: -781),
-                revisions: nil,
+                revisions: canonicalBeforeLocalSave.revisions,
                 timestamp: Date(),
                 diagnostic: nil
             ))
@@ -806,6 +810,112 @@ import XCTest
             await releasePendingWrite.open()
             _ = try await pendingSave.value
             await AgentSessionDataService.shared.test_setBeforeSessionWriteHook(nil)
+        }
+
+        func testGroupedOracleHistoryPreventsRetirementWithoutMovingEitherSidecarFamily() async throws {
+            let canonical = WorkspaceModel(
+                name: "Canonical grouped target",
+                repoPaths: ["/tmp/grouped-sidecar-root"],
+                lastUsed: Date(timeIntervalSince1970: 200)
+            )
+            let duplicate = WorkspaceModel(
+                name: "Duplicate grouped source",
+                repoPaths: canonical.repoPaths,
+                lastUsed: Date(timeIntervalSince1970: 100)
+            )
+            try writeWorkspace(canonical)
+            try writeWorkspace(duplicate)
+            try writeLegacyIndex([canonical, duplicate])
+            let tabID = UUID()
+            let owner = try OracleViewModel.oracleGroupOwner(workspaceID: duplicate.id, tabID: tabID)
+            let models = try ["model-a", "model-b"].map { try OracleModelReference(modelID: $0) }
+            let descriptor = try OracleGroupDescriptor(size: models.count)
+            let members = try models.enumerated().map { index, model in
+                try OracleGroupMember(
+                    laneID: OracleLaneID(index: index),
+                    memberID: OracleMemberID(rawValue: UUID()),
+                    publicChatID: "grouped-\(index)",
+                    model: model
+                )
+            }
+            let group = try OracleGroupDocument(
+                group: descriptor,
+                owner: owner,
+                name: "Preserved group",
+                revision: 1,
+                createdAt: Date(),
+                updatedAt: Date(),
+                roster: OracleRoster(primary: models[0], additional: [models[1]]),
+                members: members,
+                turns: [OracleTurnRecord(
+                    input: OracleInput(mode: .chat, userMessage: "Question"),
+                    state: .prepared,
+                    startedAt: Date()
+                )]
+            )
+            let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+            try await store.create(group)
+            addTeardownBlock {
+                try await store.delete(groupID: descriptor.id, owner: owner, expectedRevision: group.revision)
+            }
+            var originalPayloads: [URL: Data] = [:]
+            for member in members {
+                let directory = sidecarWorkspaceDirectory(for: duplicate, root: chatWorkspaceRoot)
+                    .appendingPathComponent("Chats", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let url = directory.appendingPathComponent("ChatSession-\(member.memberID.rawValue.uuidString).json")
+                let data = try JSONEncoder().encode(ChatSession(
+                    id: member.memberID.rawValue,
+                    workspaceID: duplicate.id,
+                    composeTabID: tabID,
+                    oracleGroupID: descriptor.id.rawValue,
+                    oracleLaneIndex: member.laneID.index,
+                    oracleGroupSize: members.count,
+                    oracleModelRaw: member.model.modelID,
+                    name: "Grouped history",
+                    shortID: member.publicChatID
+                ))
+                try data.write(to: url, options: .atomic)
+                originalPayloads[url] = data
+            }
+            let agent = AgentSession(workspaceID: duplicate.id, name: "Keep with Oracle history")
+            let agentDirectory = sidecarWorkspaceDirectory(for: duplicate, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+            try FileManager.default.createDirectory(at: agentDirectory, withIntermediateDirectories: true)
+            let agentURL = agentDirectory.appendingPathComponent("AgentSession-\(agent.id.uuidString).json")
+            let agentData = try JSONEncoder().encode(agent)
+            try agentData.write(to: agentURL, options: .atomic)
+            originalPayloads[agentURL] = agentData
+
+            let manager = makeManager(windowID: -789)
+            manager.setDuplicateCleanupBackupDirectoryForTesting(
+                storageRoot.appendingPathComponent("grouped-backups", isDirectory: true)
+            )
+            await manager.awaitInitialized()
+            let previousWindows = WindowStatesManager.shared.allWindows
+            WindowStatesManager.shared.allWindows = []
+            defer { WindowStatesManager.shared.allWindows = previousWindows }
+
+            let cleanup = await manager.consolidateDuplicateWorkspaces()
+
+            XCTAssertEqual(cleanup.groupsDetected, 1)
+            XCTAssertEqual(cleanup.groupsConsolidated, 0)
+            XCTAssertTrue(cleanup.retiredWorkspaceIDs.isEmpty)
+            XCTAssertTrue(cleanup.skipped.contains {
+                $0.workspaceID == duplicate.id && $0.reason.hasPrefix("sidecar_preflight_failed:")
+            })
+            XCTAssertNil(manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID)
+            XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
+            for (url, data) in originalPayloads {
+                XCTAssertEqual(try Data(contentsOf: url), data)
+                let root = url == agentURL ? agentWorkspaceRoot! : chatWorkspaceRoot!
+                let destination = sidecarWorkspaceDirectory(for: canonical, root: root)
+                    .appendingPathComponent(url.deletingLastPathComponent().lastPathComponent)
+                    .appendingPathComponent(url.lastPathComponent)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            }
+            let retained = try await store.load(groupID: descriptor.id, owner: owner)
+            XCTAssertEqual(retained, group)
         }
 
         func testChatCommitFailureWithdrawsTheAlreadyCommittedAgentBatch() async throws {

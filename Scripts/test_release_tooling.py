@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -18,6 +19,65 @@ ROOT_DIR = SCRIPT_DIR.parent
 ROLLOUT_TOOL = SCRIPT_DIR / "stable_rollout.py"
 POLICY = SCRIPT_DIR / "apple_identity_policy.json"
 PROFILE_TOOL = SCRIPT_DIR / "embedded_provisioning_profile.py"
+
+
+class DebugPackagingIdentityTests(unittest.TestCase):
+    def test_debug_bundle_uses_successor_identity_independent_of_release_rollout(self) -> None:
+        source = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'BUNDLE_ID="${BUNDLE_ID_OVERRIDE:-${DEBUG_BUNDLE_ID:-com.repoprompt.ce.debug}}"',
+            source,
+        )
+        self.assertIn(
+            'elif (( ! USE_ADHOC_SIGNING )); then\n    DEBUG_STORAGE_BACKEND_MARKER="keychain"',
+            source,
+        )
+        self.assertNotIn("SIGN_IDENTITY_WAS_EXPLICIT", source)
+        self.assertNotIn("$BASE_BUNDLE_ID.debug", source)
+
+    def test_debug_bundle_has_distinct_visible_and_process_identity(self) -> None:
+        source = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
+
+        self.assertIn('DISPLAY_NAME="RepoPrompt CE Debug"', source)
+        self.assertIn('BUNDLE_NAME="RepoPromptDebug"', source)
+        self.assertIn('PACKAGED_APP_EXECUTABLE="RepoPromptDebug"', source)
+        self.assertIn('ICON_NAME="AppIconDebug"', source)
+        self.assertIn('PACKAGED_APP_EXECUTABLE="$APP_NAME"', source)
+        self.assertIn('ICON_NAME="AppIcon"', source)
+        self.assertIn("__EXECUTABLE_NAME__", template)
+        self.assertIn("__BUNDLE_NAME__", template)
+        self.assertIn("__ICON_NAME__", template)
+        self.assertTrue((ROOT_DIR / "AppBundle" / "AppIconDebug.icns").is_file())
+        self.assertIn('if (( ! IS_RELEASE )); then\n    run cp "$ROOT_DIR/AppBundle/AppIconDebug.icns"', source)
+
+    def test_staged_release_validator_substitutes_every_template_placeholder(self) -> None:
+        template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
+        validator = (SCRIPT_DIR / "validate_staged_release.sh").read_text(encoding="utf-8")
+        placeholders = set(re.findall(r"__[A-Z0-9_]+__", template))
+        self.assertTrue(placeholders)
+        for placeholder in sorted(placeholders):
+            self.assertIn(f'"{placeholder}":', validator, placeholder)
+
+
+class PackagedSmokeExternalProbeTests(unittest.TestCase):
+    @staticmethod
+    def probe_source() -> str:
+        source = (SCRIPT_DIR / "smoke_packaged_mcp_roundtrip.sh").read_text(encoding="utf-8")
+        match = re.search(r"run_external_initialize_request\(\) \{.*?\nPYTHON\n\}\n", source, re.DOTALL)
+        assert match, "run_external_initialize_request not found"
+        return match.group(0)
+
+    def test_probe_uses_auto_admitted_helper_client_name(self) -> None:
+        probe = self.probe_source()
+        self.assertRegex(probe, r'"name":\s*"RepoPrompt CLI \(Packaged Smoke\)"')
+        self.assertNotIn("codex-mcp-client", probe)
+
+    def test_probe_keeps_object_valued_capabilities(self) -> None:
+        probe = self.probe_source()
+        self.assertRegex(probe, r'"experimental":\s*\{\s*"codex/auth-change":\s*\{\}')
+        self.assertRegex(probe, r'"elicitation":\s*\{\s*"form":\s*\{\},\s*"url":\s*\{\}')
 
 
 class StableTipFloorTests(unittest.TestCase):

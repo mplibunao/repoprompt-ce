@@ -1,4 +1,7 @@
 import Foundation
+import RepoPromptDomainRuntime
+import RepoPromptFileSystem
+import RepoPromptShared
 import SwiftUI
 
 /// Error definitions analogous to ChatSessionError:
@@ -111,7 +114,7 @@ actor ChatDataService {
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
         return supportDirectory
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent(MCPFilesystemIdentity.current.applicationStateDirectoryName, isDirectory: true)
             .appendingPathComponent("Workspaces", isDirectory: true)
     }
 
@@ -129,6 +132,7 @@ actor ChatDataService {
             (continuation: CheckedContinuation<Void, Error>) in
             fileSaveQueue.async {
                 do {
+                    try AppProfileLocations.current.validateMetadataFile(url)
                     try FileManager.default.removeItem(at: url)
                     continuation.resume(returning: ())
                 } catch {
@@ -139,11 +143,9 @@ actor ChatDataService {
     }
 
     private nonisolated static func listChatSessionURLs(
-        in folder: URL,
-        limit: ChatHistoryLimit
+        in folder: URL
     ) async throws -> [URL] {
-        let maximumCount = limit == .unlimited ? nil : limit.rawValue
-        return try await withCheckedThrowingContinuation {
+        try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<[URL], Error>) in
             fileSaveQueue.async {
                 do {
@@ -165,14 +167,7 @@ actor ChatDataService {
                         return lhsDate > rhsDate
                     }
 
-                    guard let maximumCount, sortedFiles.count > maximumCount else {
-                        continuation.resume(returning: sortedFiles)
-                        return
-                    }
-                    for url in sortedFiles.dropFirst(maximumCount) {
-                        try? FileManager.default.removeItem(at: url)
-                    }
-                    continuation.resume(returning: Array(sortedFiles.prefix(maximumCount)))
+                    continuation.resume(returning: sortedFiles)
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -225,6 +220,17 @@ actor ChatDataService {
                         filenamePrefix: "ChatSession-",
                         canonicalWorkspaceID: canonicalWorkspaceID
                     )
+                    // Group ownership includes the workspace ID. Moving only its
+                    // projections would orphan canonical history; retain the duplicate
+                    // until consolidation can migrate both authorities together.
+                    for copy in prepared {
+                        let header = try JSONSerialization.jsonObject(with: copy.expectedSourceData) as? [String: Any]
+                        if let groupID = header?["oracleGroupID"], !(groupID is NSNull),
+                           (header?["workspaceID"] as? String).flatMap(UUID.init(uuidString:)) != canonicalWorkspaceID
+                        {
+                            throw WorkspaceSessionSidecarMigrationError.oracleGroupOwnerChange(copy.sourceURL)
+                        }
+                    }
                     continuation.resume(returning: WorkspaceSessionSidecarPreparedBatch(
                         sourceFolder: sourceFolder,
                         destinationFolder: destinationFolder,
@@ -266,6 +272,10 @@ actor ChatDataService {
         let composeTabID: UUID?
         let agentModeSessionID: UUID?
         let agentModeRunID: UUID?
+        let oracleGroupID: UUID?
+        let oracleLaneIndex: Int?
+        let oracleGroupSize: Int?
+        let oracleModelRaw: String?
         let name: String
         let savedAt: Date
         let shortID: String?
@@ -273,6 +283,7 @@ actor ChatDataService {
         let selectedPromptIDs: [UUID]?
         let preferredAIModel: String?
         let selectedChatPresetID: UUID?
+        let oracleExecutionAuthority: OracleExecutionAuthority?
         let messageCount: Int?
         let messages: [StoredMessageHeader]?
     }
@@ -311,6 +322,7 @@ actor ChatDataService {
                 do {
                     let freshEncoder = JSONEncoder() // Use a fresh encoder
                     let data = try freshEncoder.encode(sessionCopy)
+                    try AppProfileLocations.current.validateMetadataFile(fileURL)
                     try data.write(to: fileURL, options: .atomic)
                     continuation.resume(returning: fileURL)
                 } catch {
@@ -436,6 +448,10 @@ actor ChatDataService {
                 composeTabID: header.composeTabID,
                 agentModeSessionID: header.agentModeSessionID,
                 agentModeRunID: header.agentModeRunID,
+                oracleGroupID: header.oracleGroupID,
+                oracleLaneIndex: header.oracleLaneIndex,
+                oracleGroupSize: header.oracleGroupSize,
+                oracleModelRaw: header.oracleModelRaw,
                 name: header.name,
                 savedAt: header.savedAt,
                 fileURL: fileURL,
@@ -444,6 +460,7 @@ actor ChatDataService {
                 selectedPromptIDs: header.selectedPromptIDs ?? [],
                 preferredAIModel: header.preferredAIModel,
                 selectedChatPresetID: header.selectedChatPresetID,
+                oracleExecutionAuthority: header.oracleExecutionAuthority,
                 messageCount: count,
                 shortID: shortID
             )
@@ -455,10 +472,71 @@ actor ChatDataService {
     /// Returns a list of "ChatSession-xxx.json" files in the workspace’s Chats folder, sorted by mod date desc.
     func listChatSessions(for workspace: WorkspaceModel) async throws -> [URL] {
         let chatsFolder = try ensureChatsFolder(for: workspace)
-        return try await Self.listChatSessionURLs(
-            in: chatsFolder,
-            limit: chatHistoryLimit
-        )
+        let sortedFiles = try await Self.listChatSessionURLs(in: chatsFolder)
+
+        // Apply the limit to logical conversations, not projection files. If any
+        // header is unreadable, retain everything: an unreadable projection may
+        // belong to a canonical group and must never be deleted independently.
+        let limit = chatHistoryLimit
+        guard limit != .unlimited else { return sortedFiles }
+        var sessionsByURL: [URL: ChatSession] = [:]
+        for url in sortedFiles {
+            guard let session = try? Self.loadChatSessionStubFromDisk(from: url) else {
+                return sortedFiles
+            }
+            sessionsByURL[url] = session
+        }
+        enum ConversationKey: Hashable {
+            case group(UUID)
+            case single(UUID)
+        }
+        var orderedKeys: [ConversationKey] = []
+        for url in sortedFiles {
+            guard let session = sessionsByURL[url] else { continue }
+            let key = session.oracleGroupID.map(ConversationKey.group) ?? .single(session.id)
+            if !orderedKeys.contains(key) { orderedKeys.append(key) }
+        }
+        guard orderedKeys.count > limit.rawValue else { return sortedFiles }
+        let staleKeys = Set(orderedKeys.dropFirst(limit.rawValue))
+        var deletedURLs = Set<URL>()
+        for key in staleKeys {
+            let urls = sortedFiles.filter { url in
+                guard let session = sessionsByURL[url] else { return false }
+                return (session.oracleGroupID.map(ConversationKey.group) ?? .single(session.id)) == key
+            }
+            switch key {
+            case .single:
+                for url in urls where await (try? Self.removeItem(at: url)) != nil {
+                    deletedURLs.insert(url)
+                }
+            case let .group(rawGroupID):
+                guard let seed = urls.compactMap({ sessionsByURL[$0] }).first,
+                      let tabID = seed.composeTabID,
+                      let owner = try? OracleConversationOwner(
+                          kind: "app-tab",
+                          identifier: "workspace:\(seed.workspaceID?.uuidString ?? "none"):tab:\(tabID.uuidString)"
+                      )
+                else { continue }
+                let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+                do {
+                    guard let group = try await store.load(
+                        groupID: OracleGroupID(rawValue: rawGroupID),
+                        owner: owner
+                    ) else { continue }
+                    try await store.delete(
+                        groupID: group.group.id,
+                        owner: owner,
+                        expectedRevision: group.revision
+                    )
+                    for url in urls where await (try? Self.removeItem(at: url)) != nil {
+                        deletedURLs.insert(url)
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+        return sortedFiles.filter { !deletedURLs.contains($0) }
     }
 
     /// Get metadata for recent chat sessions without loading full content
@@ -589,6 +667,7 @@ actor ChatDataService {
         let baseFolder = try workspaceFolderURL(for: workspace)
         let chatsFolder = baseFolder.appendingPathComponent("Chats")
 
+        try AppProfileLocations.current.validateMetadataFile(chatsFolder)
         if !FileManager.default.fileExists(atPath: chatsFolder.path) {
             try FileManager.default.createDirectory(at: chatsFolder, withIntermediateDirectories: true)
         }
@@ -605,6 +684,7 @@ actor ChatDataService {
     /// Return the main folder for the workspace.
     private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
         let workspaceDir = Self.resolvedWorkspaceFolderURL(for: workspace)
+        try AppProfileLocations.current.validateMetadataFile(workspaceDir)
         if !FileManager.default.fileExists(atPath: workspaceDir.path) {
             try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
         }

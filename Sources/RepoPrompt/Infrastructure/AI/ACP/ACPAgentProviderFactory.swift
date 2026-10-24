@@ -43,7 +43,18 @@ enum ACPAgentProviderFactory {
                     // effective profile (including .mcpSafeDefaults overrides), so this
                     // config must not OR the global preference back in.
                     alwaysApproveTools: false,
-                    apiKey: grokAPIKeyProvider()
+                    apiKey: grokAPIKeyProvider(),
+                    backgroundFeatureEnvironment: GrokBuildAgentConfig.managedBackgroundFeatureEnvironment
+                )
+            )
+        case .antigravity:
+            AntigravityACPAgentProvider()
+        case .devin:
+            // No permission input here: the per-run `ACPRunRequest.launchPermissionMode`
+            // already reflects the effective profile and is authoritative.
+            DevinACPAgentProvider(
+                config: DevinAgentConfig(
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging
                 )
             )
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .codexExec:

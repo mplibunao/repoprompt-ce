@@ -1,4 +1,6 @@
 import Combine
+import RepoPromptSettingsCore
+import RepoPromptShared
 import SwiftUI
 
 enum CodexHookApprovalWorkspaceSetting: CaseIterable, Hashable {
@@ -164,7 +166,11 @@ struct AgentModeGeneralSettingsView: View {
                 tab: .agentModels
             )
 
+            subAgentSupervisionCard
+
             providersLinkRow
+
+            usageLimitsCard
 
             providerCleanupActionCard
 
@@ -185,6 +191,52 @@ struct AgentModeGeneralSettingsView: View {
 
             agentChatsCard
         }
+    }
+
+    // MARK: - Usage limits (presentation only)
+
+    /// Master presentation switch. Enabling it shows usage only for sources that are already
+    /// enabled or connected per provider (CLI Providers); it never enables a source or reads
+    /// credentials by itself.
+    private var usageLimitsCard: some View {
+        HStack(alignment: .top, spacing: fontPreset.scaledClamped(12, max: 18)) {
+            Image(systemName: "gauge.with.dots.needle.33percent")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 17))
+                .frame(width: fontPreset.scaledClamped(22, max: 30), alignment: .center)
+                .foregroundColor(.accentColor)
+
+            VStack(alignment: .leading, spacing: fontPreset.scaledClamped(6, max: 10)) {
+                Text("Usage Limits")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 13, weight: .semibold))
+
+                Toggle("Show usage limits when available", isOn: usageLimitsDisplayBinding)
+                    .toggleStyle(.switch)
+
+                Text("Shows provider plan usage in Settings and a compact indicator in Agent Mode. Read-only; never changes which model runs. Turn on each source in CLI Providers.")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let onNavigate {
+                    Button("Usage sources in CLI Providers…") { onNavigate(.cliProviders) }
+                        .buttonStyle(.link)
+                        .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
+                }
+            }
+
+            Spacer(minLength: fontPreset.scaledClamped(10, max: 14))
+        }
+        .padding(.vertical, fontPreset.scaledClamped(6, max: 10))
+    }
+
+    private var usageLimitsDisplayBinding: Binding<Bool> {
+        Binding(
+            get: { globalSettings.usageLimitsDisplayEnabled() },
+            set: { enabled in
+                globalSettings.setUsageLimitsDisplayEnabled(enabled)
+                UsageLimitsDisplayRuntimeBridge.applyEnabled(enabled)
+            }
+        )
     }
 
     // MARK: - Agent Chats
@@ -215,6 +267,57 @@ struct AgentModeGeneralSettingsView: View {
     }
 
     // MARK: - Provider cleanup
+
+    private var subAgentSupervisionCard: some View {
+        HStack(alignment: .top, spacing: fontPreset.scaledClamped(12, max: 18)) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 17))
+                .frame(width: fontPreset.scaledClamped(22, max: 30), alignment: .center)
+                .foregroundColor(.accentColor)
+
+            VStack(alignment: .leading, spacing: fontPreset.scaledClamped(6, max: 10)) {
+                Text("Sub-Agent Supervision")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 13, weight: .semibold))
+
+                Picker("Default subagent wait", selection: subagentDefaultWaitBinding) {
+                    ForEach(MCPTimeoutPolicy.supportedSubagentDefaultWaitSeconds, id: \.self) { seconds in
+                        Text(subagentDefaultWaitMenuLabel(for: seconds)).tag(seconds)
+                    }
+                }
+                .pickerStyle(.menu)
+                .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
+                .accessibilityLabel("Default subagent wait")
+
+                Text("Shorter waits allow more frequent progress checks. Longer waits reduce routine model calls. Completion, questions, and your steering can end a wait early.")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Agents can choose shorter or longer waits for individual tasks.")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: fontPreset.scaledClamped(10, max: 14))
+        }
+        .padding(.vertical, fontPreset.scaledClamped(6, max: 10))
+    }
+
+    private func subagentDefaultWaitMenuLabel(for seconds: Int) -> String {
+        let minutes = seconds / 60
+        if seconds == Int(MCPTimeoutPolicy.agentLifecycleDefaultWaitSeconds) {
+            return "\(minutes) min (default)"
+        }
+        return "\(minutes) min"
+    }
+
+    private var subagentDefaultWaitBinding: Binding<Int> {
+        Binding(
+            get: { globalSettings.subagentDefaultWaitSeconds() },
+            set: { globalSettings.setSubagentDefaultWaitSeconds($0) }
+        )
+    }
 
     private var providerCleanupActionCard: some View {
         VStack(alignment: .leading, spacing: fontPreset.scaledClamped(8, max: 12)) {
@@ -580,8 +683,11 @@ struct AgentModeGeneralSettingsView: View {
         case .claude: apiSettingsVM.isClaudeCodeConnected
         case .codex: apiSettingsVM.isCodexConnected
         case .openCode: apiSettingsVM.isOpenCodeConnected
+        case .antigravity: AntigravityRuntimeManager.installedRuntimeSync() != nil
         case .cursor: apiSettingsVM.isCursorConnected
         case .grokBuild: apiSettingsVM.isGrokBuildConnected
+        // Devin owns its own auth, so the installed CLI is the connection.
+        case .devin: DevinRuntimeLocator.isInstalledSync()
         }
     }
 

@@ -28,6 +28,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: macos-26
     outputs:
+      eligible: ${{ steps.tip.outputs.eligible }}
       commit: ${{ steps.tip.outputs.commit }}
       short-sha: ${{ steps.tip.outputs.short-sha }}
       build-number: ${{ steps.tip.outputs.build-number }}
@@ -83,15 +84,28 @@ jobs:
           git fetch --no-tags origin main
           commit="$(git rev-parse "$requested_commit^{commit}")"
           live_main="$(git rev-parse origin/main)"
-          [[ "$commit" == "$live_main" ]] || {
-            echo "Tip candidate is not the current protected-main commit: candidate=$commit live-main=$live_main" >&2
-            exit 1
-          }
           tooling_commit="$(git rev-parse HEAD)"
           [[ "$tooling_commit" == "$WORKFLOW_DEFINITION_COMMIT" ]] || {
             echo "Checked-out release tooling differs from the workflow definition commit" >&2
             exit 1
           }
+          if [[ "$commit" != "$live_main" ]]; then
+            git merge-base --is-ancestor "$commit" "$live_main" || {
+              echo "Tip candidate is outside protected-main ancestry: candidate=$commit live-main=$live_main" >&2
+              exit 1
+            }
+            # Never replace the upstream-tested SHA with newer, untested main.
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping superseded Tip candidate: candidate=$commit live-main=$live_main"
+            {
+              echo "### Tip candidate superseded"
+              echo
+              echo "- Tested/requested commit: \`$commit\`"
+              echo "- Current protected main: \`$live_main\`"
+              echo "- Release jobs skipped; no candidate was substituted or published."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           [[ "$tooling_commit" == "$commit" ]] || {
             echo "Release tooling and selected protected-main source are not the same commit" >&2
             exit 1
@@ -149,6 +163,7 @@ jobs:
           tag="tip-$short_sha"
 
           {
+            echo "eligible=true"
             echo "commit=$commit"
             echo "short-sha=$short_sha"
             echo "build-number=$build_number"
@@ -162,6 +177,7 @@ jobs:
 
   credential-preflight:
     name: Preflight Tip Rollout Credentials
+    if: needs.setup.outputs.eligible == 'true'
     needs: setup
     environment: tip-release
     runs-on: macos-26
@@ -333,6 +349,7 @@ jobs:
 
   stage:
     name: Build Tip Source Without Secrets
+    if: needs.setup.outputs.eligible == 'true'
     needs:
       - setup
       - credential-preflight
@@ -369,7 +386,7 @@ jobs:
         run: ./trusted-control-plane/Scripts/main_tip_release.sh stage
 
       - name: Upload staged tip source
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: RepoPrompt-CE-staged-tip
           path: |
@@ -380,6 +397,7 @@ jobs:
 
   sign:
     name: Sign and Notarize Tip
+    if: needs.setup.outputs.eligible == 'true'
     needs:
       - setup
       - stage
@@ -397,7 +415,7 @@ jobs:
           persist-credentials: false
 
       - name: Download staged tip source
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: RepoPrompt-CE-staged-tip
           path: staged-tip
@@ -407,7 +425,8 @@ jobs:
         with:
           ref: ${{ needs.setup.outputs.commit }}
           path: approved-source
-          fetch-depth: 1
+          # History notes/barriers and admission ancestry use reviewed source as data.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify and expand staged tip source
@@ -657,6 +676,7 @@ jobs:
       - name: Validate package
         if: needs.setup.outputs.installation-type == 'package'
         env:
+          REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source
           TIP_COMMIT: ${{ needs.setup.outputs.commit }}
           TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
           TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
@@ -690,7 +710,7 @@ jobs:
         run: ./trusted-control-plane/Scripts/main_tip_release.sh validate-assets
 
       - name: Upload signed tip assets for smoke and publish
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: RepoPrompt-CE-signed-tip
           path: tip-source/dist/
@@ -699,6 +719,7 @@ jobs:
 
   smoke-no-secrets:
     name: Smoke Tip Without Release Secrets
+    if: needs.setup.outputs.eligible == 'true'
     needs:
       - setup
       - sign
@@ -715,7 +736,7 @@ jobs:
           persist-credentials: false
 
       - name: Download signed tip assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: RepoPrompt-CE-signed-tip
           path: signed-tip
@@ -772,7 +793,7 @@ jobs:
 
       - name: Upload Tip smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: RepoPrompt-CE-tip-smoke-diagnostics
           path: ${{ runner.temp }}/tip-smoke-diagnostics
@@ -781,6 +802,7 @@ jobs:
 
   publish:
     name: Publish Tip Appcast
+    if: needs.setup.outputs.eligible == 'true'
     concurrency:
       group: main-tip-publish
       queue: max
@@ -797,11 +819,13 @@ jobs:
         with:
           ref: ${{ needs.setup.outputs.tooling-commit }}
           path: trusted-control-plane
-          fetch-depth: 1
+          # setup requires tooling-commit == approved candidate; publication
+          # re-derives history from this full source, never downloaded build code.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Download signed tip assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: RepoPrompt-CE-signed-tip
           path: tip-assets

@@ -29,10 +29,14 @@ final class AgentProviderPreferenceSnapshotStore {
     ///
     /// This is intentionally separate from the profile-aware runtime binding entry point
     /// below so Settings provider rows do not accidentally inherit sub-agent preview policy.
-    func topLevelSettingsControlsBinding(providerID: AgentProviderBindingID) -> AgentProviderControlsBinding {
+    func topLevelSettingsControlsBinding(
+        providerID: AgentProviderBindingID,
+        claudeEffortLevel: ClaudeCodeEffortLevel? = nil
+    ) -> AgentProviderControlsBinding {
         controlsBinding(
             selectedAgent: Self.representativeAgent(for: providerID),
             selectedModelRaw: nil,
+            claudeEffortLevel: claudeEffortLevel,
             permissionProfile: .userConfigured,
             isSubagent: false,
             externallyManagedReason: nil
@@ -46,6 +50,7 @@ final class AgentProviderPreferenceSnapshotStore {
     func controlsBinding(
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String? = nil,
+        claudeEffortLevel: ClaudeCodeEffortLevel? = nil,
         permissionProfile: AgentProviderPermissionProfile,
         isSubagent _: Bool,
         externallyManagedReason: String?
@@ -69,7 +74,8 @@ final class AgentProviderPreferenceSnapshotStore {
                 ? claudeToolSettingsBinding(
                     profile: permissionProfile,
                     selectedAgent: selectedAgent,
-                    selectedModelRaw: selectedModelRaw
+                    selectedModelRaw: selectedModelRaw,
+                    sessionEffortLevel: claudeEffortLevel
                 )
                 : nil
         )
@@ -129,6 +135,17 @@ final class AgentProviderPreferenceSnapshotStore {
                 acpSessionModeID: level.sessionModeID,
                 acceptsPendingACPApprovalWhenActivated: level.acceptsPendingApprovalWhenActivated
             )
+        case .antigravity:
+            let level = effectiveAntigravityPermissionLevel(profile: profile)
+            let modeID = switch level {
+            case .default: "default"
+            case .autoEdit: "auto_edit"
+            case .yolo: "yolo"
+            }
+            return AgentProviderRuntimePermissionBinding(
+                acpSessionModeID: modeID,
+                acceptsPendingACPApprovalWhenActivated: level == .yolo
+            )
         case .cursor:
             let level = effectiveCursorPermissionLevel(profile: profile)
             return AgentProviderRuntimePermissionBinding(
@@ -143,6 +160,14 @@ final class AgentProviderPreferenceSnapshotStore {
                 autoApproveAllACPToolPermissions: level.launchesWithAlwaysApprove,
                 acceptsPendingACPApprovalWhenActivated: level.launchesWithAlwaysApprove
             )
+        case .devin:
+            let level = effectiveDevinPermissionLevel(profile: profile)
+            // Devin's level becomes a launch-time `--permission-mode` argument. RepoPrompt
+            // does not auto-select Devin permission options, so the auto-approval flags stay
+            // false for every mode.
+            return AgentProviderRuntimePermissionBinding(
+                acpLaunchPermissionMode: level.cliPermissionMode
+            )
         }
     }
 
@@ -155,10 +180,14 @@ final class AgentProviderPreferenceSnapshotStore {
             ClaudeAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         case let .openCode(level):
             OpenCodeAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
+        case let .antigravity(level):
+            AntigravityAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         case let .cursor(level):
             CursorAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         case let .grokBuild(level):
             GrokBuildAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
+        case let .devin(level):
+            DevinAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         }
         bumpRevision(for: id.providerID)
         return id.providerID
@@ -173,6 +202,8 @@ final class AgentProviderPreferenceSnapshotStore {
             CodexAgentToolPreferences.setSearchToolEnabled(enabled, defaults: defaults)
         case let .goalSupport(enabled):
             CodexAgentModeBooleanPreference.goalSupport.setEnabled(enabled, defaults: defaults)
+        case let .computerUse(enabled):
+            CodexAgentModeBooleanPreference.computerUse.setEnabled(enabled, defaults: defaults)
         case let .reasoningSummaries(enabled):
             CodexAgentModeBooleanPreference.reasoningSummaries.setEnabled(enabled, defaults: defaults)
         case let .memories(enabled):
@@ -207,6 +238,10 @@ final class AgentProviderPreferenceSnapshotStore {
 
     func setCodexGoalSupportEnabled(_ enabled: Bool) {
         applyCodexToolSettingMutation(.goalSupport(enabled: enabled))
+    }
+
+    func setCodexComputerUseEnabled(_ enabled: Bool) {
+        applyCodexToolSettingMutation(.computerUse(enabled: enabled))
     }
 
     func setCodexReasoningSummariesEnabled(_ enabled: Bool) {
@@ -364,6 +399,26 @@ final class AgentProviderPreferenceSnapshotStore {
                     )
                 }
             )
+        case .antigravity:
+            let effective = effectiveAntigravityPermissionLevel(profile: profile)
+            return AgentPermissionChromeBinding(
+                providerID: providerID,
+                displayName: effective.displayName,
+                iconName: effective.iconName,
+                isWarning: effective.isWarning,
+                externallyManagedReason: externallyManagedReason,
+                options: AntigravityAgentToolPreferences.PermissionLevel.allCases.map { level in
+                    AgentPermissionOptionBinding(
+                        id: .antigravity(level),
+                        title: level.displayName,
+                        iconName: level.iconName,
+                        detailText: level.detailText,
+                        isWarning: level.isWarning,
+                        isSelected: level == effective,
+                        isEnabled: externallyManagedReason == nil
+                    )
+                }
+            )
         case .cursor:
             let effective = effectiveCursorPermissionLevel(profile: profile)
             return AgentPermissionChromeBinding(
@@ -404,6 +459,26 @@ final class AgentProviderPreferenceSnapshotStore {
                     )
                 }
             )
+        case .devin:
+            let effective = effectiveDevinPermissionLevel(profile: profile)
+            return AgentPermissionChromeBinding(
+                providerID: providerID,
+                displayName: effective.displayName,
+                iconName: effective.iconName,
+                isWarning: effective.isWarning,
+                externallyManagedReason: externallyManagedReason,
+                options: DevinAgentToolPreferences.PermissionLevel.allCases.map { level in
+                    AgentPermissionOptionBinding(
+                        id: .devin(level),
+                        title: level.displayName,
+                        iconName: level.iconName,
+                        detailText: level.detailText,
+                        isWarning: level.isWarning,
+                        isSelected: level == effective,
+                        isEnabled: externallyManagedReason == nil
+                    )
+                }
+            )
         }
     }
 
@@ -430,6 +505,7 @@ final class AgentProviderPreferenceSnapshotStore {
                 bashToolEnabled: CodexAgentToolPreferences.bashToolEnabled(defaults: defaults, secureStore: securePermissions),
                 searchToolEnabled: CodexAgentToolPreferences.searchToolEnabled(defaults: defaults),
                 goalSupportEnabled: codexGoalSupportEnabled(),
+                computerUseEnabled: codexComputerUseEnabled(),
                 reasoningSummariesEnabled: codexReasoningSummariesEnabled(),
                 memoriesEnabled: codexMemoriesEnabled(),
                 appsEnabled: codexAppsEnabled(),
@@ -450,6 +526,7 @@ final class AgentProviderPreferenceSnapshotStore {
                 bashToolEnabled: true,
                 searchToolEnabled: CodexAgentToolPreferences.searchToolEnabled(defaults: defaults),
                 goalSupportEnabled: codexGoalSupportEnabled(),
+                computerUseEnabled: codexComputerUseEnabled(),
                 reasoningSummariesEnabled: codexReasoningSummariesEnabled(),
                 memoriesEnabled: codexMemoriesEnabled(),
                 appsEnabled: codexAppsEnabled(),
@@ -469,9 +546,11 @@ final class AgentProviderPreferenceSnapshotStore {
     private func claudeToolSettingsBinding(
         profile: AgentProviderPermissionProfile,
         selectedAgent: AgentProviderKind,
-        selectedModelRaw: String?
+        selectedModelRaw: String?,
+        sessionEffortLevel: ClaudeCodeEffortLevel?
     ) -> ClaudeToolSettingsBinding {
-        let effortLevel = claudeEffortLevel(selectedAgent: selectedAgent, selectedModelRaw: selectedModelRaw)
+        let effortLevel = sessionEffortLevel
+            ?? claudeEffortLevel(selectedAgent: selectedAgent, selectedModelRaw: selectedModelRaw)
         switch profile {
         case .userConfigured, .providerOverride:
             return ClaudeToolSettingsBinding(
@@ -497,6 +576,10 @@ final class AgentProviderPreferenceSnapshotStore {
 
     private func codexGoalSupportEnabled() -> Bool {
         CodexAgentModeBooleanPreference.goalSupport.isEnabled(defaults: defaults)
+    }
+
+    private func codexComputerUseEnabled() -> Bool {
+        CodexAgentModeBooleanPreference.computerUse.isEnabled(defaults: defaults)
     }
 
     private func codexReasoningSummariesEnabled() -> Bool {
@@ -582,6 +665,21 @@ final class AgentProviderPreferenceSnapshotStore {
         }
     }
 
+    private func effectiveAntigravityPermissionLevel(
+        profile: AgentProviderPermissionProfile
+    ) -> AntigravityAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            AntigravityAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
+        case .mcpSafeDefaults:
+            .autoEdit
+        case let .providerOverride(.antigravity(level)):
+            level
+        case .providerOverride:
+            .autoEdit
+        }
+    }
+
     private func effectiveCursorPermissionLevel(
         profile: AgentProviderPermissionProfile
     ) -> CursorAgentToolPreferences.PermissionLevel {
@@ -612,6 +710,17 @@ final class AgentProviderPreferenceSnapshotStore {
         }
     }
 
+    private func effectiveDevinPermissionLevel(
+        profile: AgentProviderPermissionProfile
+    ) -> DevinAgentToolPreferences.PermissionLevel {
+        profile.devinPermissionLevel(
+            userConfigured: DevinAgentToolPreferences.permissionLevel(
+                defaults: defaults,
+                secureStore: securePermissions
+            )
+        )
+    }
+
     private static func representativeAgent(for providerID: AgentProviderBindingID) -> AgentProviderKind {
         switch providerID {
         case .codex: .codexExec
@@ -619,6 +728,8 @@ final class AgentProviderPreferenceSnapshotStore {
         case .openCode: .openCode
         case .cursor: .cursor
         case .grokBuild: .grokBuild
+        case .antigravity: .antigravity
+        case .devin: .devin
         }
     }
 

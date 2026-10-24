@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptFoundation
+import RepoPromptProcess
 
 final class CodexExecAgentProvider: HeadlessAgentProvider {
     private enum StreamRetryAction {
@@ -11,6 +13,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
 
     private var runner: CLIProcessRunner?
     private let config: CodexExecAgentConfig
+    private let launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot
     private let runtimeStatePreparer: @Sendable (CodexRuntimeAuthority.Runtime) throws -> Void
     private let configService = MCPConfigExportService.shared
     private let toolTracking = AgentToolTrackingController()
@@ -23,11 +26,13 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
 
     init(
         config: CodexExecAgentConfig,
+        launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot = CodexRuntimeAuthority.currentLaunchSnapshot(),
         runtimeStatePreparer: @escaping @Sendable (CodexRuntimeAuthority.Runtime) throws -> Void = {
             try $0.prepareState()
         }
     ) {
         self.config = config
+        self.launchSnapshot = launchSnapshot
         self.runtimeStatePreparer = runtimeStatePreparer
         if enableDebugLogging {
             print("[DEBUG] CodexExec: Initialized provider with model: \(config.modelString ?? "default")")
@@ -115,7 +120,8 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
         let resolution = await CodexProviderHelpers.preflightCodexExecutable(
             commandName: config.commandName,
             additionalPathHints: config.additionalPathHints,
-            enableDebugLogging: enableDebugLogging
+            enableDebugLogging: enableDebugLogging,
+            launchSnapshot: launchSnapshot
         )
         if enableDebugLogging {
             print("[DEBUG] CodexExec: \(resolution.debugMessage)")

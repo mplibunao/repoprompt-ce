@@ -43,11 +43,11 @@ the closed app's version history.
 
 ## Bundled Codex artifact
 
-Debug and release packaging include the complete official OpenAI Codex 0.149.0
+Debug and release packaging include the complete official OpenAI Codex 0.159.0
 standalone package. The authority is the repository-owned
 [`Vendor/Codex/manifest.json`](../Vendor/Codex/manifest.json), which pins the
-official [`rust-v0.149.0` release](https://github.com/openai/codex/releases/tag/rust-v0.149.0),
-the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.149.0/codex-package_SHA256SUMS),
+official [`rust-v0.159.0` release](https://github.com/openai/codex/releases/tag/rust-v0.159.0),
+the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.159.0/codex-package_SHA256SUMS),
 both macOS package assets, their complete extracted layouts, file hashes,
 architectures, and primary executable signing identities. The upstream release
 publishes SHA-256 sums but does not document a public GPG, minisign, or SLSA
@@ -81,25 +81,41 @@ fails closed unless the package matching the running app architecture is present
 Each target subtree preserves `codex-package.json`, `bin/codex`,
 `bin/codex-code-mode-host`, `codex-resources/`, `codex-path/`, and all additional
 package resources; the binaries inside remain thin and must match the directory's
-target architecture. The two primary macOS executables are
-Developer ID signed by `OpenAI OpCo, LLC` (team `2DC432GLL2`) with hardened
-runtime and timestamps. RepoPrompt's signing scripts do **not** thin, mutate, or
-re-sign anything in this subtree. The outer app signature seals the resource
-tree, after which the artifact verifier rechecks every byte, architecture, and
-upstream signature. Privileged staged signing and post-notarization validation
-run the verifier implementation from trusted control-plane tooling while reading
-artifact identity from `REPOPROMPT_APPROVED_SOURCE_ROOT/Vendor/Codex/manifest.json`;
-the intentionally minimal staged payload does not carry a second manifest copy.
-This mixed-authority layout passes macOS strict deep code
-signature verification without changing the upstream binary hashes. Actual
-notarization remains enforced by the protected release workflow; if Apple ever
-rejects this policy, stop rather than silently re-signing the upstream payload.
+target architecture. Codex 0.156.0 adds `codex-resources/voice/`, including a
+voice host, native libraries/plugins, source provenance, and their licences. All
+30 macOS Mach-Os are Developer ID signed by `OpenAI OpCo, LLC` (team
+`2DC432GLL2`) with hardened runtime and timestamps in the official packages.
+
+Host-native debug packaging preserves those upstream signatures and exact bytes.
+Privileged release signing deliberately re-signs every manifest-owned Mach-O with
+the RepoPrompt identity at its final bundle path. The manifest's closed-world
+entitlement profile grants V8 JIT only to `bin/codex` and
+`bin/codex-code-mode-host`, audio input only to the voice host, and no entitlements
+to the remaining Mach-Os. Repository-owned entitlement plists are used instead of
+blindly preserving vendor metadata. Post-signing and post-notarization validation
+then rechecks the exact normalized payloads, thin architectures, RepoPrompt signing
+team, and entitlement profile from trusted control-plane tooling. Artifact identity
+comes from `REPOPROMPT_APPROVED_SOURCE_ROOT/Vendor/Codex/manifest.json`; the staged
+payload does not carry a second manifest copy.
 
 The bundled package is RepoPrompt's default Codex runtime authority; runtime
-selection never falls through to the user's shell `PATH`. Advanced users may set
-one explicit absolute external override with `REPOPROMPT_CODEX_EXECUTABLE`.
-RepoPrompt rejects overrides older than 0.149.0, matching the bundled runtime and
-the documented app-server contract floor. Bundled and external runtimes both use
+selection never falls through to the user's environment or shell `PATH`. Settings
+presents the included Codex version and status as the ordinary path. Advanced users
+may explicitly select one custom executable with a compatibility warning and can
+restore the included runtime at any time. A legacy `REPOPROMPT_CODEX_EXECUTABLE`
+value is ignored when no runtime preference was ever saved, with a redacted notice
+in Settings rather than implicit execution. Previously saved explicit external path
+selections remain intact. Settings separately reports the immutable active launch
+selection and a saved next-launch selection when they differ, while all runtime consumers
+retain the process-wide active selection until relaunch. Model availability continues to
+come from runtime metadata and existing explicit model selections are not rewritten.
+External version validation uses the captured launch environment, including its interpreter
+search path.
+RepoPrompt rejects custom executables older than 0.149.0, the last proven external
+compatibility floor. This is intentionally distinct from the exact bundled and schema-gate
+pin at 0.159.0: the bounded 0.159.0 app-server projection passes unchanged from the
+0.156.1 contract at 45 methods, 193 parameter paths, and 93 response paths, and no new outgoing
+request requires 0.159.0. Bundled and external runtimes both use
 RepoPrompt-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under
 `~/Library/Application Support/RepoPrompt CE/Codex/{Debug,Release}/`, leaving
 `~/.codex` and official Codex App state untouched.
@@ -124,7 +140,7 @@ To diagnose acquisition independently of a build, run:
 python3 Scripts/codex_runtime_artifact.py acquire --arch all
 python3 Scripts/codex_runtime_artifact.py verify \
   --arch aarch64-apple-darwin \
-  --package .build/codex-runtime/0.149.0/aarch64-apple-darwin
+  --package .build/codex-runtime/0.159.0/aarch64-apple-darwin
 python3 Scripts/codex_runtime_artifact.py stage-bundle \
   --arch all \
   --cache-root .build/codex-runtime \
@@ -143,11 +159,12 @@ release candidate. Never derive a new pin from an unverified local installation.
 
 `Scripts/codex_update_candidate.py` prepares evidence for a possible rotation; it
 does not edit or replace `Vendor/Codex/manifest.json`. Select exactly one explicit
-stable version/tag, or opt in explicitly to GitHub's latest stable release:
+stable version/tag newer than the current pin, or opt in explicitly to GitHub's
+latest stable release. Replace `X.Y.Z` with the published stable version:
 
 ```bash
-make codex-update-candidate CODEX_CANDIDATE_VERSION=0.150.0
-make codex-update-candidate CODEX_CANDIDATE_TAG=rust-v0.150.0
+make codex-update-candidate CODEX_CANDIDATE_VERSION=X.Y.Z
+make codex-update-candidate CODEX_CANDIDATE_TAG=rust-vX.Y.Z
 make codex-update-candidate CODEX_CANDIDATE_LATEST=1
 ```
 
@@ -169,13 +186,13 @@ inventory/architecture, normalized-payload, and OpenAI signing-identity drift.
 The official output directory contains a proposed `candidate-manifest.json`,
 `candidate-provenance.json`, sanitized `release-metadata.json`, the upstream
 checksum file, self-checksums, and a deterministic `candidate-report.md`. The live
-0.149.0 pin remains authoritative
+0.159.0 pin remains authoritative
 until a maintainer reviews and deliberately applies a complete rotation change.
 
-The known-good rollback for the 0.149.0 rotation is verified Codex 0.147.0
-(`rust-v0.147.0`; arm64 package archive SHA-256
-`17b2984eb22b607e3d0c25728252fc90f510e476bad39a6d9f45cdb1aa685432`, x86_64
-package archive SHA-256 `d91e59133daf923bc45d76e3da4af8ae9ef62a0231da18488da0cd573b6e9d63`).
+The known-good rollback for the 0.159.0 rotation is verified Codex 0.156.1
+(`rust-v0.156.1`; arm64 package archive SHA-256
+`fea42f9625091f011e38f059da974d52e57ba31831648bb1c7f0b1a385fde547`, x86_64
+package archive SHA-256 `618dbcd55419fa041871f777a14b107ceb3fe2d339ef81e21e6ab5374420dc71`).
 After a reviewed rotation, roll back by reverting the complete rotation change and
 rebuilding from the restored manifest rather than mixing old and new authority files.
 
@@ -320,8 +337,11 @@ does not depend on the new draft immediately appearing in paginated list results
 resumed only when their metadata and uploaded bytes exactly match;
 missing assets are added without overwriting anything. After publication, every public asset is
 downloaded anonymously and compared byte-for-byte with the signed local inventory, and the release
-must be the repository's latest. The update-repository token is not available to setup, staging, or
-smoke jobs.
+must be the repository's latest. Release metadata API reads use the update-repository token to
+avoid the shared runner's anonymous API quota; public artifact downloads remain unauthenticated.
+The final latest-pointer check allows seven observations ten seconds apart for GitHub propagation,
+and fails if the expected tag never becomes latest. Authorization errors fail immediately.
+The update-repository token is not available to setup, staging, or smoke jobs.
 
 Configure protected GitHub Actions environments named `release` and `tip-release`, with maintainer
 approval and protected-branch restrictions. Before the rehearsal, store this one-time identity
@@ -362,6 +382,185 @@ the job, and requires the final artifact manifest to record
 `telemetry_enabled: true`. The workflow materializes Sentry auth in an
 owner-only temporary token file and removes it through the job's always-run
 cleanup step.
+
+### Tip history: immediate release browsing and optional signed catalogs
+
+Tip history is separate from Sparkle discovery. It does **not** change `appcast.xml` bytes,
+retained migration predecessors, feeds, Apple migration policy, or the Sparkle key. Reviewed
+plain-text fragments live in [`ReleaseNotes/Tip`](../ReleaseNotes/Tip/README.md).
+
+#### Existing releases are usable immediately
+
+The history disclosure works **without catalog activation or a policy change**. If the signed
+head returns 404 and this process has never authenticated a signed catalog, the app immediately
+loads existing public Tip releases from the feed-derived official repository. It presents readable
+release/commit metadata, explicit omitted-record counts, and user-requested pagination bounded to
+ten pages. Nothing is fetched at launch or merely by opening Settings; expanding the disclosure,
+Refresh, and Load older builds are the network entry points.
+
+This source is labeled **GitHub release metadata — not a signed history catalog**. Release titles,
+commit notes, and unsigned asset/checksum metadata do not establish authenticated catalog history
+or complete persistence-format coverage. Older downloads always require both backup acknowledgement
+and a separate unknown-data-format acknowledgement, even if the installed build appears in the
+release list. Every archive still undergoes size/hash/Sparkle-signature verification, confined
+extraction, bundle/official-identity validation, and Gatekeeper assessment before the app is saved.
+The app never executes or installs the acquired binary and never changes update preferences.
+Fallback release discovery does not source-audit the historical binary’s update/preference behavior;
+the confirmation shows the current app’s automatic-check choice without promising that an older
+binary reads it or behaves identically.
+
+A Debug or unknown-identity running app may obtain an official fallback binary **for inspection
+only**. Its saved-result notice offers Finder reveal, not Quit/reinstall/replace-current-app steps.
+It explicitly says not to replace the Debug/unknown-identity app and to use the official migration
+and update path for any later installation. Official cross-identity acquisitions and transition
+package targets remain blocked.
+
+A bad signature, malformed/newer catalog format, timeout, or other catalog error does **not**
+authorize fallback. Once any signed catalog has been authenticated in this process, a later 404
+cannot downgrade discovery to unsigned release metadata, including after switching channels.
+Fallback rows are not entered into the signed-head monotonicity pin or the authenticated barrier
+ledger; known signed barriers are never discarded. A signed catalog, when available, is preferred
+and replaces fallback display rows through the same cancellation/request-generation fences.
+HTTP 404/410 for an archive keeps its row visible but unavailable until an explicit refresh
+revalidates that entry; no proactive HEAD sweep or automatic retry loop is performed.
+
+#### Optional signed-catalog publication
+
+The signed-catalog pipeline is wired but **inactive by default**. This does not disable the
+existing-release browser above. With no `Scripts/tip_history_policy.json`,
+the release tooling reads `Scripts/tip_history_policy.example.json`; its null activation tag explicitly
+keeps the pre-history release inventories unchanged. This is not bootstrap authorization.
+An inactive policy also rejects a live catalog rather than silently dropping an existing chain.
+Do not use an environment variable, API 404, or a one-entry/fabricated seed catalog to activate it.
+
+**Additional activation blocker:** the approved exact-tag contract is circular in the current
+workflow. `historyEnabledSinceTag` must equal `tip-<candidate SHA12>`, while the policy is itself
+checked into that candidate and setup requires `tooling-commit == candidate commit`. Adding that
+tag changes the candidate SHA. A later tooling-only commit also fails setup's equality check.
+Thus supplying the audits below does not by itself make first activation executable. This is a
+**conditional workflow restriction**, not an inherent catalog-format requirement: the shell already
+reads policy from the trusted control-plane scripts root separately from `REPOPROMPT_APPROVED_SOURCE_ROOT`,
+and the generic admission CLI accepts an explicit policy file. However, setup skips an earlier UI
+candidate once `main` advances, then explicitly requires the tooling and selected source commits to
+match; dispatch has no earlier-candidate input. A later policy-only commit cannot currently pin and
+sign the prior UI commit through this workflow. Whether that independently reviewed ordering/input
+can be authorized is a plan/evidence decision, **not** implemented permission to change source
+provenance, add an anchor, setting, override or bootstrap bypass.
+The emitted bootstrap evidence also records the candidate commit/tag, while its canonical digest
+is pinned in that candidate's policy. The approved activation ordering must resolve this evidence
+binding as well as the activation tag; merely changing the tag field is not sufficient.
+Keep signed-catalog publication disabled and resolve this decision explicitly before its first
+activation. These publication gates do not gate browsing or verified acquisition of existing releases.
+
+**User-visible behavior:** an ordinary Tip with no signed catalog uses the immediate release fallback.
+It does not wait for a 30-entry bootstrap, a policy floor, an activation tag, or an invented history
+anchor. The signed catalog remains the preferred future source of authenticated notes, pagination,
+and audited downgrade barriers. Creating an unsigned or manually invented “history anchor” in
+tip-updates is not a signed-catalog activation procedure.
+
+After that decision is resolved, activation also requires a separately reviewed
+`Scripts/tip_history_policy.json` and approved-source bootstrap evidence file. Pin all of:
+
+- The audited admission build/commit floor (including passive-only preference semantics,
+  force-Sparkle-off behavior and committed-bridge activation), source ancestry, and the actual
+  history-UI build floor. The source-audited candidate `f3909b782342ef1268823c330f7039f8f418f79c`
+  / build `37` is **not** a seed-archive or retention audit and is not activated by this change.
+- The exact first `historyEnabledSinceTag` and `bootstrapEvidenceFile` (relative to approved
+  source), plus `bootstrapEvidenceSha256` over `tip_history.canonical(evidence)` bytes.
+- Evidence with `schemaVersion: 1`, `historyNeverEnabled: true`, explicit `liveParent` (the
+  authoritative latest published tag, or explicit null for reviewed no-live bootstrap), and
+  **29** independently audited predecessor `entries`. Their manifests, metadata, checksums,
+  source intervals/persistence barriers and actual signed/notarized archives must be reviewed;
+  an unsigned checksum fetched alongside an archive is not provenance. The first catalog has
+  the candidate plus those 29 records. Do not assert the required quantity from API counts.
+- `retention.schemaLifetime: 1`, a responsible `retention.owner`, and nonempty
+  `retention.reviewedEvidence` documenting the actual cleanup/permissions/immutability review
+  and a non-pruning commitment for schema-v1 catalogs and every referenced artifact, manifest,
+  metadata and checksum. At minimum, current 30-record pages must remain downloadable.
+
+**Outstanding external gates (2026-10-22):** no 29-seed archive/provenance and persistence-interval
+review, no retention/cleanup review, and no reviewed history-UI floor or activation tag are
+provided. Read-only observations found release immutability disabled and all 209 observed published
+records marked `immutable: false`. That does **not** establish a retention violation, but neither
+API counts nor repository permissions establish that assets cannot be deleted. These facts must
+not be replaced by placeholder “approved” strings in the policy. Missing evidence keeps activation
+disabled; generation/admission rejects incomplete active inputs.
+
+#### Preparing audited bootstrap evidence
+
+The read-only seed tool is separate from signing/publication. Use a dedicated ignored
+snapshot directory, not Downloads or another application's cache. Capture all release
+pages, then audit the versioned assets under the same exact live-parent pin used by
+`resolve-parent`:
+
+```bash
+mkdir -p .build/tip-history-audit
+# Read-only API capture; this is not itself provenance or retention approval.
+gh api --paginate --slurp \
+  '/repos/repoprompt/repoprompt-ce-tip-updates/releases?per_page=100' \
+  > .build/tip-history-audit/releases.json
+python3 -B Scripts/tip_history_seed.py seed-bootstrap \
+  --approved-source "$APPROVED_SOURCE" --policy "$REVIEWED_HISTORY_POLICY" \
+  --release-snapshot .build/tip-history-audit \
+  --candidate-tag "$CANDIDATE_TAG" --candidate-commit "$CANDIDATE_COMMIT" \
+  --candidate-build "$CANDIDATE_BUILD" --expect-live-parent "$LIVE_PARENT_TAG" \
+  --source-audit "$REVIEWED_PERSISTENCE_AUDIT" --fetch \
+  --output .build/tip-history-bootstrap.json \
+  --report .build/tip-history-bootstrap-report.json
+```
+
+The approved checkout must have full history and HEAD equal to the candidate. Without
+`--fetch`, supply `assets/<tag>/<name>` in the snapshot; cached and fetched bytes receive
+the same verification. Fetching is anonymous and restricted to exact official versioned
+GitHub asset URLs and the release CDN. An optional `--apple-policy` may only supply the
+same canonical content as the tool's committed Apple identity policy; it cannot override
+keys or signing requirements. `--work-dir` may select a dedicated temporary audit parent.
+
+The tool writes canonical evidence and reports its `evidenceSha256`. Exit `2` reports a
+shortfall/block; exit `1` means invalid input or an environment failure. Exit `0` is **not**
+activation approval: review `externalReviewGates`, actual audit records and exclusions.
+Persistence verdicts must bind exact `{tag, fromCommit, releaseCommit}` intervals and use
+`no-known-downgrade-break`, `downgrade-break`, or null; missing or mismatched verdicts create
+blocking downgrade barriers, never compatibility claims. Use the report's fill-in template
+and obtain a genuine source/persistence review before pinning the evidence digest.
+
+Application audits verify EdDSA before bounded ZIP preflight/extraction, then check bundle
+metadata, executable hashes/architectures, the committed Developer ID requirement and raw
+Gatekeeper assessment. Package records stay non-downloadable: their envelope signature,
+installer signature/Team ID, staple and Gatekeeper checks do **not** constitute a payload-app
+or migration/rollback compatibility audit. The tool never installs packages, executes obtained
+apps, writes Applications, signs or publishes. It does not audit DMGs. Disposable-VM migration
+checks and retention approval remain separate gates. Do not commit local snapshots, archives,
+reports or placeholder review verdicts; only intentionally reviewed bootstrap evidence belongs
+in the eventual activation change.
+
+#### Signing and publication
+
+Once active, both application and package signing resolve the authoritative
+`GET /repos/<tip-repo>/releases/latest` response, download only its **versioned**
+`releases/download/<tag>/tip-history.json`, enforce the API asset size/digest when supplied,
+and verify Ed25519 over `repoprompt-tip-history-v1\n` plus decoded raw payload bytes using
+`verify_sparkle_signature.swift` and the existing pinned Sparkle public key. Notes and barriers
+come from a full-history approved-source checkout, not staged build code. Generation binds the
+head to the rollout, final app artifact manifest, metadata and measured final-app expanded bytes.
+The token-free signing step signs the domain-prefixed message with the existing `sign_update`
+key; package mode does this in **Validate package**. The envelope joins the exact asset inventory
+and `SHA256SUMS` before smoke; the publisher has no signing key.
+
+At publication setup **and immediately before the publish PATCH**, the publisher reuses the
+same latest-release API response as rollout progression, verifies parent and candidate signatures,
+checks hashes and metadata bindings, and re-derives the complete candidate payload from approved
+source and the exact parent or policy-pinned seed evidence. If the parent moves, publication fails
+with `Tip history parent superseded` before mutation at setup, or leaves an unpublished stale draft
+at the final fence. Do not replay that draft or overwrite its assets. Obtain explicit approval for
+any draft deletion; sign a fresh candidate against the new parent instead. Exact already-public
+retries remain read-only, re-auditing the original hash-pinned parent and existing bytes.
+
+After activation, a catalog-less latest release or API/asset 404 cannot authorize another bootstrap.
+Publication fails closed; recover the last signed parent with reviewed intervening-release evidence
+in a follow-up recovery change. Never reset the chain, remove activation policy on pipeline revert,
+prune linked assets, or treat a missing catalog as proof history never existed. GitHub's
+`releases/latest/download` pointer is a **client** convenience, not a second pipeline parent authority.
 
 ## Contributor release candidate
 

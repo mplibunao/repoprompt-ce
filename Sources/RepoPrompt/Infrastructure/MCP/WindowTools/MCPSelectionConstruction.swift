@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import RepoPromptInstrumentation
 
 /// Outputs of the `manage_selection` construction interval.
 struct MCPSelectionConstructionOutcome {

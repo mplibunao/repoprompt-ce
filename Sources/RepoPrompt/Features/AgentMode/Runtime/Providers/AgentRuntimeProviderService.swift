@@ -1,5 +1,7 @@
 import Foundation
 import Logging
+import RepoPromptProcess
+import RepoPromptSettingsCore
 
 enum ClaudeCodeRuntimeVariant: String {
     case standard
@@ -41,6 +43,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
     case openCode
     case cursor
     case grokBuild
+    case antigravity
+    case devin
     case claudeCodeGLM
     case kimiCode
     case customClaudeCompatible
@@ -48,13 +52,16 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
     static let claudeMCPClientID = "claude-code"
     static let codexMCPClientID = "codex-mcp-client"
     static let openCodeMCPClientID = "opencode"
-    static let cursorMCPClientID = "cursor"
-    /// Grok Build presents `grok-shell-<injected server name>` (e.g. `grok-shell-RepoPromptCE`)
+    /// Cursor's ACP MCP child reports this exact initialize name; pending discovery contexts use exact keys.
+    static let cursorMCPClientID = "Cursor"
+    /// Devin's built-in Rust MCP client reports this exact initialize name.
+    static let devinMCPClientID = "rmcp"
+    /// Grok Build presents `grok-shell-<injected server name>` (here `grok-shell-RepoPromptCEGrokRuntime`)
     /// to MCP servers. The hint must equal that exact registered name: the pending run-scoped
     /// tab-context store keys are raw client names (no family canonicalization), so a
     /// family-only hint would never bind the run's frozen tab context. The canonical
     /// `grok-shell` family in `MCPClientIdentity` still covers family-level matching.
-    static let grokBuildMCPClientID = "grok-shell-\(RepoPromptMCPServerConfiguration.defaultServerName)"
+    static let grokBuildMCPClientID = "grok-shell-\(RepoPromptMCPServerConfiguration.grokBuildRuntimeServerName)"
 
     var commandName: String {
         switch self {
@@ -68,6 +75,10 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             "cursor-agent"
         case .grokBuild:
             "grok"
+        case .antigravity:
+            "agy_acp_server.par"
+        case .devin:
+            "devin"
         }
     }
 
@@ -83,6 +94,10 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             "Cursor CLI"
         case .grokBuild:
             "Grok Build"
+        case .antigravity:
+            "Google Antigravity"
+        case .devin:
+            "Devin CLI"
         case .claudeCodeGLM:
             ClaudeCodeCompatibleBackendStore.shared.config(for: .glmZAI).normalizedDisplayName
         case .kimiCode:
@@ -104,6 +119,10 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             Self.cursorMCPClientID
         case .grokBuild:
             Self.grokBuildMCPClientID
+        case .antigravity:
+            "antigravity"
+        case .devin:
+            Self.devinMCPClientID
         }
     }
 
@@ -115,6 +134,10 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             .cursor
         case .grokBuild:
             .grokBuild
+        case .antigravity:
+            .antigravity
+        case .devin:
+            .devin
         case .claudeCode, .codexExec, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             nil
         }
@@ -124,7 +147,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
         switch self {
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             true
-        case .codexExec, .openCode, .cursor, .grokBuild:
+        case .codexExec, .openCode, .cursor, .grokBuild, .antigravity, .devin:
             false
         }
     }
@@ -135,16 +158,16 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
 
     var requiresExpectedPIDOwnedAgentModeMCPRouting: Bool {
         switch self {
-        case .claudeCode, .codexExec, .openCode, .cursor, .grokBuild, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+        case .claudeCode, .codexExec, .openCode, .cursor, .grokBuild, .antigravity, .devin, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             true
         }
     }
 
     var requiresPrePromptAgentModeMCPRouting: Bool {
         switch self {
-        case .cursor, .grokBuild:
+        case .cursor, .grokBuild, .antigravity:
             false
-        case .claudeCode, .codexExec, .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+        case .claudeCode, .codexExec, .openCode, .devin, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             true
         }
     }
@@ -156,12 +179,16 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             return "Anthropic's Claude Code agent. Strong at general-purpose development, code understanding, architecture, and open-ended reasoning tasks."
         case .codexExec:
             return "OpenAI's Codex CLI agent. Optimized for tool-driven engineering workflows. Supports configurable reasoning effort levels per model."
+        case .antigravity:
+            return "Google Antigravity ACP agent. Supports interactive Agent Mode through the managed ACP bridge."
         case .openCode:
             return "OpenCode ACP agent. Interactive Agent Mode uses RepoPrompt MCP tools; headless discovery/delegate runs use RepoPrompt's managed no-native-tools mode."
         case .cursor:
             return "Cursor CLI ACP agent. Uses Cursor's ACP runtime and injects RepoPrompt MCP tools through ACP session configuration."
         case .grokBuild:
             return "xAI Grok Build ACP agent. Uses Grok Build's ACP runtime (`grok agent stdio`) and injects RepoPrompt MCP tools through ACP session configuration."
+        case .devin:
+            return "Installed Devin ACP agent for Agent Mode, Context Builder, and delegated runs. RepoPrompt injects its MCP tools through an isolated configuration overlay."
         case .claudeCodeGLM:
             let config = ClaudeCodeCompatibleBackendStore.shared.config(for: .glmZAI)
             if case let .claudeSlotMapping(mapping) = config.modelBehavior {
@@ -190,12 +217,16 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             "claude_native"
         case .codexExec:
             "codex_native"
+        case .antigravity:
+            "antigravity_acp"
         case .openCode:
             "opencode_acp"
         case .cursor:
             "cursor_acp"
         case .grokBuild:
             "grok_build_acp"
+        case .devin:
+            "devin_acp"
         }
     }
 
@@ -209,7 +240,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             .kimi
         case .customClaudeCompatible:
             .customCompatible
-        case .codexExec, .openCode, .cursor, .grokBuild:
+        case .codexExec, .openCode, .cursor, .grokBuild, .antigravity, .devin:
             nil
         }
     }
@@ -232,13 +263,14 @@ final class AgentRuntimeProviderService {
     ///   - runType: The type of run — determines CLI tool config
     /// - Note: MCP tool restrictions are handled via ServerNetworkManager connection policies,
     ///   not via CLI flags. Use installClientConnectionPolicy before starting the agent run.
-    /// - Important: OpenCode and Cursor use their ACP runtimes for headless
-    ///   discovery while keeping broader chat-provider wiring separate.
+    /// - Important: ACP-backed providers use their shared one-shot bridge for
+    ///   headless discovery while keeping broader chat-provider wiring separate.
     func makeProvider(
         for agent: AgentProviderKind,
         modelString: String? = nil,
         runType: AgentRunType = .discover,
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        modelParameterSelections: [ACPModelParameterSelection] = []
     ) -> HeadlessAgentProvider {
         if Self.enableDebugLogging {
             Self.logger.debug("Creating provider for agent: \(agent.displayName), model: \(modelString ?? "default"), runType: \(String(describing: runType))")
@@ -283,7 +315,8 @@ final class AgentRuntimeProviderService {
             let config = OpenCodeAgentConfig(
                 modelString: modelString,
                 enableDebugLogging: Self.enableDebugLogging,
-                toolProfile: .headless
+                toolProfile: .headless,
+                modelParameterSelections: modelParameterSelections
             )
             if Self.enableDebugLogging {
                 Self.logger.debug("Created OpenCodeACPHeadlessAgentProvider")
@@ -291,11 +324,11 @@ final class AgentRuntimeProviderService {
             return OpenCodeACPHeadlessAgentProvider(config: config, workspacePath: workspacePath)
         case .cursor:
             let config = CursorAgentConfig(
-                commandName: agent.commandName,
                 enableDebugLogging: Self.enableDebugLogging,
                 modelString: modelString,
                 includeRepoPromptMCPServer: true,
-                cleanupProjectMCPApproval: true
+                cleanupProjectMCPApproval: true,
+                modelOverrides: modelParameterSelections.map { .init(configID: $0.configID, valueRaw: $0.valueRaw) }
             )
             if Self.enableDebugLogging {
                 Self.logger.debug("Created CursorACPHeadlessAgentProvider")
@@ -305,12 +338,25 @@ final class AgentRuntimeProviderService {
             let config = GrokBuildAgentConfig(
                 enableDebugLogging: Self.enableDebugLogging,
                 modelString: modelString,
-                alwaysApproveTools: GrokBuildAgentToolPreferences.permissionLevel() == .fullAccess
+                alwaysApproveTools: false,
+                discoveryMode: true,
+                backgroundFeatureEnvironment: GrokBuildAgentConfig.managedBackgroundFeatureEnvironment
             )
             if Self.enableDebugLogging {
                 Self.logger.debug("Created GrokBuildACPHeadlessAgentProvider")
             }
             return GrokBuildACPHeadlessAgentProvider(config: config, workspacePath: workspacePath)
+        case .antigravity:
+            return UnsupportedHeadlessAgentProvider(reason: "Headless execution is not supported for this provider.")
+        case .devin:
+            return DevinACPHeadlessAgentProvider(
+                config: DevinAgentConfig(
+                    enableDebugLogging: Self.enableDebugLogging,
+                    includeRepoPromptMCPServer: true,
+                    modelString: modelString
+                ),
+                workspacePath: workspacePath
+            )
         }
     }
 }

@@ -1,8 +1,37 @@
 import Foundation
+import RepoPromptFileSystem
+import RepoPromptWorkspaceCore
 #if os(macOS)
     import Darwin
     import RepoPromptC
 #endif
+
+protocol WorkspaceExternalReadWorkRecording: Sendable {
+    func makeRecorder() -> @Sendable (_ bytes: Int, _ decodeMicroseconds: Int) -> Void
+}
+
+enum WorkspaceExternalReadWorkHooks {
+    private final class Storage: @unchecked Sendable {
+        let lock = NSLock()
+        var provider: (any WorkspaceExternalReadWorkRecording)?
+    }
+
+    private static let storage = Storage()
+
+    static func install(_ provider: any WorkspaceExternalReadWorkRecording) {
+        storage.lock.lock()
+        storage.provider = provider
+        storage.lock.unlock()
+    }
+
+    static func makeRecorder() -> @Sendable (_ bytes: Int, _ decodeMicroseconds: Int) -> Void {
+        storage.lock.lock()
+        let provider = storage.provider
+        storage.lock.unlock()
+        guard let provider else { return { _, _ in } }
+        return provider.makeRecorder()
+    }
+}
 
 enum WorkspaceReadableFileResolution {
     case workspace(WorkspaceExactExistingFileMatch)
@@ -60,6 +89,20 @@ struct WorkspaceReadableFileService {
                     fallbackRootRefs: rootRefs
                 )
             }
+        }
+    }
+
+    func awaitFreshnessForExplicitRequest(
+        _ input: WorkspaceExactFileInput,
+        namespace: WorkspaceExactFileNamespace,
+        timeout: Duration
+    ) async throws {
+        try await awaitFreshnessForExplicitRequest {
+            try await store.awaitAppliedIngressForExplicitRequest(
+                input,
+                namespace: namespace,
+                timeout: timeout
+            )
         }
     }
 
@@ -259,10 +302,15 @@ struct WorkspaceReadableFileService {
         let homeDirectoryPath = homeDirectoryURL.path
         let byteLimit = Self.externalReadByteLimit
         let chunkSize = Self.externalReadChunkSize
-        let workRecorder = MCPToolWorkCountDiagnostics.readFileExternalRecorder()
+        let workRecorder = WorkspaceExternalReadWorkHooks.makeRecorder()
         let beforeExternalReadOpenHook = beforeExternalReadOpenForTesting
+        let schedulerOwnerID = UUID()
         try Task.checkCancellation()
-        let readTask = Task.detached(priority: .userInitiated) {
+        return try await FileSystemService.withCancellationResponsivePhysicalReadPermit(
+            workloadClass: .interactiveRead,
+            schedulerOwnerID: schedulerOwnerID,
+            priority: .userInitiated
+        ) {
             try Task.checkCancellation()
             let homeDirectoryURL = URL(fileURLWithPath: homeDirectoryPath)
             let normalizedPath = AgentSupportDirectoryCatalog.normalizedPath(for: path)
@@ -342,11 +390,6 @@ struct WorkspaceReadableFileService {
             )
             return decoded
         }
-        return try await withTaskCancellationHandler(operation: {
-            try await readTask.value
-        }, onCancel: {
-            readTask.cancel()
-        })
     }
 
     func resolveAlwaysReadableExternalFile(atAbsolutePath path: String) -> WorkspaceExternalReadableFile? {

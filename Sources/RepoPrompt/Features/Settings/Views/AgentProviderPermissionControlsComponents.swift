@@ -87,9 +87,10 @@ struct AgentProviderPermissionLevelSection: View {
     private func permissionLevelLabel(for providerID: AgentProviderBindingID) -> String {
         switch providerID {
         case .codex, .claude: "Permission Level"
-        case .openCode: "ACP Session Mode"
+        case .openCode, .antigravity: "ACP Session Mode"
         case .cursor: "ACP Auto-Approve"
         case .grokBuild: "Always-Approve Launch"
+        case .devin: "Permission Mode"
         }
     }
 }
@@ -140,7 +141,7 @@ struct AgentProviderToolsRuntimeDisclosure: View {
         switch providerID {
         case .codex: binding.codexTools != nil
         case .claude: binding.claudeTools != nil
-        case .openCode, .cursor, .grokBuild: false
+        case .openCode, .cursor, .grokBuild, .antigravity, .devin: false
         }
     }
 }
@@ -168,7 +169,7 @@ struct AgentProviderToolsRuntimeControls: View {
                         onApplyMutation: onApplyClaudeToolSettingMutation
                     )
                 }
-            case .openCode, .cursor, .grokBuild:
+            case .openCode, .cursor, .grokBuild, .antigravity, .devin:
                 EmptyView()
             }
         }
@@ -226,6 +227,13 @@ struct CodexProviderToolsRuntimeSection: View {
             .hoverTooltip("Controls Codex memory generation and use for app-server launch and thread start/resume. Off by default.")
 
             ProviderRuntimeSubsection(title: "Optional Codex Features") {
+                ProviderRuntimeToggleRow(
+                    title: "Computer Use",
+                    description: "Use /computer-use in direct Codex sessions with the installed Computer Use companion. Off by default. Grant Screen Recording and Accessibility permissions in macOS when prompted.",
+                    isOn: tools.computerUseEnabled,
+                    onChange: { onApplyMutation(.computerUse(enabled: $0)) }
+                )
+
                 ProviderRuntimeToggleRow(
                     title: "Apps",
                     description: "Allow Codex to use connected apps.",

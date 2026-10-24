@@ -9,6 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLLOUT_TOOL="$SCRIPT_DIR/stable_rollout.py"
 APPLE_IDENTITY_POLICY="$SCRIPT_DIR/apple_identity_policy.json"
 SOURCE_COMMIT_VERIFIER="$SCRIPT_DIR/verify_tip_source_commit.sh"
+REPOPROMPT_TIP_HISTORY_LIBRARY_ONLY=1 source "$SCRIPT_DIR/main_tip_release.sh"
+tip_history_context "$SCRIPT_DIR"
+APPROVED_SOURCE_ROOT="${REPOPROMPT_APPROVED_SOURCE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 require_env() { [[ -n "${!1:-}" ]] || fail "Missing required environment variable: $1"; }
@@ -75,6 +78,37 @@ CANDIDATE_APPCAST="$(asset_path_for_name appcast.xml)" ||
     fail "Tip publication inventory is missing appcast.xml"
 
 validate_candidate_bindings() {
+    if [[ "$HISTORY_ACTIVE" == true ]]; then
+        python3 - "$CANDIDATE_MANIFEST" "${ASSETS[@]}" <<'PY'
+import hashlib, json, pathlib, re, sys
+manifest = json.load(open(sys.argv[1]))
+assets = {pathlib.Path(p).name: pathlib.Path(p) for p in sys.argv[2:]}
+head = manifest["appcastItems"][0]
+artifact = manifest["appArtifactManifest"]["name"]
+metadata = artifact.removesuffix("-artifact-manifest.json") + "-metadata.json"
+expected = {"appcast.xml", "identity-rollout.json", "SHA256SUMS", "tip-history.json", artifact, metadata, head["enclosureName"]}
+if head["installationType"] == "application":
+    expected.add(head["enclosureName"].removesuffix(".zip") + ".dmg")
+if set(assets) != expected:
+    raise SystemExit("ERROR: activated Tip publication inventory mismatch")
+checksums = {}
+for line in assets["SHA256SUMS"].read_text().splitlines():
+    match = re.fullmatch(r"([0-9a-f]{64})  ([^/]+)", line)
+    if not match or match[2] in checksums:
+        raise SystemExit("ERROR: malformed/duplicate Tip checksum")
+    checksums[match[2]] = match[1]
+if set(checksums) != expected - {"SHA256SUMS"}:
+    raise SystemExit("ERROR: Tip checksum inventory mismatch")
+for name, digest in checksums.items():
+    with assets[name].open("rb") as f:
+        h = hashlib.sha256()
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+        actual = h.hexdigest()
+    if actual != digest:
+        raise SystemExit(f"ERROR: Tip checksum mismatch: {name}")
+PY
+    fi
     python3 - \
         "$CANDIDATE_MANIFEST" \
         "$TIP_UPDATE_REPOSITORY" \
@@ -190,8 +224,12 @@ verify_downloaded_asset() {
 
 fetch_json_status() {
     local url="$1" output="$2" status
-    if ! status="$(curl --location --silent --show-error \
+    # Metadata uses the updater token; artifact downloads below remain anonymous.
+    [[ "$url" == "https://api.github.com/repos/$TIP_UPDATE_REPOSITORY/releases/"* ]] ||
+        fail "Unexpected Tip metadata API URL"
+    if ! status="$(curl --silent --show-error \
         --connect-timeout 10 --max-time 30 \
+        -H "Authorization: Bearer $TIP_GH_TOKEN" \
         -H 'Accept: application/vnd.github+json' \
         -H 'X-GitHub-Api-Version: 2022-11-28' \
         --output "$output" --write-out '%{http_code}' "$url")"; then
@@ -210,13 +248,16 @@ STABLE_AUDIT_INDEX=0
 LIVE_MANIFEST_PATH=""
 LIVE_APPCAST_PATH=""
 STABLE_APPCAST_PATH=""
+LIVE_RELEASE_PATH=""
 fetch_live_tip_rollout() {
     LIVE_AUDIT_INDEX=$((LIVE_AUDIT_INDEX + 1))
     local release_file="$TMP_DIR/live-release-$LIVE_AUDIT_INDEX.json" status report
     status="$(fetch_json_status \
         "https://api.github.com/repos/$TIP_UPDATE_REPOSITORY/releases/latest" \
         "$release_file")"
+    LIVE_RELEASE_PATH="$release_file"
     if [[ "$status" == "404" ]]; then
+        printf 'null\n' > "$LIVE_RELEASE_PATH"
         LIVE_MANIFEST_PATH=""
         LIVE_APPCAST_PATH=""
         return 1
@@ -415,7 +456,36 @@ audit_live_rollout_progression() {
         )
     fi
     python3 "$ROLLOUT_TOOL" "${arguments[@]}" || fail "$phase rejected unsafe Tip rollout progression"
+    audit_tip_history_parent "$phase"
     audit_retained_enclosures
+}
+
+# The rollout and history fences consume ONE observed releases/latest response.
+# This runs before any draft mutation and again immediately before publish PATCH.
+audit_tip_history_parent() {
+    local phase="$1" work="$TMP_DIR/history-$LIVE_AUDIT_INDEX" catalog artifact_name artifact metadata_name metadata
+    tip_history_resolve_parent "$work" "$LIVE_RELEASE_PATH" ||
+        fail "$phase: Tip history parent superseded or unverified"
+    catalog="$(asset_path_for_name tip-history.json || true)"
+    if [[ "$HISTORY_ACTIVE" != true ]]; then
+        [[ -z "$catalog" ]] || fail "Inactive policy cannot publish a Tip history catalog"
+        return
+    fi
+    [[ -n "$catalog" ]] || fail "Activated Tip publication requires tip-history.json"
+    artifact_name="$(python3 - "$CANDIDATE_MANIFEST" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["appArtifactManifest"]["name"])
+PY
+)"
+    artifact="$(asset_path_for_name "$artifact_name")" || fail "History artifact manifest missing"
+    metadata_name="${artifact_name%-artifact-manifest.json}-metadata.json"
+    metadata="$(asset_path_for_name "$metadata_name")" || fail "History release metadata missing"
+    tip_history_verify_signature "$catalog" "$work/verify-candidate" ||
+        fail "$phase: invalid Tip catalog signature"
+    tip_history_reaudit_parent "$catalog" "$APPROVED_SOURCE_ROOT" "$work" ||
+        fail "$phase: already-public catalog parent cannot be re-audited"
+    tip_history_verify_candidate "$catalog" "$CANDIDATE_MANIFEST" "$artifact" "$metadata" \
+        "$APPROVED_SOURCE_ROOT" "$work" || fail "$phase: Tip history parent superseded or candidate binding invalid"
 }
 
 # Returns 0 when found, 1 only for a confirmed absence, and 2 on observation error.
@@ -726,13 +796,23 @@ PY
     [[ "$count" == "${#EXPECTED_NAMES[@]}" ]] ||
         fail "Public Tip release asset inventory mismatch: expected=${#EXPECTED_NAMES[@]} actual=$count"
 
-    local latest_file="$TMP_DIR/latest-public-release.json" latest_status latest_tag
-    latest_status="$(fetch_json_status \
-        "https://api.github.com/repos/$TIP_UPDATE_REPOSITORY/releases/latest" \
-        "$latest_file")"
-    [[ "$latest_status" == "200" ]] || fail "Latest Tip release lookup failed with HTTP $latest_status"
-    latest_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("tag_name", ""))' "$latest_file")"
-    [[ "$latest_tag" == "$TIP_TAG" ]] || fail "Published Tip release is not the latest release"
+    local latest_file="$TMP_DIR/latest-public-release.json" latest_status latest_tag attempt
+    # GitHub's latest pointer can lag a successful publish. Bound convergence;
+    # authorization errors and malformed responses still fail immediately.
+    for attempt in 1 2 3 4 5 6 7; do
+        latest_status="$(fetch_json_status \
+            "https://api.github.com/repos/$TIP_UPDATE_REPOSITORY/releases/latest" \
+            "$latest_file")"
+        [[ "$latest_status" == "200" ]] || fail "Latest Tip release lookup failed with HTTP $latest_status"
+        latest_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("tag_name", ""))' "$latest_file")"
+        [[ "$latest_tag" =~ ^tip-[0-9a-f]{12}$ ]] || fail "Latest Tip release tag is malformed"
+        [[ "$latest_tag" == "$TIP_TAG" ]] && return 0
+        if [[ "$attempt" -lt 7 ]]; then
+            printf 'Waiting for latest Tip release to converge (attempt %s/7).\n' "$attempt" >&2
+            sleep 10
+        fi
+    done
+    fail "Published Tip release is not the latest release after bounded convergence"
 }
 
 validate_candidate_bindings

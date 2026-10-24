@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import RepoPromptProcess
+import RepoPromptSettingsCore
 
 enum ACPRuntimeEventParsing {
     static func extractContentText(from value: Any?) -> String? {
@@ -240,7 +242,13 @@ enum ACPDefaultSessionUpdateNormalizer {
         let progressText = ACPRuntimeEventParsing.extractContentText(from: payload["content"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if status == "completed" || status == "failed" {
+        if let status, status == "completed" || status == "failed" {
+            // Some agents (Devin) finish with empty JSON after streaming results in
+            // running updates. Agree with retention's empty-output classification so
+            // the terminal marker finishes the lifecycle without erasing its content.
+            let outputJSON = AgentToolResultPayloadRetention.isThin(outputJSON)
+                ? ACPRuntimeEventParsing.serializeJSON(["status": status])
+                : outputJSON
             return [
                 .stream(
                     AIStreamResult(
@@ -521,6 +529,10 @@ actor ACPTimeoutState {
 /// Cursor's normalizer; Grok Build feeds the same shapes through it. Provider-specific
 /// suppression rules (e.g. Cursor's placeholder tools) stay in the provider normalizers.
 enum ACPToolUpdateResultAdapter {
+    /// Generated-diff input limits shared by the persistence policy and provider enrichment.
+    static let generatedDiffInputBytesLimit = 16384
+    static let generatedDiffInputLineLimit = 800
+
     static func adaptedTerminalToolUpdatePayload(_ payload: [String: Any], sessionUpdate: String) -> [String: Any] {
         guard sessionUpdate == "tool_call_update",
               let status = ACPRuntimeEventParsing.firstString(in: payload, keys: ["status"])?.lowercased(),
@@ -629,8 +641,10 @@ enum ACPPermissionOptionPolicy {
     /// bare kind match would otherwise select it and broaden approval beyond the request.
     static func denylistedAutoSelectOptionIDs(for providerID: ACPProviderID) -> Set<String> {
         switch providerID {
-        case .openCode, .cursor:
+        case .openCode, .cursor, .antigravity:
             []
+        case .devin:
+            ["allow_always", "allow_always_global", "allow_server_session", "allow_server_always"]
         case .grokBuild:
             ["enable-always-approve"]
         }
@@ -639,5 +653,44 @@ enum ACPPermissionOptionPolicy {
     static func isAutoSelectable(optionID: String?, for providerID: ACPProviderID) -> Bool {
         guard let normalized = normalizedOptionValue(optionID) else { return false }
         return !denylistedAutoSelectOptionIDs(for: providerID).contains(normalized)
+    }
+
+    /// Overseer approval is strictly per request. ACP's `allow_once` kind is authoritative
+    /// only when the option ID does not advertise a wider scope (some providers mislabel it).
+    static func overseerOneTimeAllowOptionID(
+        options: [(optionID: String, kind: String)],
+        providerID: ACPProviderID
+    ) -> String? {
+        options.first { option in
+            guard let id = normalizedOptionValue(option.optionID),
+                  normalizedOptionValue(option.kind) == "allow_once",
+                  isAutoSelectable(optionID: id, for: providerID)
+            else { return false }
+            return !id.contains("always") && !id.contains("session") && !id.contains("persist")
+        }?.optionID
+    }
+
+    /// An observer's explicit decline is strictly per request, like its approval. Only a genuine
+    /// one-time reject is selected; without one the caller reports `cancelled` rather than falling
+    /// back to a persistent `reject_always`.
+    static func overseerOneTimeRejectOptionID(
+        options: [(optionID: String, kind: String)]
+    ) -> String? {
+        let oneTimeRejectIDs: Set = [
+            "reject_once", "reject-once", "reject", "deny_once", "deny-once", "deny"
+        ]
+        return options.first { option in
+            guard let id = normalizedOptionValue(option.optionID),
+                  !id.contains("always"), !id.contains("session"), !id.contains("persist")
+            else { return false }
+            switch normalizedOptionValue(option.kind) {
+            case "reject_once":
+                return true
+            case nil, "reject":
+                return oneTimeRejectIDs.contains(id)
+            default:
+                return false
+            }
+        }?.optionID
     }
 }
